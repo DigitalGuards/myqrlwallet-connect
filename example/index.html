@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QRL Connect Test dApp</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a17;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    h1 { color: #4aafff; margin-bottom: 0.25rem; }
+    .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+    .card {
+      background: #12132a;
+      border: 1px solid #1e2045;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      max-width: 480px;
+    }
+    .card h2 { color: #4aafff; font-size: 1.1rem; margin-bottom: 1rem; }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.red { background: #ef4444; }
+    .dot.yellow { background: #eab308; }
+    .dot.green { background: #22c55e; }
+    #qr-container {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1rem;
+      display: inline-block;
+      margin: 1rem 0;
+    }
+    #qr-container canvas { display: block; }
+    #qr-container.hidden { display: none; }
+    .uri-box {
+      background: #0a0a17;
+      border: 1px solid #1e2045;
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      word-break: break-all;
+      color: #888;
+      margin: 0.75rem 0;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+    button {
+      background: #4aafff;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      padding: 0.7rem 1.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.outline {
+      background: transparent;
+      border: 1px solid #4aafff;
+      color: #4aafff;
+    }
+    button.danger {
+      background: #ef4444;
+      color: #fff;
+    }
+    .btn-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+    input, select {
+      width: 100%;
+      background: #0a0a17;
+      border: 1px solid #1e2045;
+      border-radius: 6px;
+      color: #e0e0e0;
+      padding: 0.6rem 0.75rem;
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+    }
+    input:focus, select:focus { outline: none; border-color: #4aafff; }
+    label { display: block; font-size: 0.8rem; color: #888; margin-bottom: 0.25rem; }
+    .info { font-family: monospace; font-size: 0.85rem; color: #4aafff; word-break: break-all; }
+    .log-area {
+      background: #0a0a17;
+      border: 1px solid #1e2045;
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      max-height: 200px;
+      overflow-y: auto;
+      color: #888;
+      line-height: 1.6;
+    }
+    .log-area .log-entry { border-bottom: 1px solid #1e2045; padding: 2px 0; }
+    .log-area .log-entry:last-child { border-bottom: none; }
+    .log-entry.error { color: #ef4444; }
+    .log-entry.success { color: #22c55e; }
+    .log-entry.info { color: #4aafff; }
+    .result-box {
+      background: #0a0a17;
+      border: 1px solid #22c55e;
+      border-radius: 6px;
+      padding: 0.75rem;
+      margin-top: 0.75rem;
+      font-family: monospace;
+      font-size: 0.8rem;
+      word-break: break-all;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <h1>QRL Connect Test dApp</h1>
+  <p class="subtitle">Scan the QR code with MyQRLWallet to connect</p>
+
+  <!-- Connection Card -->
+  <div class="card">
+    <h2>1. Connect Wallet</h2>
+    <div class="status-row">
+      <div class="dot red" id="status-dot"></div>
+      <span id="status-text">Disconnected</span>
+    </div>
+
+    <div id="qr-container" class="hidden">
+      <canvas id="qr-canvas"></canvas>
+    </div>
+
+    <div id="uri-display" class="uri-box hidden"></div>
+
+    <div id="account-info" class="hidden">
+      <label>Connected Account</label>
+      <div class="info" id="account-address">—</div>
+    </div>
+
+    <div class="btn-row">
+      <button id="btn-connect">Generate QR Code</button>
+      <button id="btn-disconnect" class="danger hidden">Disconnect</button>
+    </div>
+  </div>
+
+  <!-- Send Transaction Card -->
+  <div class="card" id="tx-card" class="hidden">
+    <h2>2. Send Transaction</h2>
+    <label>To Address</label>
+    <input type="text" id="tx-to" placeholder="Z..." />
+    <label>Amount (QRL)</label>
+    <input type="text" id="tx-value" placeholder="0.01" value="0.01" />
+    <div class="btn-row">
+      <button id="btn-send" disabled>Send Transaction</button>
+    </div>
+    <div id="tx-result" class="result-box hidden"></div>
+  </div>
+
+  <!-- Sign Message Card -->
+  <div class="card" id="sign-card">
+    <h2>3. Sign Message</h2>
+    <label>Message</label>
+    <input type="text" id="sign-message" placeholder="Hello from QRL Connect!" value="Hello from QRL Connect!" />
+    <div class="btn-row">
+      <button id="btn-sign" disabled>Sign Message</button>
+    </div>
+    <div id="sign-result" class="result-box hidden"></div>
+  </div>
+
+  <!-- Read-only RPC Card -->
+  <div class="card">
+    <h2>4. Read-only RPC (no approval needed)</h2>
+    <label>Method</label>
+    <select id="rpc-method">
+      <option value="zond_chainId">zond_chainId</option>
+      <option value="zond_blockNumber">zond_blockNumber</option>
+      <option value="zond_getBalance">zond_getBalance (connected account)</option>
+      <option value="zond_gasPrice">zond_gasPrice</option>
+      <option value="net_version">net_version</option>
+    </select>
+    <div class="btn-row">
+      <button id="btn-rpc" disabled>Call Method</button>
+    </div>
+    <div id="rpc-result" class="result-box hidden"></div>
+  </div>
+
+  <!-- Event Log -->
+  <div class="card">
+    <h2>Event Log</h2>
+    <div class="log-area" id="log-area">
+      <div class="log-entry info">Ready. Click "Generate QR Code" to start.</div>
+    </div>
+  </div>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
