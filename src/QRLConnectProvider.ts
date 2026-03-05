@@ -98,6 +98,11 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       }
     });
 
+    this.connectionManager.on('error', (err) => {
+      warn('Provider', `ConnectionManager error: ${err.message}`);
+      this.emit('message', { type: 'error', data: err.message });
+    });
+
     this.connectionManager.on('connection_lost', () => {
       // Reject all pending requests
       for (const [, pending] of this.pendingRequests) {
