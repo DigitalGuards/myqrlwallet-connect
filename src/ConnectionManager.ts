@@ -159,7 +159,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
           if (!this.keyExchange.areKeysExchanged()) {
             this.synSent = false;
             this.clearSynRetryTimer();
-          } else if (this.status === ConnectionStatus.CONNECTED || this.status === ConnectionStatus.RECONNECTING) {
+          } else if (
+            this.status === ConnectionStatus.CONNECTED ||
+            this.status === ConnectionStatus.RECONNECTING
+          ) {
             // Wallet left while socket is still alive; no longer connected.
             this.setStatus(ConnectionStatus.WAITING);
           }
