@@ -101,6 +101,8 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       if (this.keyExchange.areKeysExchanged()) {
         this.setStatus(ConnectionStatus.CONNECTED);
         this.failedReconnects = 0;
+      } else {
+        this.sendSYN();
       }
     });
 
@@ -123,6 +125,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       if (data.event === 'join' && data.clientType === 'wallet') {
         log('ConnectionManager', 'Wallet joined channel');
         this.clearUnresponsiveTimer();
+        if (!this.keyExchange.areKeysExchanged()) {
+          this.sendSYN();
+        }
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
         log('ConnectionManager', 'Wallet left channel');
@@ -156,6 +161,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // Connect to relay and join channel
     this.socketClient.connect();
     await this.socketClient.joinChannel(this.channelId);
+    this.sendSYN();
 
     this.setStatus(ConnectionStatus.WAITING);
 
@@ -193,6 +199,8 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
       if (this.keyExchange.areKeysExchanged()) {
         this.setStatus(ConnectionStatus.CONNECTED);
+      } else {
+        this.sendSYN();
       }
 
       return true;
@@ -350,6 +358,16 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (this.unresponsiveTimer) {
       clearTimeout(this.unresponsiveTimer);
       this.unresponsiveTimer = null;
+    }
+  }
+
+  private sendSYN(): void {
+    try {
+      const syn = this.keyExchange.createSYN();
+      this.sendPlaintext(syn);
+      log('ConnectionManager', 'Sent SYN key exchange message');
+    } catch (err) {
+      logError('ConnectionManager', 'Failed to send SYN:', err);
     }
   }
 
