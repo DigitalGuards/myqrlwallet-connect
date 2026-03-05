@@ -50,6 +50,7 @@ export interface RelayMessage {
   id: string; // channelId
   clientType: 'dapp' | 'wallet';
   message: string | object; // encrypted base64 string or plaintext object (for key exchange)
+  seq?: number; // Monotonic sequence number for replay protection
 }
 
 /** Connection state */
