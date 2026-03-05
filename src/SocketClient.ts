@@ -22,6 +22,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
   private relayUrl: string;
   private channelId: string | null = null;
   private clientType: 'dapp' | 'wallet';
+  private seq = 0;
 
   constructor(relayUrl: string, clientType: 'dapp' | 'wallet') {
     super();
@@ -53,9 +54,15 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
 
       // Re-join channel on reconnect
       if (this.channelId) {
-        this.joinChannel(this.channelId).then(() => {
-          this.emit('reconnected');
-        });
+        this.joinChannel(this.channelId)
+          .then(() => {
+            this.emit('reconnected');
+          })
+          .catch((err) => {
+            const reconnectErr = err instanceof Error ? err : new Error(String(err));
+            logError('Socket', `Rejoin failed: ${reconnectErr.message}`);
+            this.emit('error', reconnectErr);
+          });
       }
     });
 
@@ -120,13 +127,18 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
         return;
       }
 
-      this.socket.emit('message', data, (response: { success: boolean; buffered: boolean; error?: string }) => {
-        if (response?.success) {
-          resolve({ success: true, buffered: response.buffered });
-        } else {
-          reject(new Error(response?.error || 'Failed to send message'));
+      const dataWithSeq = { ...data, seq: this.seq++ };
+      this.socket.emit(
+        'message',
+        dataWithSeq,
+        (response: { success: boolean; buffered: boolean; error?: string }) => {
+          if (response?.success) {
+            resolve({ success: true, buffered: response.buffered });
+          } else {
+            reject(new Error(response?.error || 'Failed to send message'));
+          }
         }
-      });
+      );
     });
   }
 
@@ -145,6 +157,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    */
   disconnect(): void {
     this.channelId = null;
+    this.seq = 0;
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.disconnect();
