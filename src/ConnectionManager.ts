@@ -103,10 +103,15 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     });
 
     this.socketClient.on('reconnected', () => {
-      // If keys were already exchanged, we're fully reconnected
+      // Restored keys alone don't prove wallet presence.
+      // Require wallet presence before transitioning to CONNECTED.
       if (this.keyExchange.areKeysExchanged()) {
-        this.setStatus(ConnectionStatus.CONNECTED);
-        this.failedReconnects = 0;
+        if (this.walletPresent) {
+          this.setStatus(ConnectionStatus.CONNECTED);
+          this.failedReconnects = 0;
+        } else {
+          this.setStatus(ConnectionStatus.WAITING);
+        }
         this.synAttempts = 0;
         this.clearSynRetryTimer();
       } else {
@@ -141,17 +146,25 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
         this.clearUnresponsiveTimer();
-        if (!this.keyExchange.areKeysExchanged() && !this.synSent) {
+        if (this.keyExchange.areKeysExchanged()) {
+          this.failedReconnects = 0;
+          this.setStatus(ConnectionStatus.CONNECTED);
+        } else if (!this.synSent) {
           this.sendSYN();
         }
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
-        this.walletPresent = false;
-        if (!this.keyExchange.areKeysExchanged()) {
-          this.synSent = false;
-          this.clearSynRetryTimer();
+        if (data.clientType === 'wallet' || !data.clientType) {
+          this.walletPresent = false;
+          if (!this.keyExchange.areKeysExchanged()) {
+            this.synSent = false;
+            this.clearSynRetryTimer();
+          } else if (this.status === ConnectionStatus.CONNECTED || this.status === ConnectionStatus.RECONNECTING) {
+            // Wallet left while socket is still alive; no longer connected.
+            this.setStatus(ConnectionStatus.WAITING);
+          }
+          log('ConnectionManager', 'Wallet left channel');
         }
-        log('ConnectionManager', 'Wallet left channel');
       }
     });
   }
@@ -180,7 +193,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   /**
    * Generate the connection URI and start listening for wallet connection.
    */
-  async getConnectionURI(): Promise<string> {
+  async getConnectionURI(retryOnConflict = true): Promise<string> {
     this.setStatus(ConnectionStatus.CONNECTING);
 
     // Reset key exchange — generating a new QR means we expect a fresh
@@ -195,7 +208,20 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // SYN is sent automatically by the reconnected handler once the
     // socket is actually connected — no need to send it here.
     this.socketClient.connect();
-    await this.socketClient.joinChannel(this.channelId);
+    try {
+      await this.socketClient.joinChannel(this.channelId);
+    } catch (err) {
+      if (retryOnConflict && this.isDappParticipantConflictError(err)) {
+        warn(
+          'ConnectionManager',
+          'Channel already has an active dApp participant. Rotating to a fresh channel.'
+        );
+        this.resetForNewChannel();
+        return this.getConnectionURI(false);
+      }
+      this.setStatus(ConnectionStatus.DISCONNECTED);
+      throw err;
+    }
 
     this.setStatus(ConnectionStatus.WAITING);
 
@@ -221,6 +247,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (!session) return false;
 
     this.setStatus(ConnectionStatus.RECONNECTING);
+    this.walletPresent = false;
     this.synSent = false;
     this.synAttempts = 0;
     this.clearSynRetryTimer();
@@ -234,8 +261,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         this.handleRelayMessage(msg as RelayMessage);
       }
 
-      if (this.keyExchange.areKeysExchanged()) {
+      if (this.keyExchange.areKeysExchanged() && this.walletPresent) {
         this.setStatus(ConnectionStatus.CONNECTED);
+      } else if (this.keyExchange.areKeysExchanged()) {
+        this.setStatus(ConnectionStatus.WAITING);
       } else {
         this.sendSYN();
       }
@@ -272,6 +301,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * Handle an incoming relay message.
    */
   private handleRelayMessage(data: RelayMessage): void {
+    if (data.clientType === 'wallet') {
+      this.walletPresent = true;
+      if (this.keyExchange.areKeysExchanged() && this.status !== ConnectionStatus.CONNECTED) {
+        this.failedReconnects = 0;
+        this.setStatus(ConnectionStatus.CONNECTED);
+      }
+    }
+
     const message = data.message;
 
     // Key exchange messages come as plaintext objects
@@ -330,14 +367,24 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
           accounts: string[];
           chainId: string;
         };
-        this.connectedAccounts = info.accounts || [];
-        this.chainId = info.chainId || this.chainId;
+        const nextAccounts = info.accounts || [];
+        const nextChainId = info.chainId || this.chainId;
+        const accountsChanged = !this.areArraysEqual(this.connectedAccounts, nextAccounts);
+        const chainChanged = this.chainId !== nextChainId;
+
+        this.connectedAccounts = nextAccounts;
+        this.chainId = nextChainId;
         this.saveSession();
         this.emit('wallet_info', {
           accounts: this.connectedAccounts,
           chainId: this.chainId,
         });
-        this.emit('accounts_changed', this.connectedAccounts);
+        if (accountsChanged) {
+          this.emit('accounts_changed', this.connectedAccounts);
+        }
+        if (chainChanged) {
+          this.emit('chain_changed', this.chainId);
+        }
         break;
       }
 
@@ -454,6 +501,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       this.status = status;
       this.emit('status_changed', status);
     }
+  }
+
+  private isDappParticipantConflictError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return msg.toLowerCase().includes('dapp participant is already connected');
+  }
+
+  private areArraysEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
   }
 
   getStatus(): ConnectionStatus {
