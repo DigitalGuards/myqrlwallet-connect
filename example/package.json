@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@qrlwallet/connect": "file:..",
-    "qrcode": "^1.5.4"
+    "buffer": "^6.0.3",
+    "qrcode": "^1.5.4",
+    "vite-plugin-node-polyfills": "^0.25.0"
   },
   "devDependencies": {
     "vite": "^6.3.0"

@@ -3,9 +3,7 @@ import QRCode from 'qrcode';
 
 // ─── Config ──────────────────────────────────────────────
 // Point at local backend during development, production relay otherwise
-const RELAY_URL = location.hostname === 'localhost'
-  ? 'http://localhost:3000'
-  : 'https://qrlwallet.com';
+const RELAY_URL = 'https://qrlwallet.com';
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);

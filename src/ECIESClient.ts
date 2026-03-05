@@ -6,6 +6,25 @@
 import { PrivateKey, decrypt, encrypt } from 'eciesjs';
 import { log } from './utils/logger.js';
 
+/** Convert Uint8Array to base64 string (browser-safe, no Buffer needed). */
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/** Convert base64 string to Uint8Array (browser-safe, no Buffer needed). */
+function fromBase64(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export class ECIESClient {
   private privateKey: PrivateKey;
 
@@ -31,14 +50,15 @@ export class ECIESClient {
 
   /** Encrypt a string message for the given public key. Returns base64. */
   encrypt(data: string, otherPublicKey: string): string {
-    const encrypted = encrypt(otherPublicKey, Buffer.from(data, 'utf8'));
-    return Buffer.from(encrypted).toString('base64');
+    const encoded = new TextEncoder().encode(data);
+    const encrypted = encrypt(otherPublicKey, encoded);
+    return toBase64(encrypted);
   }
 
   /** Decrypt a base64-encoded message using our private key. */
   decrypt(encryptedBase64: string): string {
-    const encryptedBuffer = Buffer.from(encryptedBase64, 'base64');
-    const decrypted = decrypt(this.privateKey.toHex(), encryptedBuffer);
-    return Buffer.from(decrypted).toString('utf8');
+    const encryptedBytes = fromBase64(encryptedBase64);
+    const decrypted = decrypt(this.privateKey.toHex(), encryptedBytes);
+    return new TextDecoder().decode(decrypted);
   }
 }
