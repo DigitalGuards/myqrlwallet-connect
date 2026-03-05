@@ -197,12 +197,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         this.handleRelayMessage(msg as RelayMessage);
       }
 
-      if (!this.keyExchange.areKeysExchanged()) {
-        this.sendSYN();
-      }
-
       if (this.keyExchange.areKeysExchanged()) {
         this.setStatus(ConnectionStatus.CONNECTED);
+      } else {
+        this.sendSYN();
       }
 
       return true;
