@@ -50,6 +50,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private storageKey: string;
   private unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
   private failedReconnects = 0;
+  private synSent = false;
   private static MAX_RECONNECT_FAILURES = 5;
 
   constructor(options: {
@@ -109,6 +110,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.socketClient.on('disconnected', (reason) => {
       if (this.status === ConnectionStatus.CONNECTED) {
         this.setStatus(ConnectionStatus.RECONNECTING);
+        this.synSent = false; // Allow SYN on reconnect
         this.failedReconnects++;
 
         if (this.failedReconnects >= ConnectionManager.MAX_RECONNECT_FAILURES) {
@@ -125,7 +127,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       if (data.event === 'join' && data.clientType === 'wallet') {
         log('ConnectionManager', 'Wallet joined channel');
         this.clearUnresponsiveTimer();
-        if (!this.keyExchange.areKeysExchanged()) {
+        if (!this.keyExchange.areKeysExchanged() && !this.synSent) {
           this.sendSYN();
         }
       }
@@ -158,10 +160,16 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   async getConnectionURI(): Promise<string> {
     this.setStatus(ConnectionStatus.CONNECTING);
 
-    // Connect to relay and join channel
+    // Reset key exchange — generating a new QR means we expect a fresh
+    // handshake (the wallet will have new keys).
+    this.keyExchange.reset();
+    this.synSent = false;
+
+    // Connect to relay and join channel.
+    // SYN is sent automatically by the reconnected handler once the
+    // socket is actually connected — no need to send it here.
     this.socketClient.connect();
     await this.socketClient.joinChannel(this.channelId);
-    this.sendSYN();
 
     this.setStatus(ConnectionStatus.WAITING);
 
@@ -365,6 +373,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     try {
       const syn = this.keyExchange.createSYN();
       this.sendPlaintext(syn);
+      this.synSent = true;
       log('ConnectionManager', 'Sent SYN key exchange message');
     } catch (err) {
       logError('ConnectionManager', 'Failed to send SYN:', err);

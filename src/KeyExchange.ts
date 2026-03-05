@@ -138,6 +138,14 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     return this.ecies.decrypt(encryptedBase64);
   }
 
+  /** Reset key exchange state for a fresh handshake (e.g. new QR code). */
+  reset(): void {
+    this.otherPublicKey = null;
+    this.keysExchanged = false;
+    this.step = KeyExchangeMessageType.SYN;
+    log('KeyExchange', 'Reset for fresh handshake');
+  }
+
   areKeysExchanged(): boolean {
     return this.keysExchanged;
   }

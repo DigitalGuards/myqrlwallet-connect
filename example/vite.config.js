@@ -1,16 +1,17 @@
 import { defineConfig } from 'vite';
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 export default defineConfig({
   server: {
     port: 5174,
     open: true,
   },
-  // Node polyfills needed for eciesjs Buffer usage in the SDK
-  resolve: {
-    alias: {
-      buffer: 'buffer/',
-    },
-  },
+  plugins: [
+    nodePolyfills({
+      include: ['buffer'],
+      globals: { Buffer: true },
+    }),
+  ],
   define: {
     'global': 'globalThis',
   },
