@@ -126,10 +126,35 @@ describe('SocketClient', () => {
   });
 
   describe('joinChannel', () => {
-    it('should store channelId even when not connected', async () => {
-      const result = await client.joinChannel('test-channel');
+    it('should reject if connect was not called', async () => {
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(
+        'Socket not initialized. Call connect() before joinChannel()'
+      );
+    });
+
+    it('should wait for connect and then join channel', async () => {
+      client.connect();
+      const buffered = [{ id: 'chan', message: 'msg1' }];
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, bufferedMessages: buffered });
+          }
+        }
+      );
+
+      const joinPromise = client.joinChannel('test-channel');
       expect(client.getChannelId()).toBe('test-channel');
-      expect(result.bufferedMessages).toEqual([]);
+
+      const connectHandler = mockSocket.on.mock.calls.find(
+        (c: unknown[]) => c[0] === 'connect'
+      )?.[1] as Function;
+      mockSocket.connected = true;
+      connectHandler?.();
+
+      const result = await joinPromise;
+      expect(client.getChannelId()).toBe('test-channel');
+      expect(result.bufferedMessages).toEqual(buffered);
     });
 
     it('should emit join_channel when connected', async () => {
@@ -184,6 +209,26 @@ describe('SocketClient', () => {
       );
 
       await expect(client.joinChannel('test-channel')).rejects.toThrow('Channel is full');
+    });
+
+    it('should reject deferred join when connect-time join fails', async () => {
+      client.connect();
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: false, error: 'Channel is full' });
+          }
+        }
+      );
+
+      const joinPromise = client.joinChannel('test-channel');
+      const connectHandler = mockSocket.on.mock.calls.find(
+        (c: unknown[]) => c[0] === 'connect'
+      )?.[1] as Function;
+      mockSocket.connected = true;
+      connectHandler?.();
+
+      await expect(joinPromise).rejects.toThrow('Channel is full');
     });
   });
 

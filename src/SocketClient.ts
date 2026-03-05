@@ -23,6 +23,12 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
   private channelId: string | null = null;
   private clientType: 'dapp' | 'wallet';
   private seq = 0;
+  private pendingJoin: {
+    channelId: string;
+    promise: Promise<{ bufferedMessages: unknown[] }>;
+    resolve: (result: { bufferedMessages: unknown[] }) => void;
+    reject: (error: Error) => void;
+  } | null = null;
 
   constructor(relayUrl: string, clientType: 'dapp' | 'wallet') {
     super();
@@ -54,12 +60,21 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
 
       // Re-join channel on reconnect
       if (this.channelId) {
-        this.joinChannel(this.channelId)
-          .then(() => {
+        const reconnectChannelId = this.channelId;
+        this.joinChannelNow(reconnectChannelId)
+          .then((result) => {
+            if (this.pendingJoin && this.pendingJoin.channelId === reconnectChannelId) {
+              this.pendingJoin.resolve(result);
+              this.pendingJoin = null;
+            }
             this.emit('reconnected');
           })
           .catch((err) => {
             const reconnectErr = err instanceof Error ? err : new Error(String(err));
+            if (this.pendingJoin && this.pendingJoin.channelId === reconnectChannelId) {
+              this.pendingJoin.reject(reconnectErr);
+              this.pendingJoin = null;
+            }
             logError('Socket', `Rejoin failed: ${reconnectErr.message}`);
             this.emit('error', reconnectErr);
           });
@@ -91,15 +106,50 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * Join a relay channel.
    */
   async joinChannel(channelId: string): Promise<{ bufferedMessages: unknown[] }> {
+    if (!this.socket) {
+      throw new Error('Socket not initialized. Call connect() before joinChannel()');
+    }
+
+    this.channelId = channelId;
+
+    // If already connected, join immediately.
+    if (this.socket.connected) {
+      return this.joinChannelNow(channelId);
+    }
+
+    // If waiting for connect, return a promise that resolves/rejects when the
+    // connect handler executes the actual join_channel request.
+    if (this.pendingJoin) {
+      if (this.pendingJoin.channelId === channelId) {
+        return this.pendingJoin.promise;
+      }
+      this.pendingJoin.reject(new Error('Join request superseded by a newer channel'));
+      this.pendingJoin = null;
+    }
+
+    let resolvePending!: (result: { bufferedMessages: unknown[] }) => void;
+    let rejectPending!: (error: Error) => void;
+    const promise = new Promise<{ bufferedMessages: unknown[] }>((resolve, reject) => {
+      resolvePending = resolve;
+      rejectPending = reject;
+    });
+
+    this.pendingJoin = {
+      channelId,
+      promise,
+      resolve: resolvePending,
+      reject: rejectPending,
+    };
+
+    return promise;
+  }
+
+  private joinChannelNow(channelId: string): Promise<{ bufferedMessages: unknown[] }> {
     return new Promise((resolve, reject) => {
       if (!this.socket?.connected) {
-        // Store channelId so we join on connect
-        this.channelId = channelId;
-        resolve({ bufferedMessages: [] });
+        reject(new Error('Socket not connected'));
         return;
       }
-
-      this.channelId = channelId;
 
       this.socket.emit(
         'join_channel',
@@ -146,6 +196,10 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * Leave the current channel.
    */
   leaveChannel(): void {
+    if (this.pendingJoin) {
+      this.pendingJoin.reject(new Error('Channel left before join completed'));
+      this.pendingJoin = null;
+    }
     if (this.socket?.connected && this.channelId) {
       this.socket.emit('leave_channel', { channelId: this.channelId });
     }
@@ -156,6 +210,10 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * Disconnect from the relay.
    */
   disconnect(): void {
+    if (this.pendingJoin) {
+      this.pendingJoin.reject(new Error('Socket disconnected before join completed'));
+      this.pendingJoin = null;
+    }
     this.channelId = null;
     this.seq = 0;
     if (this.socket) {
