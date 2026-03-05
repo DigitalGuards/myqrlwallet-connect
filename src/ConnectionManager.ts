@@ -472,6 +472,57 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     return this.channelId;
   }
 
+  /** Check if a stored session exists (without loading/restoring it). */
+  hasStoredSession(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+      const raw = localStorage.getItem(this.storageKey);
+      if (!raw) return false;
+      const session: DAppSession = JSON.parse(raw);
+      return Date.now() - session.createdAt <= SESSION_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Reset the connection and create a new channel for a fresh pairing.
+   * Disconnects any existing session, generates a new channel ID and keys.
+   */
+  resetForNewChannel(): void {
+    // Clean up existing connection
+    this.clearUnresponsiveTimer();
+    this.clearSynRetryTimer();
+    this.synSent = false;
+    this.synAttempts = 0;
+    this.walletPresent = false;
+
+    if (this.keyExchange.areKeysExchanged()) {
+      try {
+        this.sendEncrypted({ type: MessageType.TERMINATE });
+      } catch {
+        // Best effort
+      }
+    }
+
+    this.socketClient.leaveChannel();
+    this.socketClient.disconnect();
+    this.clearSession();
+    this.connectedAccounts = [];
+
+    // Generate fresh channel and keys
+    this.channelId = uuidv4();
+    this.ecies = new ECIESClient();
+    this.keyExchange = new KeyExchange(this.ecies, true);
+
+    // Re-wire socket and key exchange listeners
+    this.socketClient = new SocketClient(this.relayUrl, 'dapp');
+    this.setupSocketListeners();
+    this.setupKeyExchangeListeners();
+
+    this.setStatus(ConnectionStatus.DISCONNECTED);
+  }
+
   /** Disconnect and clean up. */
   disconnect(): void {
     this.clearUnresponsiveTimer();
