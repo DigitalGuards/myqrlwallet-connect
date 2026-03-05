@@ -70,6 +70,7 @@ export interface ProviderEvents {
   chainChanged: (chainId: string) => void;
   accountsChanged: (accounts: string[]) => void;
   message: (message: { type: string; data: unknown }) => void;
+  statusChanged: (status: ConnectionStatus) => void;
 }
 
 /** JSON-RPC request */
