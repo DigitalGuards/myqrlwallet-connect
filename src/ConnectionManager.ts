@@ -132,6 +132,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       this.handleRelayMessage(data);
     });
 
+    this.socketClient.on('error', (err) => {
+      this.emit('error', err);
+    });
+
     this.socketClient.on('participants_changed', (data) => {
       if (data.event === 'join' && data.clientType === 'wallet') {
         this.walletPresent = true;
