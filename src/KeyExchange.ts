@@ -21,11 +21,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   private step: KeyExchangeMessageType = KeyExchangeMessageType.SYN;
   private isOriginator: boolean;
 
-  constructor(
-    ecies: ECIESClient,
-    isOriginator: boolean,
-    otherPublicKey?: string
-  ) {
+  constructor(ecies: ECIESClient, isOriginator: boolean, otherPublicKey?: string) {
     super();
     this.ecies = ecies;
     this.isOriginator = isOriginator;
@@ -53,11 +49,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
    * Process an incoming key exchange message.
    * Returns a response message to send back, or null if handshake is complete.
    */
-  onMessage(message: {
-    type: KeyExchangeMessageType;
-    pubkey?: string;
-    v?: number;
-  }): object | null {
+  onMessage(message: { type: KeyExchangeMessageType; pubkey?: string; v?: number }): object | null {
     log('KeyExchange', `Received ${message.type}, isOriginator=${this.isOriginator}`);
 
     switch (message.type) {

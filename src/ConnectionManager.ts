@@ -49,9 +49,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private connectedAccounts: string[] = [];
   private storageKey: string;
   private unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
+  private synRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private failedReconnects = 0;
   private synSent = false;
+  private synAttempts = 0;
+  private walletPresent = false;
   private static MAX_RECONNECT_FAILURES = 5;
+  private static SYN_RETRY_MS = 5000;
+  private static MAX_SYN_ATTEMPTS = 6;
 
   constructor(options: {
     dappMetadata: DAppMetadata;
@@ -102,15 +107,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       if (this.keyExchange.areKeysExchanged()) {
         this.setStatus(ConnectionStatus.CONNECTED);
         this.failedReconnects = 0;
+        this.synAttempts = 0;
+        this.clearSynRetryTimer();
       } else {
         this.sendSYN();
       }
     });
 
-    this.socketClient.on('disconnected', (reason) => {
+    this.socketClient.on('disconnected', (_reason) => {
+      this.walletPresent = false;
+      this.synSent = false;
+      this.clearSynRetryTimer();
       if (this.status === ConnectionStatus.CONNECTED) {
         this.setStatus(ConnectionStatus.RECONNECTING);
-        this.synSent = false; // Allow SYN on reconnect
         this.failedReconnects++;
 
         if (this.failedReconnects >= ConnectionManager.MAX_RECONNECT_FAILURES) {
@@ -125,6 +134,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     this.socketClient.on('participants_changed', (data) => {
       if (data.event === 'join' && data.clientType === 'wallet') {
+        this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
         this.clearUnresponsiveTimer();
         if (!this.keyExchange.areKeysExchanged() && !this.synSent) {
@@ -132,6 +142,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         }
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
+        this.walletPresent = false;
+        if (!this.keyExchange.areKeysExchanged()) {
+          this.synSent = false;
+          this.clearSynRetryTimer();
+        }
         log('ConnectionManager', 'Wallet left channel');
       }
     });
@@ -141,6 +156,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.keyExchange.on('keys_exchanged', () => {
       log('ConnectionManager', 'Key exchange complete');
       this.setStatus(ConnectionStatus.CONNECTED);
+      this.walletPresent = true;
+      this.synSent = false;
+      this.synAttempts = 0;
+      this.clearSynRetryTimer();
       this.saveSession();
 
       // Send originator info
@@ -163,7 +182,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // Reset key exchange — generating a new QR means we expect a fresh
     // handshake (the wallet will have new keys).
     this.keyExchange.reset();
+    this.walletPresent = false;
     this.synSent = false;
+    this.synAttempts = 0;
+    this.clearSynRetryTimer();
 
     // Connect to relay and join channel.
     // SYN is sent automatically by the reconnected handler once the
@@ -195,6 +217,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (!session) return false;
 
     this.setStatus(ConnectionStatus.RECONNECTING);
+    this.synSent = false;
+    this.synAttempts = 0;
+    this.clearSynRetryTimer();
     this.socketClient.connect();
 
     try {
@@ -253,11 +278,13 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         msg.type === KeyExchangeMessageType.SYNACK ||
         msg.type === KeyExchangeMessageType.ACK
       ) {
-        this.handleKeyExchangeMessage(msg as {
-          type: KeyExchangeMessageType;
-          pubkey?: string;
-          v?: number;
-        });
+        this.handleKeyExchangeMessage(
+          msg as {
+            type: KeyExchangeMessageType;
+            pubkey?: string;
+            v?: number;
+          }
+        );
         return;
       }
     }
@@ -329,26 +356,30 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   /** Send a plaintext (unencrypted) message through the relay. */
   private sendPlaintext(message: object): void {
-    this.socketClient.sendMessage({
-      id: this.channelId,
-      clientType: 'dapp',
-      message: message,
-    }).catch((err) => {
-      logError('ConnectionManager', 'Failed to send plaintext:', err);
-    });
+    this.socketClient
+      .sendMessage({
+        id: this.channelId,
+        clientType: 'dapp',
+        message: message,
+      })
+      .catch((err) => {
+        logError('ConnectionManager', 'Failed to send plaintext:', err);
+      });
   }
 
   /** Send an encrypted message through the relay. */
   private sendEncrypted(message: object): void {
     try {
       const encrypted = this.keyExchange.encryptMessage(JSON.stringify(message));
-      this.socketClient.sendMessage({
-        id: this.channelId,
-        clientType: 'dapp',
-        message: encrypted,
-      }).catch((err) => {
-        logError('ConnectionManager', 'Failed to send encrypted:', err);
-      });
+      this.socketClient
+        .sendMessage({
+          id: this.channelId,
+          clientType: 'dapp',
+          message: encrypted,
+        })
+        .catch((err) => {
+          logError('ConnectionManager', 'Failed to send encrypted:', err);
+        });
     } catch (err) {
       logError('ConnectionManager', 'Encryption failed:', err);
     }
@@ -370,13 +401,47 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   private sendSYN(): void {
+    if (!this.socketClient.isConnected()) {
+      return;
+    }
+
+    if (this.synAttempts >= ConnectionManager.MAX_SYN_ATTEMPTS) {
+      this.synSent = false;
+      this.emit('error', new Error('Key exchange timed out waiting for wallet response'));
+      return;
+    }
+
     try {
       const syn = this.keyExchange.createSYN();
       this.sendPlaintext(syn);
       this.synSent = true;
+      this.synAttempts++;
+      this.scheduleSynRetry();
       log('ConnectionManager', 'Sent SYN key exchange message');
     } catch (err) {
       logError('ConnectionManager', 'Failed to send SYN:', err);
+    }
+  }
+
+  private scheduleSynRetry(): void {
+    this.clearSynRetryTimer();
+    this.synRetryTimer = setTimeout(() => {
+      this.synRetryTimer = null;
+      if (this.keyExchange.areKeysExchanged()) {
+        return;
+      }
+      this.synSent = false;
+      if (!this.walletPresent || !this.socketClient.isConnected()) {
+        return;
+      }
+      this.sendSYN();
+    }, ConnectionManager.SYN_RETRY_MS);
+  }
+
+  private clearSynRetryTimer(): void {
+    if (this.synRetryTimer) {
+      clearTimeout(this.synRetryTimer);
+      this.synRetryTimer = null;
     }
   }
 
@@ -406,6 +471,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   /** Disconnect and clean up. */
   disconnect(): void {
     this.clearUnresponsiveTimer();
+    this.clearSynRetryTimer();
+    this.synSent = false;
+    this.synAttempts = 0;
+    this.walletPresent = false;
 
     // Send terminate to wallet
     if (this.keyExchange.areKeysExchanged()) {

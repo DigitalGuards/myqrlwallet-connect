@@ -1,5 +1,3 @@
-import type { DAppMetadata } from '../types.js';
-
 export interface QRConnectParams {
   channelId: string;
   pubKey: string;
