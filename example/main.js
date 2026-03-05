@@ -144,6 +144,50 @@ async function showQR(uri) {
   uriDisplay.classList.remove('hidden');
 }
 
+// ─── Mobile deep link helper ──────────────────────────────
+function tryOpenMobileDeepLink(uri, sourceLabel) {
+  if (!qrl.isMobile()) return false;
+
+  log(`[Mobile] Deep link attempt (${sourceLabel})`, 'info');
+  log(`[Mobile] URI: ${uri}`, 'info');
+
+  let settled = false;
+  const cleanup = () => {
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    window.removeEventListener('pagehide', onPageHide);
+  };
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden' && !settled) {
+      settled = true;
+      log('[Mobile] Page hidden after deep link attempt (wallet likely opened)', 'success');
+      cleanup();
+    }
+  };
+
+  const onPageHide = () => {
+    if (!settled) {
+      settled = true;
+      log('[Mobile] Page backgrounded after deep link attempt', 'success');
+      cleanup();
+    }
+  };
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('pagehide', onPageHide);
+
+  setTimeout(() => {
+    if (!settled && document.visibilityState === 'visible') {
+      settled = true;
+      log('[Mobile] Deep link may have been blocked (still on dApp page)', 'error');
+      cleanup();
+    }
+  }, 1500);
+
+  window.location.href = uri;
+  return true;
+}
+
 // ─── Connect (first time) ───────────────────────────────
 btnConnect.addEventListener('click', async () => {
   btnConnect.disabled = true;
@@ -153,7 +197,10 @@ btnConnect.addEventListener('click', async () => {
   try {
     const uri = await qrl.getConnectionURI();
     log(`Connection URI generated (channel: ${qrl.getChannelId()})`, 'info');
-    await showQR(uri);
+    const openedMobile = tryOpenMobileDeepLink(uri, 'connect');
+    if (!openedMobile) {
+      await showQR(uri);
+    }
     btnConnect.textContent = 'Connect Wallet';
     btnConnect.disabled = false;
     updateStatus(ConnectionStatus.WAITING);
@@ -174,7 +221,10 @@ btnNewConn.addEventListener('click', async () => {
     const uri = await qrl.newConnection();
     log(`New connection URI generated (channel: ${qrl.getChannelId()})`, 'info');
     showDisconnectedUI();
-    await showQR(uri);
+    const openedMobile = tryOpenMobileDeepLink(uri, 'newConnection');
+    if (!openedMobile) {
+      await showQR(uri);
+    }
     btnNewConn.textContent = 'New Connection';
     btnNewConn.disabled = false;
     // Keep "New Connection" visible while waiting for scan
