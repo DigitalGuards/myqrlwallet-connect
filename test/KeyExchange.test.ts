@@ -77,6 +77,31 @@ describe('KeyExchange', () => {
       const decryptedResponse = dappKex.decryptMessage(encryptedResponse);
       expect(decryptedResponse).toBe(response);
     });
+
+    it('should not emit keys_exchanged multiple times on duplicate SYNACK', () => {
+      const keysExchangedDapp = vi.fn();
+      dappKex.on('keys_exchanged', keysExchangedDapp);
+
+      const syn = dappKex.createSYN();
+      const synack = walletKex.onMessage(syn as any);
+      dappKex.onMessage(synack as any);
+      dappKex.onMessage(synack as any); // duplicate SYNACK
+
+      expect(keysExchangedDapp).toHaveBeenCalledOnce();
+    });
+
+    it('should not emit keys_exchanged multiple times on duplicate ACK', () => {
+      const keysExchangedWallet = vi.fn();
+      walletKex.on('keys_exchanged', keysExchangedWallet);
+
+      const syn = dappKex.createSYN();
+      const synack = walletKex.onMessage(syn as any);
+      const ack = dappKex.onMessage(synack as any);
+      walletKex.onMessage(ack as any);
+      walletKex.onMessage(ack as any); // duplicate ACK
+
+      expect(keysExchangedWallet).toHaveBeenCalledOnce();
+    });
   });
 
   describe('step_change events', () => {
