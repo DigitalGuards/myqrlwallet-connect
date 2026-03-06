@@ -10,8 +10,6 @@ import { log, warn } from './utils/logger.js';
 import { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
 import {
-  type DAppMetadata,
-  type JsonRpcRequest,
   type JsonRpcResponse,
   type PendingRequest,
   type ProviderEvents,
@@ -53,6 +51,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private setupConnectionListeners(): void {
     this.connectionManager.on('status_changed', (status) => {
       log('Provider', `Connection status: ${status}`);
+      this.emit('statusChanged', status);
 
       if (status === ConnectionStatus.CONNECTED) {
         this.emit('connect', { chainId: this.connectionManager.getChainId() });
@@ -84,9 +83,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       this.pendingRequests.delete(response.id);
 
       if (response.error) {
-        pending.reject(
-          new Error(response.error.message || 'Request failed')
-        );
+        pending.reject(new Error(response.error.message || 'Request failed'));
       } else {
         pending.resolve(response.result);
       }
@@ -102,9 +99,14 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       }
     });
 
+    this.connectionManager.on('error', (err) => {
+      warn('Provider', `ConnectionManager error: ${err.message}`);
+      this.emit('message', { type: 'error', data: err.message });
+    });
+
     this.connectionManager.on('connection_lost', () => {
       // Reject all pending requests
-      for (const [id, pending] of this.pendingRequests) {
+      for (const [, pending] of this.pendingRequests) {
         pending.reject(new Error('Connection to QRL Wallet lost'));
       }
       this.pendingRequests.clear();
@@ -229,6 +231,29 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    */
   isConnected(): boolean {
     return this.connectionManager.getStatus() === ConnectionStatus.CONNECTED;
+  }
+
+  /**
+   * Check if a stored session exists that can be reconnected.
+   */
+  hasStoredSession(): boolean {
+    return this.connectionManager.hasStoredSession();
+  }
+
+  /**
+   * Reset the connection and start a fresh pairing with a new channel.
+   * Use this when the user wants to create a new connection instead of
+   * reconnecting to an existing session.
+   */
+  async newConnection(): Promise<string> {
+    // Reject pending requests
+    for (const [, pending] of this.pendingRequests) {
+      pending.reject(new Error('Connection reset'));
+    }
+    this.pendingRequests.clear();
+
+    this.connectionManager.resetForNewChannel();
+    return this.getConnectionURI();
   }
 
   /**

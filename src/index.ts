@@ -20,11 +20,7 @@ export {
 
 export { generateConnectionURI, parseConnectionURI } from './utils/qrUri.js';
 export { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
-export {
-  RESTRICTED_METHODS,
-  UNRESTRICTED_METHODS,
-  DEFAULT_RELAY_URL,
-} from './config.js';
+export { RESTRICTED_METHODS, UNRESTRICTED_METHODS, DEFAULT_RELAY_URL } from './config.js';
 
 // Convenience alias
 export { QRLConnectProvider as QRLConnect } from './QRLConnectProvider.js';

@@ -13,7 +13,13 @@
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint src/ --ext .ts",
+    "lint:fix": "eslint src/ --ext .ts --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "size": "size-limit",
+    "size:check": "size-limit --highlight-less"
   },
   "keywords": [
     "qrl",
@@ -37,10 +43,23 @@
   },
   "devDependencies": {
     "@types/node": "^25.3.3",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
+    "size-limit": "^11.0.0",
+    "@size-limit/file": "^11.0.0",
     "vitest": "^3.0.0"
   },
+  "size-limit": [
+    {
+      "path": "dist/index.mjs",
+      "limit": "50 kB"
+    }
+  ],
   "engines": {
     "node": ">=18"
   }

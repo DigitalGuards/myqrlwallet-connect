@@ -42,12 +42,16 @@ if (qrl.isMobile()) {
 }
 
 // Listen for connection
-qrl.on('connected', ({ chainId }) => {
+qrl.on('connect', ({ chainId }) => {
   console.log('Wallet connected on chain', chainId);
 });
 
 qrl.on('accountsChanged', (accounts) => {
   console.log('Connected accounts:', accounts);
+});
+
+qrl.on('statusChanged', (status) => {
+  console.log('Connection status:', status);
 });
 
 // Use as an EIP-1193 provider
@@ -97,7 +101,10 @@ The main class. Creates a connection manager and EIP-1193 provider.
 | `isConnected()` | Whether the wallet is connected |
 | `getAccounts()` | Get connected accounts |
 | `getStatus()` | Current connection status |
+| `hasStoredSession()` | Check if a reconnectable session exists in local storage |
+| `newConnection()` | Reset current pairing and generate a new channel/URI |
 | `disconnect()` | End the session |
+| `getChannelId()` | Get the current relay channel ID (useful for debugging) |
 
 ### Events
 
@@ -107,6 +114,19 @@ The main class. Creates a connection manager and EIP-1193 provider.
 | `disconnect` | `{ code, message }` | Wallet disconnected |
 | `accountsChanged` | `string[]` | Account list changed |
 | `chainChanged` | `string` | Chain switched |
+| `statusChanged` | `ConnectionStatus` | Intermediate lifecycle states (see values below) |
+| `connection_lost` | — | Emitted after 5 failed reconnection attempts |
+
+#### `ConnectionStatus` values
+
+| Value | Meaning |
+|-------|---------|
+| `disconnected` | No active connection |
+| `connecting` | Connecting to relay server |
+| `waiting` | QR displayed, waiting for wallet to scan |
+| `key_exchange` | ECIES key exchange in progress |
+| `connected` | Wallet connected, ready for requests |
+| `reconnecting` | Attempting to restore a previous session |
 
 ### Supported RPC methods
 
@@ -118,7 +138,14 @@ The main class. Creates a connection manager and EIP-1193 provider.
 
 ## Sessions
 
-Sessions persist in `localStorage` for 7 days. When a user returns to your dApp, the SDK automatically reconnects without requiring a new QR scan. Users can manually disconnect from the QRL Wallet app at any time.
+Sessions persist in `localStorage` for 7 days. When a user returns to your dApp, the SDK can automatically reconnect without requiring a new QR scan.
+
+Recommended lifecycle:
+
+- Use `hasStoredSession()` on page load to decide whether to show reconnect state/UI
+- Keep a single `QRLConnect` instance for the page lifetime
+- Use `newConnection()` when the user explicitly wants to pair a different wallet
+- Use `statusChanged` for UI state transitions instead of relying on internals
 
 ## How the relay works
 
@@ -139,6 +166,70 @@ const qrl = new QRLConnect({
   relayUrl: 'https://my-relay-server.com',
 });
 ```
+
+## Bundler setup
+
+The SDK depends on Node's `Buffer` via `eciesjs`. If you're using Vite, add the polyfill plugin:
+
+```bash
+npm install vite-plugin-node-polyfills
+```
+
+```js
+// vite.config.js
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
+
+export default defineConfig({
+  plugins: [
+    nodePolyfills({
+      include: ['buffer'],
+      globals: { Buffer: true },
+    }),
+  ],
+  define: { global: 'globalThis' },
+});
+```
+
+For webpack 5, add `buffer` to `resolve.fallback` and the `ProvidePlugin` for `Buffer`.
+
+## Development
+
+```bash
+# Build (CJS + ESM + .d.ts)
+npm run build
+
+# Watch mode (rebuilds on change)
+npm run dev
+
+# Type-check
+npm run typecheck
+
+# Unit tests (vitest)
+npm test
+
+# Lint
+npm run lint
+
+# E2E test (starts a local relay, simulates dApp + wallet handshake)
+node test-e2e.js
+```
+
+## Running the example dApp
+
+The `example/` directory contains a Vite test dApp with QR code generation, transaction sending, message signing, and read-only RPC calls.
+
+```bash
+# 1. Build the SDK first (the example links to it locally)
+npm run build
+
+# 2. Install example dependencies
+cd example && npm install
+
+# 3. Start the dev server (opens http://localhost:5174)
+npm run dev
+```
+
+The example connects to the production relay at `wss://qrlwallet.com/relay` by default. To use a local relay, start `myqrlwallet-backend` and change `RELAY_URL` in `example/main.js`.
 
 ## Security
 
