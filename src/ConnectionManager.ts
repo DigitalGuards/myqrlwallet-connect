@@ -27,6 +27,8 @@ import {
   MessageType,
 } from './types.js';
 
+const DAPP_PARTICIPANT_CONFLICT_ERROR_MSG = 'dapp participant is already connected';
+
 interface ConnectionManagerEvents {
   status_changed: (status: ConnectionStatus) => void;
   accounts_changed: (accounts: string[]) => void;
@@ -508,7 +510,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   private isDappParticipantConflictError(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
-    return msg.toLowerCase().includes('dapp participant is already connected');
+    return msg.toLowerCase().includes(DAPP_PARTICIPANT_CONFLICT_ERROR_MSG);
   }
 
   private areArraysEqual(a: string[], b: string[]): boolean {
