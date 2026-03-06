@@ -18,14 +18,12 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   private ecies: ECIESClient;
   private otherPublicKey: string | null = null;
   private keysExchanged = false;
+  private awaitingSynAck = false;
+  private awaitingAck = false;
   private step: KeyExchangeMessageType = KeyExchangeMessageType.SYN;
   private isOriginator: boolean;
 
-  constructor(
-    ecies: ECIESClient,
-    isOriginator: boolean,
-    otherPublicKey?: string
-  ) {
+  constructor(ecies: ECIESClient, isOriginator: boolean, otherPublicKey?: string) {
     super();
     this.ecies = ecies;
     this.isOriginator = isOriginator;
@@ -40,6 +38,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   /** Get the SYN message to start the handshake (originator/dApp side). */
   createSYN(): object {
     this.step = KeyExchangeMessageType.SYN;
+    this.awaitingSynAck = true;
     this.emit('step_change', this.step);
 
     return {
@@ -53,11 +52,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
    * Process an incoming key exchange message.
    * Returns a response message to send back, or null if handshake is complete.
    */
-  onMessage(message: {
-    type: KeyExchangeMessageType;
-    pubkey?: string;
-    v?: number;
-  }): object | null {
+  onMessage(message: { type: KeyExchangeMessageType; pubkey?: string; v?: number }): object | null {
     log('KeyExchange', `Received ${message.type}, isOriginator=${this.isOriginator}`);
 
     switch (message.type) {
@@ -73,6 +68,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
         }
 
         this.step = KeyExchangeMessageType.SYNACK;
+        this.awaitingAck = true;
         this.emit('step_change', this.step);
 
         // Respond with SYNACK containing wallet's public key
@@ -94,10 +90,21 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
           this.otherPublicKey = message.pubkey;
         }
 
+        if (!this.awaitingSynAck) {
+          // Duplicate/late SYNACK - re-send ACK but do not re-emit keys_exchanged.
+          return {
+            type: KeyExchangeMessageType.ACK,
+            v: PROTOCOL_VERSION,
+          };
+        }
+        this.awaitingSynAck = false;
+
         this.step = KeyExchangeMessageType.ACK;
-        this.keysExchanged = true;
+        if (!this.keysExchanged) {
+          this.keysExchanged = true;
+          this.emit('keys_exchanged');
+        }
         this.emit('step_change', this.step);
-        this.emit('keys_exchanged');
 
         // Send ACK to confirm
         return {
@@ -113,8 +120,16 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
           return null;
         }
 
-        this.keysExchanged = true;
-        this.emit('keys_exchanged');
+        if (!this.awaitingAck) {
+          // Duplicate/late ACK - ignore
+          return null;
+        }
+        this.awaitingAck = false;
+
+        if (!this.keysExchanged) {
+          this.keysExchanged = true;
+          this.emit('keys_exchanged');
+        }
         log('KeyExchange', 'Key exchange complete (wallet side)');
         return null;
       }
@@ -136,6 +151,16 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   /** Decrypt a message from the counterparty. */
   decryptMessage(encryptedBase64: string): string {
     return this.ecies.decrypt(encryptedBase64);
+  }
+
+  /** Reset key exchange state for a fresh handshake (e.g. new QR code). */
+  reset(): void {
+    this.otherPublicKey = null;
+    this.keysExchanged = false;
+    this.awaitingSynAck = false;
+    this.awaitingAck = false;
+    this.step = KeyExchangeMessageType.SYN;
+    log('KeyExchange', 'Reset for fresh handshake');
   }
 
   areKeysExchanged(): boolean {
