@@ -66,7 +66,7 @@ describe('KeyExchange', () => {
       walletKex.onMessage(ack as any);
 
       // dApp encrypts for wallet
-      const message = JSON.stringify({ method: 'zond_getBalance' });
+      const message = JSON.stringify({ method: 'qrl_getBalance' });
       const encrypted = dappKex.encryptMessage(message);
       const decrypted = walletKex.decryptMessage(encrypted);
       expect(decrypted).toBe(message);

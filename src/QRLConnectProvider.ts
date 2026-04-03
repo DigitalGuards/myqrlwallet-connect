@@ -90,9 +90,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     });
 
     this.connectionManager.on('wallet_info', (info) => {
-      // Resolve pending zond_requestAccounts if any
+      // Resolve pending qrl_requestAccounts if any
       for (const [id, pending] of this.pendingRequests) {
-        if (pending.method === 'zond_requestAccounts' || pending.method === 'zond_accounts') {
+        if (pending.method === 'qrl_requestAccounts' || pending.method === 'qrl_accounts') {
           pending.resolve(info.accounts);
           this.pendingRequests.delete(id);
         }
@@ -141,11 +141,11 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     const { method, params } = args;
 
     // Handle some methods locally
-    if (method === 'zond_chainId') {
+    if (method === 'qrl_chainId') {
       return this.connectionManager.getChainId();
     }
 
-    if (method === 'zond_accounts') {
+    if (method === 'qrl_accounts') {
       const accounts = this.connectionManager.getAccounts();
       if (accounts.length > 0) return accounts;
       // Fall through to request from wallet if no cached accounts

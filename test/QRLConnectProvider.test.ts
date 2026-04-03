@@ -77,24 +77,24 @@ describe('QRLConnectProvider', () => {
   });
 
   describe('request - local methods', () => {
-    it('should handle zond_chainId locally', async () => {
+    it('should handle qrl_chainId locally', async () => {
       mockCM.chainId = '0x1';
-      const result = await provider.request({ method: 'zond_chainId' });
+      const result = await provider.request({ method: 'qrl_chainId' });
       expect(result).toBe('0x1');
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
 
-    it('should return cached accounts for zond_accounts', async () => {
-      mockCM.accounts = ['Z1234', 'Z5678'];
-      const result = await provider.request({ method: 'zond_accounts' });
-      expect(result).toEqual(['Z1234', 'Z5678']);
+    it('should return cached accounts for qrl_accounts', async () => {
+      mockCM.accounts = ['Q1234', 'Q5678'];
+      const result = await provider.request({ method: 'qrl_accounts' });
+      expect(result).toEqual(['Q1234', 'Q5678']);
     });
   });
 
   describe('request - remote methods', () => {
     it('should throw when not connected', async () => {
       await expect(
-        provider.request({ method: 'zond_getBalance', params: ['Z1234', 'latest'] })
+        provider.request({ method: 'qrl_getBalance', params: ['Q1234', 'latest'] })
       ).rejects.toThrow('Not connected to QRL Wallet');
     });
 
@@ -108,15 +108,15 @@ describe('QRLConnectProvider', () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
       const requestPromise = provider.request({
-        method: 'zond_getBalance',
-        params: ['Z1234', 'latest'],
+        method: 'qrl_getBalance',
+        params: ['Q1234', 'latest'],
       });
 
       expect(mockCM.sendJsonRpc).toHaveBeenCalledWith(
         expect.objectContaining({
           jsonrpc: '2.0',
-          method: 'zond_getBalance',
-          params: ['Z1234', 'latest'],
+          method: 'qrl_getBalance',
+          params: ['Q1234', 'latest'],
         })
       );
 
@@ -136,8 +136,8 @@ describe('QRLConnectProvider', () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
       const requestPromise = provider.request({
-        method: 'zond_sendTransaction',
-        params: [{ to: 'Z1234', value: '0x0' }],
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1234', value: '0x0' }],
       });
 
       const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
@@ -175,8 +175,8 @@ describe('QRLConnectProvider', () => {
       const accountsSpy = vi.fn();
       provider.on('accountsChanged', accountsSpy);
 
-      mockCM.emit('accounts_changed', ['Z1111', 'Z2222']);
-      expect(accountsSpy).toHaveBeenCalledWith(['Z1111', 'Z2222']);
+      mockCM.emit('accounts_changed', ['Q1111', 'Q2222']);
+      expect(accountsSpy).toHaveBeenCalledWith(['Q1111', 'Q2222']);
     });
 
     it('should emit chainChanged', () => {
@@ -192,8 +192,8 @@ describe('QRLConnectProvider', () => {
     it('should reject all pending requests on connection lost', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
-      const promise1 = provider.request({ method: 'zond_getBalance', params: ['Z1', 'latest'] });
-      const promise2 = provider.request({ method: 'zond_blockNumber' });
+      const promise1 = provider.request({ method: 'qrl_getBalance', params: ['Q1', 'latest'] });
+      const promise2 = provider.request({ method: 'qrl_blockNumber' });
 
       mockCM.emit('connection_lost');
 
@@ -203,20 +203,20 @@ describe('QRLConnectProvider', () => {
   });
 
   describe('wallet_info', () => {
-    it('should resolve pending zond_requestAccounts', async () => {
+    it('should resolve pending qrl_requestAccounts', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
       const requestPromise = provider.request({
-        method: 'zond_requestAccounts',
+        method: 'qrl_requestAccounts',
       });
 
       mockCM.emit('wallet_info', {
-        accounts: ['Z1234abcd'],
+        accounts: ['Q1234abcd'],
         chainId: '0x0',
       });
 
       const result = await requestPromise;
-      expect(result).toEqual(['Z1234abcd']);
+      expect(result).toEqual(['Q1234abcd']);
     });
   });
 
@@ -224,7 +224,7 @@ describe('QRLConnectProvider', () => {
     it('should reject pending requests and delegate to ConnectionManager', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
-      const promise = provider.request({ method: 'zond_blockNumber' });
+      const promise = provider.request({ method: 'qrl_blockNumber' });
 
       provider.disconnect();
 
