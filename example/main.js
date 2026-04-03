@@ -264,7 +264,7 @@ btnSend.addEventListener('click', async () => {
 
   try {
     const txHash = await qrl.request({
-      method: 'zond_sendTransaction',
+      method: 'qrl_sendTransaction',
       params: [{
         from: connectedAccount,
         to,
@@ -319,7 +319,7 @@ btnRpc.addEventListener('click', async () => {
   const method = $('rpc-method').value;
   let params = undefined;
 
-  if (method === 'zond_getBalance' && connectedAccount) {
+  if (method === 'qrl_getBalance' && connectedAccount) {
     params = [connectedAccount, 'latest'];
   }
 
