@@ -13,25 +13,25 @@ import {
 describe('config', () => {
   describe('RESTRICTED_METHODS', () => {
     it('should contain account request methods', () => {
-      expect(RESTRICTED_METHODS.has('zond_requestAccounts')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_requestAccounts')).toBe(true);
     });
 
     it('should contain transaction signing methods', () => {
-      expect(RESTRICTED_METHODS.has('zond_sendTransaction')).toBe(true);
-      expect(RESTRICTED_METHODS.has('zond_signTransaction')).toBe(true);
-      expect(RESTRICTED_METHODS.has('zond_sign')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_sendTransaction')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_signTransaction')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_sign')).toBe(true);
       expect(RESTRICTED_METHODS.has('personal_sign')).toBe(true);
     });
 
     it('should contain typed data signing methods', () => {
-      expect(RESTRICTED_METHODS.has('zond_signTypedData')).toBe(true);
-      expect(RESTRICTED_METHODS.has('zond_signTypedData_v3')).toBe(true);
-      expect(RESTRICTED_METHODS.has('zond_signTypedData_v4')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_signTypedData')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_signTypedData_v3')).toBe(true);
+      expect(RESTRICTED_METHODS.has('qrl_signTypedData_v4')).toBe(true);
     });
 
     it('should contain chain management methods', () => {
-      expect(RESTRICTED_METHODS.has('wallet_addZondChain')).toBe(true);
-      expect(RESTRICTED_METHODS.has('wallet_switchZondChain')).toBe(true);
+      expect(RESTRICTED_METHODS.has('wallet_addQrlChain')).toBe(true);
+      expect(RESTRICTED_METHODS.has('wallet_switchQrlChain')).toBe(true);
     });
 
     it('should have exactly 10 restricted methods', () => {
@@ -41,16 +41,16 @@ describe('config', () => {
 
   describe('UNRESTRICTED_METHODS', () => {
     it('should contain read-only query methods', () => {
-      expect(UNRESTRICTED_METHODS.has('zond_chainId')).toBe(true);
-      expect(UNRESTRICTED_METHODS.has('zond_blockNumber')).toBe(true);
-      expect(UNRESTRICTED_METHODS.has('zond_getBalance')).toBe(true);
-      expect(UNRESTRICTED_METHODS.has('zond_call')).toBe(true);
-      expect(UNRESTRICTED_METHODS.has('zond_estimateGas')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_chainId')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_blockNumber')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_getBalance')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_call')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_estimateGas')).toBe(true);
     });
 
     it('should contain transaction query methods', () => {
-      expect(UNRESTRICTED_METHODS.has('zond_getTransactionByHash')).toBe(true);
-      expect(UNRESTRICTED_METHODS.has('zond_getTransactionReceipt')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_getTransactionByHash')).toBe(true);
+      expect(UNRESTRICTED_METHODS.has('qrl_getTransactionReceipt')).toBe(true);
     });
 
     it('should contain network info methods', () => {

@@ -180,16 +180,16 @@ async function run() {
     if (decrypted2 !== testPlain2) throw new Error(`Decryption mismatch: got "${decrypted2}"`);
     console.log('   wallet→dApp encryption verified');
 
-    // ── Step 6: dApp sends encrypted zond_sendTransaction request ──
-    console.log('6. dApp sending encrypted zond_sendTransaction...');
+    // ── Step 6: dApp sends encrypted qrl_sendTransaction request ──
+    console.log('6. dApp sending encrypted qrl_sendTransaction...');
     const jsonRpcRequest = {
       type: 'jsonrpc',
       jsonrpc: '2.0',
       id: 1,
-      method: 'zond_sendTransaction',
+      method: 'qrl_sendTransaction',
       params: [{
-        from: 'Z208318ecd68f26726CE7C54b29CaBA94584969B6',
-        to: 'Z20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+        from: 'Q208318ecd68f26726CE7C54b29CaBA94584969B6',
+        to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
         value: '0x2386F26FC10000',
       }],
     };
@@ -213,10 +213,10 @@ async function run() {
     console.log(`   Wallet decrypted: method=${decryptedRpc.method}, id=${decryptedRpc.id}`);
     console.log(`   Params: from=${decryptedRpc.params[0].from}, to=${decryptedRpc.params[0].to}, value=${decryptedRpc.params[0].value}`);
 
-    if (decryptedRpc.method !== 'zond_sendTransaction') {
+    if (decryptedRpc.method !== 'qrl_sendTransaction') {
       throw new Error(`Wrong method: ${decryptedRpc.method}`);
     }
-    if (decryptedRpc.params[0].from !== 'Z208318ecd68f26726CE7C54b29CaBA94584969B6') {
+    if (decryptedRpc.params[0].from !== 'Q208318ecd68f26726CE7C54b29CaBA94584969B6') {
       throw new Error('From address mismatch');
     }
 
@@ -260,7 +260,7 @@ async function run() {
     console.log('   - Relay server: routing messages between dApp ↔ wallet');
     console.log('   - ECIES key exchange: 3-step SYN/SYNACK/ACK completed');
     console.log('   - Encryption: bidirectional encrypt/decrypt verified');
-    console.log('   - JSON-RPC: zond_sendTransaction request/response round-trip');
+    console.log('   - JSON-RPC: qrl_sendTransaction request/response round-trip');
 
   } catch (err) {
     console.error('\n❌ E2E TEST FAILED:', err.message);

@@ -116,9 +116,9 @@ qrlwallet-connect/
 
 ## Supported RPC Methods
 
-**Restricted** (require wallet approval): `zond_requestAccounts`, `zond_sendTransaction`, `zond_signTransaction`, `zond_sign`, `personal_sign`, `zond_signTypedData`, `zond_signTypedData_v3`, `zond_signTypedData_v4`, `wallet_addZondChain`, `wallet_switchZondChain`
+**Restricted** (require wallet approval): `qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_sign`, `personal_sign`, `qrl_signTypedData`, `qrl_signTypedData_v3`, `qrl_signTypedData_v4`, `wallet_addQrlChain`, `wallet_switchQrlChain`
 
-**Unrestricted** (auto-proxied, no approval): `zond_chainId`, `zond_blockNumber`, `zond_getBalance`, `zond_call`, `zond_estimateGas`, `zond_gasPrice`, `zond_getTransactionByHash`, `zond_getTransactionReceipt`, and 25+ more — see `src/config.ts` for the full list.
+**Unrestricted** (auto-proxied, no approval): `qrl_chainId`, `qrl_blockNumber`, `qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_gasPrice`, `qrl_getTransactionByHash`, `qrl_getTransactionReceipt`, and 25+ more — see `src/config.ts` for the full list.
 
 Full request/response examples are documented in `docs/JSON-RPC-REFERENCE.md`.
 
