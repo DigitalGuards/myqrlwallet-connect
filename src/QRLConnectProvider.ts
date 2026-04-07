@@ -90,7 +90,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     });
 
     this.connectionManager.on('wallet_info', (info) => {
-      // Resolve pending qrl_requestAccounts if any
+      // Resolve pending qrl_requestAccounts or qrl_accounts if any
       for (const [id, pending] of this.pendingRequests) {
         if (pending.method === 'qrl_requestAccounts' || pending.method === 'qrl_accounts') {
           pending.resolve(info.accounts);
