@@ -1,6 +1,6 @@
 # QRL JSON-RPC Reference
 
-Complete request/response examples for every method supported by `@qrlwallet/connect`. Based on the [Zond Web3 Wallet dApp Example](https://github.com/cyyber/zond-web3-wallet-dapp-example).
+Complete request/response examples for every method supported by `@qrlwallet/connect`. Based on the [QRL Web3 Wallet dApp Example](https://github.com/cyyber/zond-web3-wallet-dapp-example).
 
 All examples use the EIP-1193 `provider.request()` interface, which is the same whether you're using the browser extension or QRL Connect:
 
@@ -299,7 +299,7 @@ const feeHistory = await provider.request({
 
 ```typescript
 const version = await provider.request({ method: "web3_clientVersion", params: [] });
-// => "Gzond/v0.2.1-stable-c50ef86d/linux-amd64/go1.22.12"
+// => "Gqrl/v0.2.1-stable/linux-amd64/go1.22.12"
 ```
 
 ### qrl_syncing

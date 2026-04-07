@@ -25,7 +25,7 @@ import { QRLConnect } from '@qrlwallet/connect';
 
 const qrl = new QRLConnect({
   dappMetadata: {
-    name: 'My Zond dApp',
+    name: 'My QRL dApp',
     url: 'https://mydapp.com',
   },
 });
@@ -80,7 +80,7 @@ const qrl = new QRLConnect({
 
   // Optional
   relayUrl: 'https://qrlwallet.com',  // default relay
-  chainId: '0x0',                      // Zond chain ID
+  chainId: '0x0',                      // QRL chain ID
   autoReconnect: true,                 // reconnect on page load (default: true)
   debug: false,                        // console logging
 });

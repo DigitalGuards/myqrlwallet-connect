@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-QRL Connect (`@qrlwallet/connect`) is a self-hosted, end-to-end encrypted dApp-to-mobile-wallet protocol for the Zond network — the Quantum Resistant Ledger's EVM-compatible chain. It lets any Zond dApp show a QR code or deep link that users scan with the MyQRLWallet mobile app to connect their wallet, approve transactions, and sign messages remotely.
+QRL Connect (`@qrlwallet/connect`) is a self-hosted, end-to-end encrypted dApp-to-mobile-wallet protocol for the QRL network — the Quantum Resistant Ledger's EVM-compatible chain. It lets any QRL dApp show a QR code or deep link that users scan with the MyQRLWallet mobile app to connect their wallet, approve transactions, and sign messages remotely.
 
-We built this instead of using WalletConnect because WalletConnect v2 requires Reown cloud infrastructure and third-party wallets that can't handle Z-addresses. Since we control both the dApp SDK and the wallet, a custom self-hosted protocol gives us full control over the transport layer — which matters for the post-quantum migration on the roadmap.
+We built this instead of using WalletConnect because WalletConnect v2 requires Reown cloud infrastructure and third-party wallets that can't handle Q-addresses. Since we control both the dApp SDK and the wallet, a custom self-hosted protocol gives us full control over the transport layer — which matters for the post-quantum migration on the roadmap.
 
 ## Architecture & Flow
 
@@ -61,7 +61,7 @@ After key exchange, all JSON-RPC messages are encrypted with the counterparty's 
 
 All approval UI, transaction signing, and ECIES encryption happen inside the React Native WebView (not native code). This keeps seeds and private keys entirely within the WebView JavaScript context — they never cross the native bridge. The native app's role is minimal: QR scanning, receiving `qrlconnect://` deep links, and switching to the WebView tab when an approval modal needs to appear.
 
-Relevant wallet-side code lives in `myqrlwallet-frontend/src/services/dappConnect/` and `myqrlwallet-frontend/src/components/ZondWallet/Body/DAppConnect/`.
+Relevant wallet-side code lives in `myqrlwallet-frontend/src/services/dappConnect/` and `myqrlwallet-frontend/src/components/Core/Body/DAppConnect/`.
 
 ## Essential Commands
 
@@ -108,7 +108,7 @@ qrlwallet-connect/
 │   ├── main.js
 │   └── vite.config.js
 ├── docs/
-│   └── JSON-RPC-REFERENCE.md   # All supported Zond RPC methods with examples
+│   └── JSON-RPC-REFERENCE.md   # All supported QRL RPC methods with examples
 ├── test-e2e.js                 # Headless E2E transport test
 ├── package.json
 └── tsconfig.json
@@ -143,4 +143,4 @@ The QRL ecosystem already has `@theqrl/mldsa87` and related libraries for post-q
 3. Add ML-DSA signatures to handshake messages for mutual authentication
 4. Bump `PROTOCOL_VERSION` to 2 and handle version negotiation for backward compatibility
 
-This aligns QRL Connect's transport security with the same post-quantum guarantees that the Zond network itself provides at the consensus layer.
+This aligns QRL Connect's transport security with the same post-quantum guarantees that the QRL network itself provides at the consensus layer.
