@@ -55,10 +55,10 @@ qrl.on('statusChanged', (status) => {
 });
 
 // Use as an EIP-1193 provider
-const accounts = await qrl.request({ method: 'zond_requestAccounts' });
+const accounts = await qrl.request({ method: 'qrl_requestAccounts' });
 
 const txHash = await qrl.request({
-  method: 'zond_sendTransaction',
+  method: 'qrl_sendTransaction',
   params: [{
     from: accounts[0],
     to: '0x...',
@@ -131,10 +131,10 @@ The main class. Creates a connection manager and EIP-1193 provider.
 ### Supported RPC methods
 
 **Require user approval:**
-`zond_requestAccounts`, `zond_sendTransaction`, `zond_signTransaction`, `zond_sign`, `personal_sign`, `zond_signTypedData_v4`, `wallet_addZondChain`, `wallet_switchZondChain`
+`qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_sign`, `personal_sign`, `qrl_signTypedData_v4`, `wallet_addQrlChain`, `wallet_switchQrlChain`
 
 **Auto-proxied (no approval needed):**
-`zond_getBalance`, `zond_call`, `zond_estimateGas`, `zond_blockNumber`, `zond_chainId`, `zond_getTransactionReceipt`, and 30+ more read-only methods.
+`qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_blockNumber`, `qrl_chainId`, `qrl_getTransactionReceipt`, and 30+ more read-only methods.
 
 ## Sessions
 

@@ -61,8 +61,8 @@ describe('ECIESClient', () => {
       const payload = JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
-        method: 'zond_getBalance',
-        params: ['Z1234567890abcdef', 'latest'],
+        method: 'qrl_getBalance',
+        params: ['Q1234567890abcdef', 'latest'],
       });
 
       const encrypted = alice.encrypt(payload, bob.getPublicKey());
