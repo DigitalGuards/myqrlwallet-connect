@@ -7,20 +7,22 @@ A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also th
 `@qrlwallet/connect` is a self-hosted, end-to-end encrypted protocol that lets any QRL dApp pair with the MyQRLWallet mobile app — similar in spirit to WalletConnect, but built specifically for the Quantum Resistant Ledger so it can handle Q-addresses and migrate to post-quantum cryptography on our own timeline.
 
 ```
-┌─────────────────────┐                  ┌──────────────────────────┐
-│  External dApp      │    Socket.IO     │  MyQRLWallet App         │
-│                     │    (E2E          │  ┌──────────────────┐   │
-│  @qrlwallet/connect │    encrypted)    │  │ Native: QR scan  │   │
-│  - QR code / deep   │ <=============> │  │ + deep links     │   │
-│    link generation  │                  │  └────────┬─────────┘   │
-│  - EIP-1193 provider│                  │           │ bridge       │
-└─────────────────────┘                  │  ┌────────▼─────────┐   │
-           │                             │  │ WebView: Socket   │   │
-   ┌───────▼───────┐                     │  │ client, ECIES,    │   │
-   │ Relay Server   │                    │  │ signing, approval │   │
-   │ (qrlwallet.com)│                    │  │ UI, sessions      │   │
-   │ Socket.IO rooms│                    │  └──────────────────┘   │
-   └────────────────┘                    └──────────────────────────┘
+┌─────────────────────┐                        ┌──────────────────────────┐
+│  External dApp      │                        │  MyQRLWallet App         │
+│                     │                        │  ┌──────────────────┐    │
+│  @qrlwallet/connect │                        │  │ Native: QR scan  │    │
+│  - QR / deep link   │                        │  │ + deep links     │    │
+│  - EIP-1193 provider│                        │  └────────┬─────────┘    │
+└──────────┬──────────┘                        │           │ bridge       │
+           │                                   │  ┌────────▼─────────┐    │
+           │ Socket.IO                         │  │ WebView: Socket  │    │
+           │ (E2E encrypted ciphertext)        │  │ client, ECIES,   │    │
+           ▼                                   │  │ signing, approval│    │
+      ┌─────────────┐    Socket.IO             │  │ UI, sessions     │    │
+      │ Relay Server│<===========================│                  │    │
+      │(qrlwallet.  │                          │  └──────────────────┘    │
+      │   com)      │                          │                          │
+      └─────────────┘                          └──────────────────────────┘
 ```
 
 - **SDK (`@qrlwallet/connect`)** — the npm package your dApp installs. Generates `qrlconnect://` URIs, runs the ECIES key exchange, and exposes an EIP-1193 `provider.request()` interface so your dApp talks to it like a browser-extension wallet.
@@ -36,7 +38,7 @@ Full architectural details, RPC method list, and session/reconnect behavior live
 - Lets you call `qrl_sendTransaction`, `personal_sign`, and a selection of read-only RPC methods
 - Streams every inbound/outbound event to an on-page log so you can see the protocol in action
 
-The relay URL defaults to `https://qrlwallet.com` (production). When served from `localhost` it swaps to `http://localhost:3000` so it works against a local backend — see `RELAY_URL` in `main.js`.
+The relay URL is hardcoded to `https://qrlwallet.com` (production) via the `RELAY_URL` constant at the top of `main.js`. For local development against a backend on `http://localhost:3000`, edit that constant before running `npm run dev`.
 
 ## Running it locally
 
