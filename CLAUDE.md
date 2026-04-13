@@ -63,6 +63,14 @@ All approval UI, transaction signing, and ECIES encryption happen inside the Rea
 
 Relevant wallet-side code lives in `myqrlwallet-frontend/src/services/dappConnect/` and `myqrlwallet-frontend/src/components/Core/Body/DAppConnect/`.
 
+### Hosted Example (`zondscan.com/dapp-example`)
+
+The `example/` directory is not just a local test harness — it's also publicly hosted as a live demo on ZondScan. Any change you merge here under `example/` will appear on `zondscan.com/dapp-example` the next time that explorer redeploys (its `prebuild` hook clones this repo, builds the example, and stages `dist/` into its `public/dapp-example/`). Treat copy, styling, and behavior in `example/` as user-facing.
+
+**Build-time quirk worth remembering:** `vite-plugin-node-polyfills` must be listed in the SDK's root `devDependencies` (not just `example/package.json`). When the example is built, Vite processes `eciesjs` from the SDK's hoisted `node_modules` and injects `import 'vite-plugin-node-polyfills/shims/buffer'` into it; Node's resolution walks up from `eciesjs/` and fails unless the plugin is hoisted to the SDK root. If someone "cleans up" that devDep thinking it's unused, `example/npm run build` will break with `Rollup failed to resolve "vite-plugin-node-polyfills/shims/buffer"`.
+
+`RELAY_URL` in `example/main.js` is hardcoded to `https://qrlwallet.com` so the hosted example works out of the box. Edit the constant when running locally against a dev backend.
+
 ## Essential Commands
 
 ```bash
@@ -103,7 +111,7 @@ qrlwallet-connect/
 │       ├── platform.ts         # Mobile detection
 │       └── logger.ts           # Debug logging
 ├── dist/                       # Built output (tsup)
-├── example/                    # Vite test dApp
+├── example/                    # Vite test dApp (also hosted at zondscan.com/dapp-example)
 │   ├── index.html
 │   ├── main.js
 │   └── vite.config.js
