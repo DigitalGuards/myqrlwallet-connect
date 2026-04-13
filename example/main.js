@@ -100,19 +100,19 @@ qrl.on('disconnect', async ({ code, message }) => {
   updateStatus(ConnectionStatus.DISCONNECTED);
 
   if (userDisconnected) {
-    // User clicked Disconnect — show clean state
+    // User clicked Disconnect, show clean state
     userDisconnected = false;
     showDisconnectedUI();
     return;
   }
 
-  // Wallet-initiated disconnect — auto-regenerate QR so user can reconnect
+  // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect
   showDisconnectedUI();
   log('Regenerating QR code for reconnection...', 'info');
   try {
     const uri = await qrl.getConnectionURI();
     await showQR(uri);
-    log(`QR ready — scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
+    log(`QR ready. Scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
     updateStatus(ConnectionStatus.WAITING);
   } catch (err) {
     log(`Failed to regenerate QR: ${err.message}`, 'error');
