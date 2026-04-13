@@ -50,6 +50,7 @@
     "prettier": "^3.4.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
+    "vite-plugin-node-polyfills": "^0.25.0",
     "size-limit": "^11.0.0",
     "@size-limit/file": "^11.0.0",
     "vitest": "^3.0.0"
