@@ -218,6 +218,8 @@ node test-e2e.js
 
 The `example/` directory contains a Vite test dApp with QR code generation, transaction sending, message signing, and read-only RPC calls.
 
+> **Want to try it without any setup?** The same example is hosted live at [zondscan.com/dapp-example](https://zondscan.com/dapp-example) — it pairs with the production relay and MyQRLWallet mobile app out of the box.
+
 ```bash
 # 1. Build the SDK first (the example links to it locally)
 npm run build
