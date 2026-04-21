@@ -1,12 +1,16 @@
 /**
- * Connection Manager - Orchestrates socket connection, key exchange,
- * and encrypted message routing. Manages session persistence and reconnection.
+ * Connection Manager — orchestrates socket lifecycle, the post-quantum
+ * handshake, encrypted message routing, and session persistence for the
+ * dApp side of QRL Connect v2.
  */
 
 import EventEmitter from 'eventemitter3';
 import { v4 as uuidv4 } from 'uuid';
-import { ECIESClient } from './ECIESClient.js';
-import { KeyExchange } from './KeyExchange.js';
+import {
+  KeyExchange,
+  type AckMessage,
+  type SynAckMessage,
+} from './KeyExchange.js';
 import { SocketClient } from './SocketClient.js';
 import {
   DEFAULT_RELAY_URL,
@@ -14,7 +18,10 @@ import {
   SESSION_TTL_MS,
   WALLET_UNRESPONSIVE_MS,
 } from './config.js';
-import { generateConnectionURI } from './utils/qrUri.js';
+import {
+  cidFromString,
+  generateConnectionURI,
+} from './utils/qrUri.js';
 import { log, warn, error as logError } from './utils/logger.js';
 import {
   type DAppMetadata,
@@ -41,8 +48,7 @@ interface ConnectionManagerEvents {
 
 export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private socketClient: SocketClient;
-  private ecies: ECIESClient;
-  private keyExchange: KeyExchange;
+  private keyExchange: KeyExchange | null = null;
   private status: ConnectionStatus = ConnectionStatus.DISCONNECTED;
   private channelId: string;
   private dappMetadata: DAppMetadata;
@@ -51,14 +57,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private connectedAccounts: string[] = [];
   private storageKey: string;
   private unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
-  private synRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private failedReconnects = 0;
-  private synSent = false;
-  private synAttempts = 0;
   private walletPresent = false;
+  private pendingRestore: DAppSession | null = null;
+  private messageQueue: Promise<void> = Promise.resolve();
   private static MAX_RECONNECT_FAILURES = 5;
-  private static SYN_RETRY_MS = 5000;
-  private static MAX_SYN_ATTEMPTS = 6;
 
   constructor(options: {
     dappMetadata: DAppMetadata;
@@ -69,66 +72,53 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     super();
     this.dappMetadata = options.dappMetadata;
     this.relayUrl = options.relayUrl || DEFAULT_RELAY_URL;
-    this.chainId = options.chainId || '0x0'; // Default Zond chain
+    this.chainId = options.chainId || '0x0';
     this.storageKey = options.storageKey || `${STORAGE_KEY_PREFIX}:session`;
 
-    // Try to restore existing session
-    const session = this.loadSession();
-
-    if (session) {
-      this.channelId = session.channelId;
-      this.ecies = new ECIESClient(session.privateKey);
-      this.keyExchange = new KeyExchange(
-        this.ecies,
-        true, // dApp is always originator
-        session.otherPublicKey || undefined
-      );
-      this.connectedAccounts = session.connectedAccounts;
-      log('ConnectionManager', `Restored session for channel ${this.channelId}`);
+    const stored = this.readStoredSession();
+    if (stored) {
+      this.channelId = stored.channelId;
+      this.connectedAccounts = stored.connectedAccounts;
+      this.chainId = stored.chainId;
+      this.dappMetadata = stored.dappMetadata;
+      this.pendingRestore = stored;
+      log('ConnectionManager', `Found persisted session for channel ${this.channelId}`);
     } else {
       this.channelId = uuidv4();
-      this.ecies = new ECIESClient();
-      this.keyExchange = new KeyExchange(this.ecies, true);
     }
 
     this.socketClient = new SocketClient(this.relayUrl, 'dapp');
     this.setupSocketListeners();
-    this.setupKeyExchangeListeners();
   }
+
+  // ── Setup ──────────────────────────────────────────────────
 
   private setupSocketListeners(): void {
     this.socketClient.on('connected', () => {
       if (this.status === ConnectionStatus.RECONNECTING) {
         this.failedReconnects = 0;
-        log('ConnectionManager', 'Reconnected to relay');
       }
     });
 
     this.socketClient.on('reconnected', () => {
-      // Restored keys alone don't prove wallet presence.
-      // Require wallet presence before transitioning to CONNECTED.
-      if (this.keyExchange.areKeysExchanged()) {
+      if (this.keyExchange?.areKeysExchanged()) {
         if (this.walletPresent) {
           this.setStatus(ConnectionStatus.CONNECTED);
           this.failedReconnects = 0;
         } else {
           this.setStatus(ConnectionStatus.WAITING);
         }
-        this.synAttempts = 0;
-        this.clearSynRetryTimer();
       } else {
-        this.sendSYN();
+        // Handshake not yet complete; simply wait for wallet SYNACK.
+        this.setStatus(ConnectionStatus.WAITING);
       }
     });
 
-    this.socketClient.on('disconnected', (_reason) => {
+    this.socketClient.on('disconnected', () => {
       this.walletPresent = false;
-      this.synSent = false;
-      this.clearSynRetryTimer();
       if (this.status === ConnectionStatus.CONNECTED) {
         this.setStatus(ConnectionStatus.RECONNECTING);
         this.failedReconnects++;
-
         if (this.failedReconnects >= ConnectionManager.MAX_RECONNECT_FAILURES) {
           this.emit('connection_lost');
         }
@@ -136,7 +126,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     });
 
     this.socketClient.on('message', (data: RelayMessage) => {
-      this.handleRelayMessage(data);
+      this.enqueueRelayMessage(data);
     });
 
     this.socketClient.on('error', (err) => {
@@ -148,24 +138,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
         this.clearUnresponsiveTimer();
-        if (this.keyExchange.areKeysExchanged()) {
+        if (this.keyExchange?.areKeysExchanged()) {
           this.failedReconnects = 0;
           this.setStatus(ConnectionStatus.CONNECTED);
-        } else if (!this.synSent) {
-          this.sendSYN();
         }
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
         if (data.clientType === 'wallet' || !data.clientType) {
           this.walletPresent = false;
-          if (!this.keyExchange.areKeysExchanged()) {
-            this.synSent = false;
-            this.clearSynRetryTimer();
-          } else if (
-            this.status === ConnectionStatus.CONNECTED ||
-            this.status === ConnectionStatus.RECONNECTING
+          if (
+            this.keyExchange?.areKeysExchanged() &&
+            (this.status === ConnectionStatus.CONNECTED ||
+              this.status === ConnectionStatus.RECONNECTING)
           ) {
-            // Wallet left while socket is still alive; no longer connected.
             this.setStatus(ConnectionStatus.WAITING);
           }
           log('ConnectionManager', 'Wallet left channel');
@@ -175,17 +160,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   private setupKeyExchangeListeners(): void {
+    if (!this.keyExchange) return;
     this.keyExchange.on('keys_exchanged', () => {
       log('ConnectionManager', 'Key exchange complete');
       this.setStatus(ConnectionStatus.CONNECTED);
       this.walletPresent = true;
-      this.synSent = false;
-      this.synAttempts = 0;
-      this.clearSynRetryTimer();
-      this.saveSession();
-
-      // Send originator info
-      this.sendEncrypted({
+      this.failedReconnects = 0;
+      void this.persistSession();
+      void this.sendEncrypted({
         type: MessageType.ORIGINATOR_INFO,
         originatorInfo: {
           ...this.dappMetadata,
@@ -195,23 +177,29 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     });
   }
 
+  // ── Public API ─────────────────────────────────────────────
+
   /**
-   * Generate the connection URI and start listening for wallet connection.
+   * Generate a new v2 connection URI. Rotates channel id and keypair.
+   * Returns a `qrlconnect://?q=…` URI safe for QR-rendering or deep-link.
    */
   async getConnectionURI(retryOnConflict = true): Promise<string> {
     this.setStatus(ConnectionStatus.CONNECTING);
-
-    // Reset key exchange — generating a new QR means we expect a fresh
-    // handshake (the wallet will have new keys).
-    this.keyExchange.reset();
+    this.pendingRestore = null;
     this.walletPresent = false;
-    this.synSent = false;
-    this.synAttempts = 0;
-    this.clearSynRetryTimer();
 
-    // Connect to relay and join channel.
-    // SYN is sent automatically by the reconnected handler once the
-    // socket is actually connected — no need to send it here.
+    if (this.keyExchange) {
+      this.keyExchange.reset();
+    } else {
+      this.keyExchange = new KeyExchange(true);
+      this.setupKeyExchangeListeners();
+    }
+    const pk = this.keyExchange.initiate();
+
+    // Always rotate the channel id on fresh QR generation so that relay
+    // buffers and participant lists from a prior pairing cannot leak in.
+    this.channelId = uuidv4();
+
     this.socketClient.connect();
     try {
       await this.socketClient.joinChannel(this.channelId);
@@ -221,7 +209,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
           'ConnectionManager',
           'Channel already has an active dApp participant. Rotating to a fresh channel.'
         );
-        this.resetForNewChannel();
+        this.channelId = uuidv4();
         return this.getConnectionURI(false);
       }
       this.setStatus(ConnectionStatus.DISCONNECTED);
@@ -230,50 +218,46 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     this.setStatus(ConnectionStatus.WAITING);
 
-    const uri = generateConnectionURI({
-      channelId: this.channelId,
-      pubKey: this.ecies.getPublicKey(),
-      name: this.dappMetadata.name,
-      url: this.dappMetadata.url,
-      icon: this.dappMetadata.icon,
-      chainId: this.chainId,
-      relayUrl: this.relayUrl,
-    });
-
-    log('ConnectionManager', `Generated connection URI for channel ${this.channelId}`);
+    const uri = await generateConnectionURI(cidFromString(this.channelId), pk);
+    log('ConnectionManager', `Generated v2 connection URI for channel ${this.channelId}`);
     return uri;
   }
 
   /**
    * Reconnect to an existing session.
+   * Returns false if there is nothing to restore.
    */
   async reconnect(): Promise<boolean> {
-    const session = this.loadSession();
-    if (!session) return false;
+    if (!this.pendingRestore) return false;
 
     this.setStatus(ConnectionStatus.RECONNECTING);
     this.walletPresent = false;
-    this.synSent = false;
-    this.synAttempts = 0;
-    this.clearSynRetryTimer();
-    this.socketClient.connect();
 
     try {
+      const session = await KeyExchange.sessionFromPersisted(this.pendingRestore.keyExchange);
+      this.keyExchange = new KeyExchange(true, session);
+      this.setupKeyExchangeListeners();
+    } catch (err) {
+      logError('ConnectionManager', 'Failed to hydrate persisted session:', err);
+      this.clearSession();
+      this.pendingRestore = null;
+      this.setStatus(ConnectionStatus.DISCONNECTED);
+      return false;
+    }
+
+    this.socketClient.connect();
+    try {
       const { bufferedMessages } = await this.socketClient.joinChannel(this.channelId);
-
-      // Process buffered messages
       for (const msg of bufferedMessages) {
-        this.handleRelayMessage(msg as RelayMessage);
+        this.enqueueRelayMessage(msg as RelayMessage);
       }
+      await this.messageQueue;
 
-      if (this.keyExchange.areKeysExchanged() && this.walletPresent) {
-        this.setStatus(ConnectionStatus.CONNECTED);
-      } else if (this.keyExchange.areKeysExchanged()) {
-        this.setStatus(ConnectionStatus.WAITING);
+      if (this.keyExchange?.areKeysExchanged()) {
+        this.setStatus(this.walletPresent ? ConnectionStatus.CONNECTED : ConnectionStatus.WAITING);
       } else {
-        this.sendSYN();
+        this.setStatus(ConnectionStatus.WAITING);
       }
-
       return true;
     } catch (err) {
       logError('ConnectionManager', 'Reconnect failed:', err);
@@ -283,32 +267,107 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   /**
-   * Send a JSON-RPC request to the wallet.
+   * Send a JSON-RPC request to the wallet (async, fire-and-forget).
    */
   sendJsonRpc(request: JsonRpcRequest): void {
-    if (!this.keyExchange.areKeysExchanged()) {
+    if (!this.keyExchange?.areKeysExchanged()) {
       throw new Error('Not connected: key exchange not complete');
     }
-
     this.sendEncrypted({
       type: MessageType.JSONRPC,
       jsonrpc: '2.0',
       id: request.id,
       method: request.method,
       params: request.params,
+    }).catch((err) => {
+      logError('ConnectionManager', 'Failed to send JSON-RPC:', err);
     });
-
-    // Start unresponsive timer
     this.startUnresponsiveTimer();
   }
 
+  getStatus(): ConnectionStatus {
+    return this.status;
+  }
+  getAccounts(): string[] {
+    return this.connectedAccounts;
+  }
+  getChainId(): string {
+    return this.chainId;
+  }
+  getChannelId(): string {
+    return this.channelId;
+  }
+
+  /** Check (sync) if a persisted session exists and has not expired. */
+  hasStoredSession(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+      const raw = localStorage.getItem(this.storageKey);
+      if (!raw) return false;
+      const session = JSON.parse(raw) as DAppSession;
+      if (session.version !== 2) return false;
+      return Date.now() - session.createdAt <= SESSION_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Handle an incoming relay message.
+   * Reset to a fresh channel + keypair. Sends TERMINATE to any live peer,
+   * drops the persisted session, and prepares a clean state for
+   * getConnectionURI() to be called again.
    */
-  private handleRelayMessage(data: RelayMessage): void {
+  resetForNewChannel(): void {
+    this.clearUnresponsiveTimer();
+    this.walletPresent = false;
+
+    if (this.keyExchange?.areKeysExchanged()) {
+      this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {
+        // best-effort
+      });
+    }
+
+    this.socketClient.leaveChannel();
+    this.socketClient.disconnect();
+    this.clearSession();
+    this.connectedAccounts = [];
+    this.pendingRestore = null;
+    this.channelId = uuidv4();
+    this.keyExchange = null;
+
+    this.socketClient = new SocketClient(this.relayUrl, 'dapp');
+    this.setupSocketListeners();
+
+    this.setStatus(ConnectionStatus.DISCONNECTED);
+  }
+
+  disconnect(): void {
+    this.clearUnresponsiveTimer();
+    this.walletPresent = false;
+
+    if (this.keyExchange?.areKeysExchanged()) {
+      this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {
+        // best-effort
+      });
+    }
+
+    this.socketClient.leaveChannel();
+    this.socketClient.disconnect();
+    this.setStatus(ConnectionStatus.DISCONNECTED);
+    this.clearSession();
+    this.connectedAccounts = [];
+  }
+
+  // ── Internals ──────────────────────────────────────────────
+
+  private enqueueRelayMessage(data: RelayMessage): void {
+    this.messageQueue = this.messageQueue.then(() => this.handleRelayMessage(data));
+  }
+
+  private async handleRelayMessage(data: RelayMessage): Promise<void> {
     if (data.clientType === 'wallet') {
       this.walletPresent = true;
-      if (this.keyExchange.areKeysExchanged() && this.status !== ConnectionStatus.CONNECTED) {
+      if (this.keyExchange?.areKeysExchanged() && this.status !== ConnectionStatus.CONNECTED) {
         this.failedReconnects = 0;
         this.setStatus(ConnectionStatus.CONNECTED);
       }
@@ -316,30 +375,25 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     const message = data.message;
 
-    // Key exchange messages come as plaintext objects
     if (typeof message === 'object' && message !== null) {
-      const msg = message as { type?: string; pubkey?: string; v?: number };
+      const msg = message as { type?: string };
+      if (msg.type === KeyExchangeMessageType.SYNACK) {
+        await this.handleSynAck(message as SynAckMessage);
+        return;
+      }
       if (
         msg.type === KeyExchangeMessageType.SYN ||
-        msg.type === KeyExchangeMessageType.SYNACK ||
         msg.type === KeyExchangeMessageType.ACK
       ) {
-        this.handleKeyExchangeMessage(
-          msg as {
-            type: KeyExchangeMessageType;
-            pubkey?: string;
-            v?: number;
-          }
-        );
+        warn('ConnectionManager', `Unexpected ${msg.type} on dApp side — ignoring`);
         return;
       }
     }
 
-    // Encrypted messages come as base64 strings
-    if (typeof message === 'string' && this.keyExchange.areKeysExchanged()) {
+    if (typeof message === 'string' && this.keyExchange?.areKeysExchanged()) {
       try {
-        const decrypted = this.keyExchange.decryptMessage(message);
-        const parsed = JSON.parse(decrypted);
+        const decrypted = await this.keyExchange.decryptMessage(message);
+        const parsed = JSON.parse(decrypted) as Record<string, unknown>;
         this.handleDecryptedMessage(parsed);
       } catch (err) {
         logError('ConnectionManager', 'Failed to decrypt message:', err);
@@ -347,16 +401,20 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
   }
 
-  private handleKeyExchangeMessage(msg: {
-    type: KeyExchangeMessageType;
-    pubkey?: string;
-    v?: number;
-  }): void {
+  private async handleSynAck(msg: SynAckMessage): Promise<void> {
+    if (!this.keyExchange) return;
     this.setStatus(ConnectionStatus.KEY_EXCHANGE);
 
-    const response = this.keyExchange.onMessage(msg);
+    let response: AckMessage | null;
+    try {
+      response = await this.keyExchange.onSynAck(cidFromString(this.channelId), msg);
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      logError('ConnectionManager', 'SYNACK processing failed:', e);
+      this.emit('error', e);
+      return;
+    }
     if (response) {
-      // Send key exchange response as plaintext (not encrypted)
       this.sendPlaintext(response);
     }
   }
@@ -379,17 +437,13 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
         this.connectedAccounts = nextAccounts;
         this.chainId = nextChainId;
-        this.saveSession();
+        void this.persistSession();
         this.emit('wallet_info', {
           accounts: this.connectedAccounts,
           chainId: this.chainId,
         });
-        if (accountsChanged) {
-          this.emit('accounts_changed', this.connectedAccounts);
-        }
-        if (chainChanged) {
-          this.emit('chain_changed', this.chainId);
-        }
+        if (accountsChanged) this.emit('accounts_changed', this.connectedAccounts);
+        if (chainChanged) this.emit('chain_changed', this.chainId);
         break;
       }
 
@@ -410,42 +464,34 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
   }
 
-  /** Send a plaintext (unencrypted) message through the relay. */
   private sendPlaintext(message: object): void {
     this.socketClient
       .sendMessage({
         id: this.channelId,
         clientType: 'dapp',
-        message: message,
+        message,
       })
       .catch((err) => {
         logError('ConnectionManager', 'Failed to send plaintext:', err);
       });
   }
 
-  /** Send an encrypted message through the relay. */
-  private sendEncrypted(message: object): void {
-    try {
-      const encrypted = this.keyExchange.encryptMessage(JSON.stringify(message));
-      this.socketClient
-        .sendMessage({
-          id: this.channelId,
-          clientType: 'dapp',
-          message: encrypted,
-        })
-        .catch((err) => {
-          logError('ConnectionManager', 'Failed to send encrypted:', err);
-        });
-    } catch (err) {
-      logError('ConnectionManager', 'Encryption failed:', err);
+  private async sendEncrypted(message: object): Promise<void> {
+    if (!this.keyExchange?.areKeysExchanged()) {
+      throw new Error('sendEncrypted: not connected');
     }
+    const encrypted = await this.keyExchange.encryptMessage(JSON.stringify(message));
+    await this.socketClient.sendMessage({
+      id: this.channelId,
+      clientType: 'dapp',
+      message: encrypted,
+    });
   }
 
   private startUnresponsiveTimer(): void {
     this.clearUnresponsiveTimer();
     this.unresponsiveTimer = setTimeout(() => {
       warn('ConnectionManager', 'Wallet appears unresponsive');
-      // Don't reject promises - wallet may still respond when foregrounded
     }, WALLET_UNRESPONSIVE_MS);
   }
 
@@ -453,51 +499,6 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (this.unresponsiveTimer) {
       clearTimeout(this.unresponsiveTimer);
       this.unresponsiveTimer = null;
-    }
-  }
-
-  private sendSYN(): void {
-    if (!this.socketClient.isConnected()) {
-      return;
-    }
-
-    if (this.synAttempts >= ConnectionManager.MAX_SYN_ATTEMPTS) {
-      this.synSent = false;
-      this.emit('error', new Error('Key exchange timed out waiting for wallet response'));
-      return;
-    }
-
-    try {
-      const syn = this.keyExchange.createSYN();
-      this.sendPlaintext(syn);
-      this.synSent = true;
-      this.synAttempts++;
-      this.scheduleSynRetry();
-      log('ConnectionManager', 'Sent SYN key exchange message');
-    } catch (err) {
-      logError('ConnectionManager', 'Failed to send SYN:', err);
-    }
-  }
-
-  private scheduleSynRetry(): void {
-    this.clearSynRetryTimer();
-    this.synRetryTimer = setTimeout(() => {
-      this.synRetryTimer = null;
-      if (this.keyExchange.areKeysExchanged()) {
-        return;
-      }
-      this.synSent = false;
-      if (!this.walletPresent || !this.socketClient.isConnected()) {
-        return;
-      }
-      this.sendSYN();
-    }, ConnectionManager.SYN_RETRY_MS);
-  }
-
-  private clearSynRetryTimer(): void {
-    if (this.synRetryTimer) {
-      clearTimeout(this.synRetryTimer);
-      this.synRetryTimer = null;
     }
   }
 
@@ -515,138 +516,53 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   private areArraysEqual(a: string[], b: string[]): boolean {
     if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) return false;
-    }
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
     return true;
   }
 
-  getStatus(): ConnectionStatus {
-    return this.status;
-  }
+  // ── Persistence ────────────────────────────────────────────
 
-  getAccounts(): string[] {
-    return this.connectedAccounts;
-  }
-
-  getChainId(): string {
-    return this.chainId;
-  }
-
-  getChannelId(): string {
-    return this.channelId;
-  }
-
-  /** Check if a stored session exists (without loading/restoring it). */
-  hasStoredSession(): boolean {
-    if (typeof localStorage === 'undefined') return false;
-    try {
-      const raw = localStorage.getItem(this.storageKey);
-      if (!raw) return false;
-      const session: DAppSession = JSON.parse(raw);
-      return Date.now() - session.createdAt <= SESSION_TTL_MS;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Reset the connection and create a new channel for a fresh pairing.
-   * Disconnects any existing session, generates a new channel ID and keys.
-   */
-  resetForNewChannel(): void {
-    // Clean up existing connection
-    this.clearUnresponsiveTimer();
-    this.clearSynRetryTimer();
-    this.synSent = false;
-    this.synAttempts = 0;
-    this.walletPresent = false;
-
-    if (this.keyExchange.areKeysExchanged()) {
-      try {
-        this.sendEncrypted({ type: MessageType.TERMINATE });
-      } catch {
-        // Best effort
-      }
-    }
-
-    this.socketClient.leaveChannel();
-    this.socketClient.disconnect();
-    this.clearSession();
-    this.connectedAccounts = [];
-
-    // Generate fresh channel and keys
-    this.channelId = uuidv4();
-    this.ecies = new ECIESClient();
-    this.keyExchange = new KeyExchange(this.ecies, true);
-
-    // Re-wire socket and key exchange listeners
-    this.socketClient = new SocketClient(this.relayUrl, 'dapp');
-    this.setupSocketListeners();
-    this.setupKeyExchangeListeners();
-
-    this.setStatus(ConnectionStatus.DISCONNECTED);
-  }
-
-  /** Disconnect and clean up. */
-  disconnect(): void {
-    this.clearUnresponsiveTimer();
-    this.clearSynRetryTimer();
-    this.synSent = false;
-    this.synAttempts = 0;
-    this.walletPresent = false;
-
-    // Send terminate to wallet
-    if (this.keyExchange.areKeysExchanged()) {
-      try {
-        this.sendEncrypted({ type: MessageType.TERMINATE });
-      } catch {
-        // Best effort
-      }
-    }
-
-    this.socketClient.leaveChannel();
-    this.socketClient.disconnect();
-    this.setStatus(ConnectionStatus.DISCONNECTED);
-    this.clearSession();
-    this.connectedAccounts = [];
-  }
-
-  // --- Session persistence ---
-
-  private saveSession(): void {
+  private async persistSession(): Promise<void> {
     if (typeof localStorage === 'undefined') return;
+    if (!this.keyExchange) return;
+    const persistedKex = await this.keyExchange.exportPersisted();
+    if (!persistedKex) return;
 
     const session: DAppSession = {
+      version: 2,
       channelId: this.channelId,
-      privateKey: this.ecies.getPrivateKeyHex(),
-      otherPublicKey: this.keyExchange.getOtherPublicKey(),
+      keyExchange: persistedKex,
       dappMetadata: this.dappMetadata,
       connectedAccounts: this.connectedAccounts,
       chainId: this.chainId,
-      createdAt: Date.now(),
+      createdAt: this.pendingRestore?.createdAt ?? Date.now(),
       lastActivity: Date.now(),
     };
 
-    localStorage.setItem(this.storageKey, JSON.stringify(session));
+    try {
+      localStorage.setItem(this.storageKey, JSON.stringify(session));
+    } catch (err) {
+      warn('ConnectionManager', 'localStorage.setItem failed:', err);
+    }
   }
 
-  private loadSession(): DAppSession | null {
+  private readStoredSession(): DAppSession | null {
     if (typeof localStorage === 'undefined') return null;
-
     try {
       const raw = localStorage.getItem(this.storageKey);
       if (!raw) return null;
-
-      const session: DAppSession = JSON.parse(raw);
-
-      // Check TTL
-      if (Date.now() - session.createdAt > SESSION_TTL_MS) {
-        this.clearSession();
+      const session = JSON.parse(raw) as Partial<DAppSession>;
+      if (session.version !== 2) {
+        // v1 → clear to force a fresh pairing on v2.
+        log('ConnectionManager', 'Dropping legacy (pre-v2) session from storage');
+        localStorage.removeItem(this.storageKey);
         return null;
       }
-
-      return session;
+      if (!session.createdAt || Date.now() - session.createdAt > SESSION_TTL_MS) {
+        localStorage.removeItem(this.storageKey);
+        return null;
+      }
+      return session as DAppSession;
     } catch {
       return null;
     }

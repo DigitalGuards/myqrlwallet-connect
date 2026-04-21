@@ -1,6 +1,6 @@
 {
   "name": "@qrlwallet/connect",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Connect your dApp to QRL Wallet via QR code or deep link",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -33,10 +33,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:DigitalGuards/myqrlwallet-connect.git"
+    "url": "git+https://github.com/DigitalGuards/myqrlwallet-connect.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
-    "eciesjs": "^0.4.13",
+    "@noble/post-quantum": "^0.5.4",
     "eventemitter3": "^5.0.1",
     "socket.io-client": "^4.8.1",
     "uuid": "^11.1.0"
@@ -50,7 +53,6 @@
     "prettier": "^3.4.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
-    "vite-plugin-node-polyfills": "^0.25.0",
     "size-limit": "^11.0.0",
     "@size-limit/file": "^11.0.0",
     "vitest": "^3.0.0"

@@ -75,8 +75,8 @@ describe('config', () => {
       expect(RELAY_PATH).toBe('/relay');
     });
 
-    it('should have protocol version 1', () => {
-      expect(PROTOCOL_VERSION).toBe(1);
+    it('should have protocol version 2', () => {
+      expect(PROTOCOL_VERSION).toBe(2);
     });
 
     it('should have 7-day session TTL', () => {

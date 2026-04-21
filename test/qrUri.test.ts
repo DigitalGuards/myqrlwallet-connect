@@ -1,108 +1,103 @@
 import { describe, it, expect } from 'vitest';
-import { generateConnectionURI, parseConnectionURI } from '../src/utils/qrUri.js';
+import {
+  BLOB_LEN,
+  CID_LEN,
+  PK_LEN,
+  cidFromString,
+  cidToString,
+  generateConnectionURI,
+  parseConnectionURI,
+} from '../src/utils/qrUri.js';
+import { kemKeygen } from '../src/PQCrypto.js';
 
-describe('qrUri', () => {
-  const baseParams = {
-    channelId: 'test-channel-123',
-    pubKey: 'abcdef1234567890',
-    name: 'Test DApp',
-    url: 'https://testdapp.com',
-    chainId: '0x0',
-    relayUrl: 'https://qrlwallet.com',
-  };
+function randomCid(): Uint8Array {
+  return globalThis.crypto.getRandomValues(new Uint8Array(CID_LEN));
+}
 
+describe('qrUri v2', () => {
   describe('generateConnectionURI', () => {
-    it('should generate a valid qrlconnect:// URI', () => {
-      const uri = generateConnectionURI(baseParams);
-      expect(uri).toMatch(/^qrlconnect:\/\/\?/);
+    it('produces a qrlconnect:// URI with a single q parameter', async () => {
+      const cid = randomCid();
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(cid, pk);
+      expect(uri.startsWith('qrlconnect://?q=')).toBe(true);
+      expect(uri.includes('&')).toBe(false);
     });
 
-    it('should include all required parameters', () => {
-      const uri = generateConnectionURI(baseParams);
-      expect(uri).toContain('channelId=test-channel-123');
-      expect(uri).toContain('pubKey=abcdef1234567890');
-      expect(uri).toContain('name=Test+DApp');
-      expect(uri).toContain('chainId=0x0');
+    it('rejects a non-16-byte cid', async () => {
+      const { pk } = kemKeygen();
+      await expect(generateConnectionURI(new Uint8Array(15), pk)).rejects.toThrow();
+      await expect(generateConnectionURI(new Uint8Array(17), pk)).rejects.toThrow();
     });
 
-    it('should include icon when provided', () => {
-      const uri = generateConnectionURI({
-        ...baseParams,
-        icon: 'https://testdapp.com/icon.png',
-      });
-      expect(uri).toContain('icon=');
-    });
-
-    it('should not include icon when not provided', () => {
-      const uri = generateConnectionURI(baseParams);
-      expect(uri).not.toContain('icon=');
-    });
-
-    it('should URL-encode special characters', () => {
-      const uri = generateConnectionURI({
-        ...baseParams,
-        name: 'My DApp & More',
-      });
-      expect(uri).toContain('name=My+DApp+%26+More');
+    it('rejects a non-1184-byte pk', async () => {
+      const cid = randomCid();
+      await expect(generateConnectionURI(cid, new Uint8Array(PK_LEN - 1))).rejects.toThrow();
+      await expect(generateConnectionURI(cid, new Uint8Array(PK_LEN + 1))).rejects.toThrow();
     });
   });
 
   describe('parseConnectionURI', () => {
-    it('should parse a generated URI back to original params', () => {
-      const uri = generateConnectionURI(baseParams);
-      const parsed = parseConnectionURI(uri);
-
-      expect(parsed).not.toBeNull();
-      expect(parsed!.channelId).toBe(baseParams.channelId);
-      expect(parsed!.pubKey).toBe(baseParams.pubKey);
-      expect(parsed!.name).toBe(baseParams.name);
-      expect(parsed!.url).toBe(baseParams.url);
-      expect(parsed!.chainId).toBe(baseParams.chainId);
-      expect(parsed!.relayUrl).toBe(baseParams.relayUrl);
+    it('roundtrips cid and pk', async () => {
+      const cid = randomCid();
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(cid, pk);
+      const parsed = await parseConnectionURI(uri);
+      expect(Array.from(parsed.cid)).toEqual(Array.from(cid));
+      expect(Array.from(parsed.pk)).toEqual(Array.from(pk));
     });
 
-    it('should parse URI with icon', () => {
-      const params = { ...baseParams, icon: 'https://testdapp.com/icon.png' };
-      const uri = generateConnectionURI(params);
-      const parsed = parseConnectionURI(uri);
-
-      expect(parsed!.icon).toBe(params.icon);
+    it('rejects legacy v1 URIs with a clear error', async () => {
+      const legacy =
+        'qrlconnect://?channelId=abc&pubKey=deadbeef&name=foo&url=http://x&chainId=0x0&relay=http://x';
+      await expect(parseConnectionURI(legacy)).rejects.toThrow(/legacy v1 URI/);
     });
 
-    it('should return undefined icon when not present', () => {
-      const uri = generateConnectionURI(baseParams);
-      const parsed = parseConnectionURI(uri);
-      expect(parsed!.icon).toBeUndefined();
+    it('rejects URIs with bad magic', async () => {
+      const cid = randomCid();
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(cid, pk);
+      // Flip a byte in the base45 payload to break the magic.
+      const mutated = uri.slice(0, 17) + 'X' + uri.slice(18);
+      await expect(parseConnectionURI(mutated)).rejects.toThrow();
     });
 
-    it('should handle qrlconnect:? format (single slash)', () => {
-      const uri = `qrlconnect:?channelId=${baseParams.channelId}&pubKey=${baseParams.pubKey}&name=${baseParams.name}&url=${baseParams.url}&chainId=${baseParams.chainId}&relay=${baseParams.relayUrl}`;
-      const parsed = parseConnectionURI(uri);
-      expect(parsed).not.toBeNull();
-      expect(parsed!.channelId).toBe(baseParams.channelId);
+    it('rejects URIs missing q parameter', async () => {
+      await expect(parseConnectionURI('qrlconnect://?')).rejects.toThrow();
     });
 
-    it('should return null for missing required fields', () => {
-      expect(parseConnectionURI('qrlconnect://?channelId=test')).toBeNull();
-      expect(parseConnectionURI('qrlconnect://?')).toBeNull();
-      expect(parseConnectionURI('qrlconnect://?channelId=test&pubKey=abc')).toBeNull();
+    it('rejects non-qrlconnect URIs', async () => {
+      await expect(parseConnectionURI('wc:foo')).rejects.toThrow();
+      await expect(parseConnectionURI('')).rejects.toThrow();
     });
 
-    it('should return null for invalid URI', () => {
-      expect(parseConnectionURI('')).toBeNull();
+    it('rejects fingerprint-mismatched blobs', async () => {
+      // Build a blob with a valid magic/cid/pk but a corrupt fp suffix.
+      const cid = randomCid();
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(cid, pk);
+      // The last 4 bytes of the blob are the fp; base45-decoding the q param,
+      // mutating them, and re-encoding is the cleanest tamper.
+      const { base45Decode, base45Encode } = await import('../src/utils/base45.js');
+      const q = new URL(
+        uri.replace(/^qrlconnect:\/\//, 'http://x/')
+      ).searchParams.get('q') as string;
+      const blob = base45Decode(q);
+      expect(blob.length).toBe(BLOB_LEN);
+      blob[BLOB_LEN - 1] ^= 0xff;
+      const mutatedQ = base45Encode(blob);
+      const mutatedUri =
+        'qrlconnect://?' + new URLSearchParams({ q: mutatedQ }).toString();
+      await expect(parseConnectionURI(mutatedUri)).rejects.toThrow(/fingerprint/);
     });
+  });
 
-    it('should roundtrip with special characters', () => {
-      const params = {
-        ...baseParams,
-        name: 'DApp With Spaces & Symbols!',
-        url: 'https://example.com/path?q=1&r=2',
-      };
-      const uri = generateConnectionURI(params);
-      const parsed = parseConnectionURI(uri);
-
-      expect(parsed!.name).toBe(params.name);
-      expect(parsed!.url).toBe(params.url);
+  describe('cid helpers', () => {
+    it('cidToString/cidFromString roundtrip', () => {
+      const cid = randomCid();
+      const s = cidToString(cid);
+      expect(s).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(Array.from(cidFromString(s))).toEqual(Array.from(cid));
     });
   });
 });
