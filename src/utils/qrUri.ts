@@ -34,8 +34,18 @@ async function sha256First4(bytes: Uint8Array): Promise<Uint8Array> {
 
 /**
  * Encode (cid, pk) as a qrlconnect:// URI for QR / deep-link display.
+ *
+ * The optional `relayUrl` is carried as a separate query param (not inside
+ * the PQP1 blob, which must stay fixed-length for QR sizing) so the wallet
+ * can discover which relay the dApp joined. A tampered relay URL would at
+ * worst cause the pairing to fail — confidentiality still rides on the
+ * transcript-bound AEAD whose pk lives in the (fp-protected) blob.
  */
-export async function generateConnectionURI(cid: Uint8Array, pk: Uint8Array): Promise<string> {
+export async function generateConnectionURI(
+  cid: Uint8Array,
+  pk: Uint8Array,
+  relayUrl?: string
+): Promise<string> {
   if (cid.length !== CID_LEN) {
     throw new Error(`qrUri: cid must be ${CID_LEN} bytes (got ${cid.length})`);
   }
@@ -51,17 +61,19 @@ export async function generateConnectionURI(cid: Uint8Array, pk: Uint8Array): Pr
   // URL-encode: the base45 alphabet contains `+`, ` `, and `%` which would
   // otherwise be mangled by URLSearchParams parsing on the wallet side.
   const params = new URLSearchParams({ q: base45Encode(blob) });
+  if (relayUrl) params.set('r', relayUrl);
   return `qrlconnect://?${params.toString()}`;
 }
 
 export interface ParsedURI {
   cid: Uint8Array;
   pk: Uint8Array;
+  relayUrl?: string;
 }
 
 /**
- * Parse a qrlconnect:// URI into (cid, pk). Throws on malformed blob,
- * fingerprint mismatch, or legacy v1 URIs.
+ * Parse a qrlconnect:// URI into (cid, pk, relayUrl?). Throws on malformed
+ * blob, fingerprint mismatch, or legacy v1 URIs.
  */
 export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   if (typeof uri !== 'string' || uri.length === 0) {
@@ -113,7 +125,8 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
     throw new Error('qrUri: fingerprint mismatch');
   }
 
-  return { cid, pk };
+  const relayUrl = params.get('r') || undefined;
+  return { cid, pk, relayUrl };
 }
 
 /** Convert 16 raw cid bytes to RFC 4122 UUID hex string. */

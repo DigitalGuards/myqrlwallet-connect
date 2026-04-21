@@ -211,7 +211,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     this.setStatus(ConnectionStatus.WAITING);
 
-    const uri = await generateConnectionURI(cidFromString(this.channelId), pk);
+    const uri = await generateConnectionURI(
+      cidFromString(this.channelId),
+      pk,
+      this.relayUrl === DEFAULT_RELAY_URL ? undefined : this.relayUrl
+    );
     log('ConnectionManager', `Generated v2 connection URI for channel ${this.channelId}`);
     return uri;
   }
@@ -354,7 +358,12 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   // ── Internals ──────────────────────────────────────────────
 
   private enqueueRelayMessage(data: RelayMessage): void {
-    this.messageQueue = this.messageQueue.then(() => this.handleRelayMessage(data));
+    // Chain with .catch so that a single failing handler (tag-fail,
+    // malformed JSON) does not leave the queue in a rejected state and
+    // silently starve every subsequent message on the channel.
+    this.messageQueue = this.messageQueue
+      .then(() => this.handleRelayMessage(data))
+      .catch((err) => logError('ConnectionManager', 'messageQueue handler error:', err));
   }
 
   private async handleRelayMessage(data: RelayMessage): Promise<void> {

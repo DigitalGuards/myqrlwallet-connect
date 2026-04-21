@@ -45,6 +45,15 @@ describe('qrUri v2', () => {
       const parsed = await parseConnectionURI(uri);
       expect(Array.from(parsed.cid)).toEqual(Array.from(cid));
       expect(Array.from(parsed.pk)).toEqual(Array.from(pk));
+      expect(parsed.relayUrl).toBeUndefined();
+    });
+
+    it('carries an optional relay URL', async () => {
+      const cid = randomCid();
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(cid, pk, 'https://custom.relay/test');
+      const parsed = await parseConnectionURI(uri);
+      expect(parsed.relayUrl).toBe('https://custom.relay/test');
     });
 
     it('rejects legacy v1 URIs with a clear error', async () => {
