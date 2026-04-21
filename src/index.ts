@@ -1,6 +1,5 @@
 export { QRLConnectProvider } from './QRLConnectProvider.js';
 export { ConnectionManager } from './ConnectionManager.js';
-export { ECIESClient } from './ECIESClient.js';
 export { KeyExchange } from './KeyExchange.js';
 export { SocketClient } from './SocketClient.js';
 
@@ -18,9 +17,27 @@ export {
   MessageType,
 } from './types.js';
 
-export { generateConnectionURI, parseConnectionURI } from './utils/qrUri.js';
+export {
+  type PersistedSession,
+  type Session,
+  type AckMessage,
+  type SynAckMessage,
+} from './KeyExchange.js';
+
+export {
+  generateConnectionURI,
+  parseConnectionURI,
+  cidToString,
+  cidFromString,
+  cidRandom,
+} from './utils/qrUri.js';
 export { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
-export { RESTRICTED_METHODS, UNRESTRICTED_METHODS, DEFAULT_RELAY_URL } from './config.js';
+export {
+  RESTRICTED_METHODS,
+  UNRESTRICTED_METHODS,
+  DEFAULT_RELAY_URL,
+  PROTOCOL_VERSION,
+} from './config.js';
 
 // Convenience alias
 export { QRLConnectProvider as QRLConnect } from './QRLConnectProvider.js';

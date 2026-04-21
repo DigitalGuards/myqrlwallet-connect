@@ -211,7 +211,7 @@ npm test
 npm run lint
 
 # E2E test (starts a local relay, simulates dApp + wallet handshake)
-node test-e2e.js
+node test-e2e.mjs
 ```
 
 ## Running the example dApp
@@ -236,11 +236,25 @@ The example connects to the production relay at `wss://qrlwallet.com/relay` by d
 ## Security
 
 - Private keys and seeds never leave the wallet
-- All relay traffic is ECIES-encrypted (Elliptic Curve Integrated Encryption Scheme)
-- Key exchange uses a 3-step SYN/SYNACK/ACK handshake
+- All relay traffic is end-to-end encrypted with **AES-256-GCM** bound to a
+  **transcript hash** derived from the full handshake (`LABEL || cid || pk || ct`)
+- Session keys are established with **ML-KEM-768** (FIPS 203, NIST Level 3),
+  carried in the QR code so the relay never sees an uncommitted public key
+- Ciphertext tampering is detected exclusively at the AES-GCM tag;
+  ML-KEM's implicit rejection is NOT used for authentication
 - PIN or biometric authentication required for every transaction
 - dApp URL is displayed to the user before connecting
 - Unknown RPC methods are rejected with `-32601`
+
+### Migration from v1 (pre-quantum ECIES)
+
+v2 is a hard break: `@qrlwallet/connect@^2.0.0` only speaks the post-quantum
+protocol and does not negotiate with v1 wallets. Both the dApp SDK and the
+wallet must be on v2 for pairing to succeed. Existing v1 sessions cannot be
+migrated — users re-pair once to produce a fresh PQ session key.
+
+Consumers can delete any `nodePolyfills({ include: ['buffer'] })` entries
+from their Vite / webpack config; v2 has no Buffer dependency.
 
 ## License
 

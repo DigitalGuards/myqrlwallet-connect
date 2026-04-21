@@ -82,7 +82,7 @@ npm run typecheck
 
 # Run the headless E2E test (starts relay on port 3001,
 # simulates dApp + wallet, verifies key exchange + encrypted JSON-RPC)
-node test-e2e.js
+node test-e2e.mjs
 
 # Run the example Vite test dApp (needs backend relay running first)
 cd example && npm install && npm run dev
@@ -117,7 +117,7 @@ qrlwallet-connect/
 │   └── vite.config.js
 ├── docs/
 │   └── JSON-RPC-REFERENCE.md   # All supported QRL RPC methods with examples
-├── test-e2e.js                 # Headless E2E transport test
+├── test-e2e.mjs                 # Headless E2E transport test
 ├── package.json
 └── tsconfig.json
 ```
