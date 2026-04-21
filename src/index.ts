@@ -32,7 +32,12 @@ export {
   cidRandom,
 } from './utils/qrUri.js';
 export { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
-export { RESTRICTED_METHODS, UNRESTRICTED_METHODS, DEFAULT_RELAY_URL, PROTOCOL_VERSION } from './config.js';
+export {
+  RESTRICTED_METHODS,
+  UNRESTRICTED_METHODS,
+  DEFAULT_RELAY_URL,
+  PROTOCOL_VERSION,
+} from './config.js';
 
 // Convenience alias
 export { QRLConnectProvider as QRLConnect } from './QRLConnectProvider.js';

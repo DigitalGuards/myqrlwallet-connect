@@ -80,10 +80,7 @@ export async function transcriptHash(
   return new Uint8Array(await subtle().digest('SHA-256', bs(buf)));
 }
 
-export async function deriveAeadKey(
-  ss: Uint8Array,
-  htx: Uint8Array
-): Promise<CryptoKey> {
+export async function deriveAeadKey(ss: Uint8Array, htx: Uint8Array): Promise<CryptoKey> {
   const ikm = await subtle().importKey('raw', bs(ss), 'HKDF', false, ['deriveKey']);
   const info = concat(LABEL, LABEL_AEAD_SUFFIX, htx);
   return subtle().deriveKey(
@@ -99,13 +96,10 @@ export async function importRawAeadKey(raw: Uint8Array): Promise<CryptoKey> {
   if (raw.length !== AEAD_KEY_LEN) {
     throw new Error(`PQCrypto: raw AEAD key must be ${AEAD_KEY_LEN} bytes`);
   }
-  return subtle().importKey(
-    'raw',
-    bs(raw),
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
+  return subtle().importKey('raw', bs(raw), { name: 'AES-GCM', length: 256 }, true, [
+    'encrypt',
+    'decrypt',
+  ]);
 }
 
 export async function exportRawAeadKey(key: CryptoKey): Promise<Uint8Array> {

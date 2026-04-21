@@ -35,10 +35,7 @@ async function sha256First4(bytes: Uint8Array): Promise<Uint8Array> {
 /**
  * Encode (cid, pk) as a qrlconnect:// URI for QR / deep-link display.
  */
-export async function generateConnectionURI(
-  cid: Uint8Array,
-  pk: Uint8Array
-): Promise<string> {
+export async function generateConnectionURI(cid: Uint8Array, pk: Uint8Array): Promise<string> {
   if (cid.length !== CID_LEN) {
     throw new Error(`qrUri: cid must be ${CID_LEN} bytes (got ${cid.length})`);
   }

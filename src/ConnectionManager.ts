@@ -6,11 +6,7 @@
 
 import EventEmitter from 'eventemitter3';
 import { v4 as uuidv4 } from 'uuid';
-import {
-  KeyExchange,
-  type AckMessage,
-  type SynAckMessage,
-} from './KeyExchange.js';
+import { KeyExchange, type AckMessage, type SynAckMessage } from './KeyExchange.js';
 import { SocketClient } from './SocketClient.js';
 import {
   DEFAULT_RELAY_URL,
@@ -18,10 +14,7 @@ import {
   SESSION_TTL_MS,
   WALLET_UNRESPONSIVE_MS,
 } from './config.js';
-import {
-  cidFromString,
-  generateConnectionURI,
-} from './utils/qrUri.js';
+import { cidFromString, generateConnectionURI } from './utils/qrUri.js';
 import { log, warn, error as logError } from './utils/logger.js';
 import {
   type DAppMetadata,
@@ -381,10 +374,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         await this.handleSynAck(message as SynAckMessage);
         return;
       }
-      if (
-        msg.type === KeyExchangeMessageType.SYN ||
-        msg.type === KeyExchangeMessageType.ACK
-      ) {
+      if (msg.type === KeyExchangeMessageType.SYN || msg.type === KeyExchangeMessageType.ACK) {
         warn('ConnectionManager', `Unexpected ${msg.type} on dApp side — ignoring`);
         return;
       }
