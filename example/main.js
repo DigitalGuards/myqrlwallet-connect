@@ -2,7 +2,9 @@ import { QRLConnect, ConnectionStatus } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
 // ─── Config ──────────────────────────────────────────────
-const RELAY_URL = 'https://qrlwallet.com';
+// Local dev override: set VITE_RELAY_URL before `vite` (e.g. via
+// start-test-env.sh) to point at your local backend relay instead of prod.
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'https://qrlwallet.com';
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -93,6 +95,14 @@ function showDisconnectedUI() {
 qrl.on('connect', ({ chainId }) => {
   log(`Wallet connected (chainId: ${chainId})`, 'success');
   updateStatus(ConnectionStatus.CONNECTED);
+  // On reconnect (e.g. after the mobile wallet was killed and relaunched)
+  // the SDK doesn't re-emit accountsChanged because the accounts array
+  // didn't change. If we had accounts from a prior connect, restore the
+  // connected UI here so sign/send buttons light up again.
+  const cached = qrl.getAccounts();
+  if (cached.length > 0) {
+    showConnectedUI(cached);
+  }
 });
 
 qrl.on('disconnect', async ({ code, message }) => {
