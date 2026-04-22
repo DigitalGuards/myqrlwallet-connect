@@ -2,7 +2,9 @@ import { QRLConnect, ConnectionStatus } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
 // ─── Config ──────────────────────────────────────────────
-const RELAY_URL = 'https://qrlwallet.com';
+// Local dev override: set VITE_RELAY_URL before `vite` (e.g. via
+// start-test-env.sh) to point at your local backend relay instead of prod.
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'https://qrlwallet.com';
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -93,6 +95,14 @@ function showDisconnectedUI() {
 qrl.on('connect', ({ chainId }) => {
   log(`Wallet connected (chainId: ${chainId})`, 'success');
   updateStatus(ConnectionStatus.CONNECTED);
+  // On reconnect (e.g. after the mobile wallet was killed and relaunched)
+  // the SDK doesn't re-emit accountsChanged because the accounts array
+  // didn't change. If we had accounts from a prior connect, restore the
+  // connected UI here so sign/send buttons light up again.
+  const cached = qrl.getAccounts();
+  if (cached.length > 0) {
+    showConnectedUI(cached);
+  }
 });
 
 qrl.on('disconnect', async ({ code, message }) => {
@@ -100,19 +110,19 @@ qrl.on('disconnect', async ({ code, message }) => {
   updateStatus(ConnectionStatus.DISCONNECTED);
 
   if (userDisconnected) {
-    // User clicked Disconnect — show clean state
+    // User clicked Disconnect, show clean state
     userDisconnected = false;
     showDisconnectedUI();
     return;
   }
 
-  // Wallet-initiated disconnect — auto-regenerate QR so user can reconnect
+  // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect
   showDisconnectedUI();
   log('Regenerating QR code for reconnection...', 'info');
   try {
     const uri = await qrl.getConnectionURI();
     await showQR(uri);
-    log(`QR ready — scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
+    log(`QR ready. Scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
     updateStatus(ConnectionStatus.WAITING);
   } catch (err) {
     log(`Failed to regenerate QR: ${err.message}`, 'error');
@@ -239,9 +249,12 @@ btnNewConn.addEventListener('click', async () => {
 });
 
 // ─── Disconnect ──────────────────────────────────────────
-btnDisconnect.addEventListener('click', () => {
+btnDisconnect.addEventListener('click', async () => {
   userDisconnected = true;
-  qrl.disconnect();
+  // Await so the TERMINATE is flushed to the relay before we update the UI
+  // — otherwise the wallet lands in its stale-session grace period and the
+  // user sees a ~3s lag on the mobile side.
+  await qrl.disconnect();
   log('Disconnected', 'info');
   updateStatus(ConnectionStatus.DISCONNECTED);
   showDisconnectedUI();

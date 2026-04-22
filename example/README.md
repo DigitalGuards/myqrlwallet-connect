@@ -1,19 +1,50 @@
-# Test dApp
+# Test dApp — QRL Connect example
 
-A minimal dApp for testing the full QRL Connect flow end-to-end.
+A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also the source of the hosted example served by ZondScan at [`/dapp-example`](https://zondscan.com/dapp-example).
 
-## What it does
+## What QRL Connect is
 
-- Generates a QR code using the SDK
-- Connects to a wallet when you scan it with the QRL Wallet app
-- Lets you send a transaction, sign a message, or call read-only RPC methods
-- Logs every event so you can see exactly what's happening
+`@qrlwallet/connect` is a self-hosted, end-to-end encrypted protocol that lets any QRL dApp pair with the MyQRLWallet mobile app — similar in spirit to WalletConnect, but built specifically for the Quantum Resistant Ledger so it can handle Q-addresses and migrate to post-quantum cryptography on our own timeline.
 
-## Running it
+```
+┌─────────────────────┐                        ┌──────────────────────────┐
+│  External dApp      │                        │  MyQRLWallet App         │
+│                     │                        │  ┌──────────────────┐    │
+│  @qrlwallet/connect │                        │  │ Native: QR scan  │    │
+│  - QR / deep link   │                        │  │ + deep links     │    │
+│  - EIP-1193 provider│                        │  └────────┬─────────┘    │
+└──────────┬──────────┘                        │           │ bridge       │
+           │                                   │  ┌────────▼─────────┐    │
+           │ Socket.IO                         │  │ WebView: Socket  │    │
+           │ (E2E encrypted ciphertext)        │  │ client, ML-KEM,  │    │
+           ▼                                   │  │ signing, approval│    │
+      ┌─────────────┐    Socket.IO             │  │ UI, sessions     │    │
+      │ Relay Server│<===========================│                  │    │
+      │(qrlwallet.  │                          │  └──────────────────┘    │
+      │   com)      │                          │                          │
+      └─────────────┘                          └──────────────────────────┘
+```
+
+- **SDK (`@qrlwallet/connect`)** — the npm package your dApp installs. Generates `qrlconnect://` URIs, runs the ML-KEM-768 handshake, and exposes an EIP-1193 `provider.request()` interface so your dApp talks to it like a browser-extension wallet.
+- **Relay** — a stateless Socket.IO message router in `myqrlwallet-backend/src/relay/`. Sees only ciphertext; buffers up to 50 messages for 5 min when the phone is backgrounded.
+- **Wallet** — signing, encryption, and approval UI all live inside the MyQRLWallet React Native WebView; the native layer only does QR scanning and deep-link handling.
+
+Full architectural details, RPC method list, and session/reconnect behavior live in the [repo CLAUDE.md](../CLAUDE.md) and [main README](../README.md). Per-method request/response examples are in [`docs/JSON-RPC-REFERENCE.md`](../docs/JSON-RPC-REFERENCE.md).
+
+## What this example does
+
+- Generates a connection URI and renders it as a scannable QR code
+- Connects to a wallet via the relay and walks through the 3-step SYN/SYNACK/ACK handshake
+- Lets you call `qrl_sendTransaction`, `personal_sign`, and a selection of read-only RPC methods
+- Streams every inbound/outbound event to an on-page log so you can see the protocol in action
+
+The relay URL is hardcoded to `https://qrlwallet.com` (production) via the `RELAY_URL` constant at the top of `main.js`. For local development against a backend on `http://localhost:3000`, edit that constant before running `npm run dev`.
+
+## Running it locally
 
 ```bash
 # 1. Start the backend relay (from myqrlwallet-backend/)
-cd ../../../myqrlwallet-backend
+cd ../../myqrlwallet-backend
 npm run dev
 
 # 2. Start the test dApp (from this directory)
@@ -22,7 +53,17 @@ npm install
 npm run dev
 ```
 
-Opens at http://localhost:5174. The dApp auto-detects `localhost` and points at `http://localhost:3000` for the relay.
+Opens at http://localhost:5174.
+
+## Production build (for hosted deployments)
+
+```bash
+npm install
+npm run build
+# Output in dist/
+```
+
+ZondScan's `ExplorerFrontend` has a `prebuild` script that clones this repo, runs the build with `--base=/dapp-example/`, and copies `dist/` into its `public/dapp-example/` so the SPA is served at `https://zondscan.com/dapp-example`. See [`scripts/README.md`](https://github.com/DigitalGuards/zondscan/tree/dev/ExplorerFrontend/scripts) in that repo for details.
 
 ## Testing with the mobile app
 

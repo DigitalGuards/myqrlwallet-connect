@@ -1,234 +1,180 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ECIESClient } from '../src/ECIESClient.js';
 import { KeyExchange } from '../src/KeyExchange.js';
 import { KeyExchangeMessageType } from '../src/types.js';
 import { PROTOCOL_VERSION } from '../src/config.js';
 
-describe('KeyExchange', () => {
-  let dappEcies: ECIESClient;
-  let walletEcies: ECIESClient;
-  let dappKex: KeyExchange;
-  let walletKex: KeyExchange;
+const CID = new Uint8Array(16).map((_, i) => i + 1);
+
+describe('KeyExchange v2', () => {
+  let dapp: KeyExchange;
+  let wallet: KeyExchange;
 
   beforeEach(() => {
-    dappEcies = new ECIESClient();
-    walletEcies = new ECIESClient();
-    dappKex = new KeyExchange(dappEcies, true); // originator
-    walletKex = new KeyExchange(walletEcies, false); // responder
+    dapp = new KeyExchange(true);
+    wallet = new KeyExchange(false);
   });
 
-  describe('3-step handshake (SYN/SYNACK/ACK)', () => {
-    it('should complete full key exchange', () => {
-      const keysExchangedDapp = vi.fn();
-      const keysExchangedWallet = vi.fn();
-      dappKex.on('keys_exchanged', keysExchangedDapp);
-      walletKex.on('keys_exchanged', keysExchangedWallet);
+  describe('handshake', () => {
+    it('completes the SYNACK/ACK flow end-to-end', async () => {
+      const dappKx = vi.fn();
+      const walletKx = vi.fn();
+      dapp.on('keys_exchanged', dappKx);
+      wallet.on('keys_exchanged', walletKx);
 
-      // Step 1: dApp creates SYN
-      const syn = dappKex.createSYN();
-      expect(syn).toEqual({
-        type: KeyExchangeMessageType.SYN,
-        pubkey: dappEcies.getPublicKey(),
-        v: PROTOCOL_VERSION,
-      });
+      const pk = dapp.initiate();
+      expect(pk.length).toBe(1184);
 
-      // Step 2: Wallet processes SYN, returns SYNACK
-      const synack = walletKex.onMessage(syn as any);
-      expect(synack).toEqual({
-        type: KeyExchangeMessageType.SYNACK,
-        pubkey: walletEcies.getPublicKey(),
-        v: PROTOCOL_VERSION,
-      });
+      const synack = await wallet.receiveQR(CID, pk);
+      expect(synack.type).toBe(KeyExchangeMessageType.SYNACK);
+      expect(synack.v).toBe(PROTOCOL_VERSION);
+      expect(typeof synack.ct).toBe('string');
+      expect(typeof synack.c0).toBe('string');
 
-      // Step 3: dApp processes SYNACK, returns ACK
-      const ack = dappKex.onMessage(synack as any);
-      expect(ack).toEqual({
-        type: KeyExchangeMessageType.ACK,
-        v: PROTOCOL_VERSION,
-      });
-      expect(keysExchangedDapp).toHaveBeenCalledOnce();
+      const ack = await dapp.onSynAck(CID, synack);
+      expect(ack).not.toBeNull();
+      expect(ack!.type).toBe(KeyExchangeMessageType.ACK);
+      expect(ack!.v).toBe(PROTOCOL_VERSION);
+      expect(dappKx).toHaveBeenCalledOnce();
 
-      // Step 4: Wallet processes ACK
-      const result = walletKex.onMessage(ack as any);
-      expect(result).toBeNull(); // No response needed
-      expect(keysExchangedWallet).toHaveBeenCalledOnce();
+      await wallet.onAck(ack!);
+      expect(walletKx).toHaveBeenCalledOnce();
 
-      // Both sides should now have keys exchanged
-      expect(dappKex.areKeysExchanged()).toBe(true);
-      expect(walletKex.areKeysExchanged()).toBe(true);
+      expect(dapp.areKeysExchanged()).toBe(true);
+      expect(wallet.areKeysExchanged()).toBe(true);
     });
 
-    it('should enable encrypted communication after exchange', () => {
-      // Complete handshake
-      const syn = dappKex.createSYN();
-      const synack = walletKex.onMessage(syn as any);
-      const ack = dappKex.onMessage(synack as any);
-      walletKex.onMessage(ack as any);
+    it('is bidirectionally encrypted after handshake', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
 
-      // dApp encrypts for wallet
-      const message = JSON.stringify({ method: 'qrl_getBalance' });
-      const encrypted = dappKex.encryptMessage(message);
-      const decrypted = walletKex.decryptMessage(encrypted);
-      expect(decrypted).toBe(message);
+      const req = JSON.stringify({ method: 'qrl_chainId' });
+      const encReq = await dapp.encryptMessage(req);
+      expect(await wallet.decryptMessage(encReq)).toBe(req);
 
-      // Wallet encrypts for dApp
-      const response = JSON.stringify({ result: '0x100' });
-      const encryptedResponse = walletKex.encryptMessage(response);
-      const decryptedResponse = dappKex.decryptMessage(encryptedResponse);
-      expect(decryptedResponse).toBe(response);
+      const resp = JSON.stringify({ result: '0x0' });
+      const encResp = await wallet.encryptMessage(resp);
+      expect(await dapp.decryptMessage(encResp)).toBe(resp);
     });
 
-    it('should not emit keys_exchanged multiple times on duplicate SYNACK', () => {
-      const keysExchangedDapp = vi.fn();
-      dappKex.on('keys_exchanged', keysExchangedDapp);
+    it('ignores duplicate SYNACK after handshake', async () => {
+      const dappKx = vi.fn();
+      dapp.on('keys_exchanged', dappKx);
 
-      const syn = dappKex.createSYN();
-      const synack = walletKex.onMessage(syn as any);
-      dappKex.onMessage(synack as any);
-      dappKex.onMessage(synack as any); // duplicate SYNACK
-
-      expect(keysExchangedDapp).toHaveBeenCalledOnce();
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ackA = await dapp.onSynAck(CID, synack);
+      const ackB = await dapp.onSynAck(CID, synack);
+      expect(ackA).not.toBeNull();
+      expect(ackB).toBeNull();
+      expect(dappKx).toHaveBeenCalledOnce();
     });
 
-    it('should not emit keys_exchanged multiple times on duplicate ACK', () => {
-      const keysExchangedWallet = vi.fn();
-      walletKex.on('keys_exchanged', keysExchangedWallet);
+    it('ignores duplicate ACK after handshake', async () => {
+      const walletKx = vi.fn();
+      wallet.on('keys_exchanged', walletKx);
 
-      const syn = dappKex.createSYN();
-      const synack = walletKex.onMessage(syn as any);
-      const ack = dappKex.onMessage(synack as any);
-      walletKex.onMessage(ack as any);
-      walletKex.onMessage(ack as any); // duplicate ACK
-
-      expect(keysExchangedWallet).toHaveBeenCalledOnce();
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
+      await wallet.onAck(ack!);
+      expect(walletKx).toHaveBeenCalledOnce();
     });
-  });
 
-  describe('step_change events', () => {
-    it('should emit step_change for each phase', () => {
-      const dappSteps: KeyExchangeMessageType[] = [];
-      const walletSteps: KeyExchangeMessageType[] = [];
+    it('rejects SYNACK with a wrong cid (AEAD tag fail via transcript binding)', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const wrongCid = new Uint8Array(16);
+      await expect(dapp.onSynAck(wrongCid, synack)).rejects.toThrow();
+    });
 
-      dappKex.on('step_change', (step) => dappSteps.push(step));
-      walletKex.on('step_change', (step) => walletSteps.push(step));
-
-      const syn = dappKex.createSYN();
-      const synack = walletKex.onMessage(syn as any);
-      dappKex.onMessage(synack as any);
-
-      expect(dappSteps).toEqual([
-        KeyExchangeMessageType.SYN,
-        KeyExchangeMessageType.ACK,
-      ]);
-      expect(walletSteps).toEqual([KeyExchangeMessageType.SYNACK]);
+    it('rejects SYNACK with tampered ct (implicit rejection + AEAD tag fail)', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      // Decode base64, flip a byte in ct, re-encode, and expect tag fail
+      const ctBytes = Uint8Array.from(atob(synack.ct), (c) => c.charCodeAt(0));
+      ctBytes[0] ^= 1;
+      const mutated = btoa(String.fromCharCode(...ctBytes));
+      await expect(dapp.onSynAck(CID, { ...synack, ct: mutated })).rejects.toThrow();
     });
   });
 
   describe('role enforcement', () => {
-    it('should ignore SYN on originator side', () => {
-      const result = dappKex.onMessage({
-        type: KeyExchangeMessageType.SYN,
-        pubkey: 'fake',
-      });
-      expect(result).toBeNull();
+    it('responder cannot initiate', () => {
+      expect(() => wallet.initiate()).toThrow();
     });
 
-    it('should ignore SYNACK on non-originator side', () => {
-      const result = walletKex.onMessage({
-        type: KeyExchangeMessageType.SYNACK,
-        pubkey: 'fake',
-      });
-      expect(result).toBeNull();
-    });
-
-    it('should ignore ACK on originator side', () => {
-      const result = dappKex.onMessage({
-        type: KeyExchangeMessageType.ACK,
-      });
-      expect(result).toBeNull();
+    it('originator cannot consume a QR', async () => {
+      await expect(dapp.receiveQR(CID, new Uint8Array(1184))).rejects.toThrow();
     });
   });
 
-  describe('state management', () => {
-    it('should start with keys not exchanged', () => {
-      expect(dappKex.areKeysExchanged()).toBe(false);
-      expect(dappKex.getOtherPublicKey()).toBeNull();
+  describe('state', () => {
+    it('starts with keys not exchanged and step SYN', () => {
+      expect(dapp.areKeysExchanged()).toBe(false);
+      expect(dapp.getCurrentStep()).toBe(KeyExchangeMessageType.SYN);
     });
 
-    it('should start at SYN step', () => {
-      expect(dappKex.getCurrentStep()).toBe(KeyExchangeMessageType.SYN);
+    it('emits step_change through the handshake', async () => {
+      const dappSteps: KeyExchangeMessageType[] = [];
+      const walletSteps: KeyExchangeMessageType[] = [];
+      dapp.on('step_change', (s) => dappSteps.push(s));
+      wallet.on('step_change', (s) => walletSteps.push(s));
+
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      await dapp.onSynAck(CID, synack);
+
+      expect(dappSteps).toEqual([KeyExchangeMessageType.SYN, KeyExchangeMessageType.ACK]);
+      expect(walletSteps).toEqual([KeyExchangeMessageType.SYNACK]);
     });
+  });
 
-    it('should store other public key after handshake', () => {
-      const syn = dappKex.createSYN();
-      const synack = walletKex.onMessage(syn as any);
-      dappKex.onMessage(synack as any);
+  describe('session persistence', () => {
+    it('exports and reimports a working session', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
 
-      expect(dappKex.getOtherPublicKey()).toBe(walletEcies.getPublicKey());
-      expect(walletKex.getOtherPublicKey()).toBe(dappEcies.getPublicKey());
+      // Send once so seq counters diverge from the initial value.
+      const m1 = await dapp.encryptMessage('{"m":1}');
+      expect(await wallet.decryptMessage(m1)).toBe('{"m":1}');
+
+      const persistedDapp = await dapp.exportPersisted();
+      const persistedWallet = await wallet.exportPersisted();
+      expect(persistedDapp).not.toBeNull();
+      expect(persistedWallet).not.toBeNull();
+
+      const restoredDapp = new KeyExchange(
+        true,
+        await KeyExchange.sessionFromPersisted(persistedDapp!)
+      );
+      const restoredWallet = new KeyExchange(
+        false,
+        await KeyExchange.sessionFromPersisted(persistedWallet!)
+      );
+
+      const m2 = await restoredDapp.encryptMessage('{"m":2}');
+      expect(await restoredWallet.decryptMessage(m2)).toBe('{"m":2}');
+      const m3 = await restoredWallet.encryptMessage('{"r":3}');
+      expect(await restoredDapp.decryptMessage(m3)).toBe('{"r":3}');
     });
   });
 
   describe('reset', () => {
-    it('should reset state for a fresh handshake', () => {
-      // Complete first handshake
-      const syn = dappKex.createSYN();
-      const synack = walletKex.onMessage(syn as any);
-      const ack = dappKex.onMessage(synack as any);
-      walletKex.onMessage(ack as any);
+    it('wipes session state', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
 
-      expect(dappKex.areKeysExchanged()).toBe(true);
-
-      // Reset
-      dappKex.reset();
-      expect(dappKex.areKeysExchanged()).toBe(false);
-      expect(dappKex.getOtherPublicKey()).toBeNull();
-      expect(dappKex.getCurrentStep()).toBe(KeyExchangeMessageType.SYN);
-    });
-  });
-
-  describe('session restoration', () => {
-    it('should restore with existing other public key', () => {
-      const restored = new KeyExchange(
-        dappEcies,
-        true,
-        walletEcies.getPublicKey()
-      );
-
-      expect(restored.areKeysExchanged()).toBe(true);
-      expect(restored.getOtherPublicKey()).toBe(walletEcies.getPublicKey());
-    });
-
-    it('should encrypt/decrypt after restoration', () => {
-      const restoredDapp = new KeyExchange(
-        dappEcies,
-        true,
-        walletEcies.getPublicKey()
-      );
-      const restoredWallet = new KeyExchange(
-        walletEcies,
-        false,
-        dappEcies.getPublicKey()
-      );
-
-      const msg = 'restored session message';
-      const encrypted = restoredDapp.encryptMessage(msg);
-      expect(restoredWallet.decryptMessage(encrypted)).toBe(msg);
-    });
-  });
-
-  describe('error cases', () => {
-    it('should throw when encrypting without key exchange', () => {
-      expect(() => dappKex.encryptMessage('test')).toThrow(
-        'Cannot encrypt: key exchange not complete'
-      );
-    });
-
-    it('should handle unknown message type gracefully', () => {
-      const result = dappKex.onMessage({
-        type: 'unknown_type' as KeyExchangeMessageType,
-      });
-      expect(result).toBeNull();
+      dapp.reset();
+      expect(dapp.areKeysExchanged()).toBe(false);
+      expect(dapp.getCurrentStep()).toBe(KeyExchangeMessageType.SYN);
+      await expect(dapp.encryptMessage('x')).rejects.toThrow();
     });
   });
 });
