@@ -329,9 +329,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private async flushTerminate(): Promise<void> {
     if (!this.keyExchange?.areKeysExchanged()) return;
     const send = this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {});
-    const timeout = new Promise<void>((resolve) =>
-      setTimeout(resolve, TERMINATE_SEND_TIMEOUT_MS)
-    );
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, TERMINATE_SEND_TIMEOUT_MS));
     await Promise.race([send, timeout]);
   }
 
