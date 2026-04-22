@@ -15,6 +15,7 @@ import {
   WALLET_UNRESPONSIVE_MS,
 } from './config.js';
 import { cidFromString, generateConnectionURI } from './utils/qrUri.js';
+import { toBase64 } from './PQCrypto.js';
 import { log, warn, error as logError } from './utils/logger.js';
 import {
   type DAppMetadata,
@@ -192,6 +193,12 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // Always rotate the channel id on fresh QR generation so that relay
     // buffers and participant lists from a prior pairing cannot leak in.
     this.channelId = uuidv4();
+
+    // v2 protocol: upload the KEM public key to the relay before joining
+    // so the relay can bind it to the channel and serve it back to the
+    // wallet on its join_channel ack. The wallet verifies it against the
+    // fingerprint carried in the QR — the PK itself is no longer in the QR.
+    this.socketClient.setPublicKey(toBase64(pk));
 
     this.socketClient.connect();
     try {

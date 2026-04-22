@@ -17,16 +17,30 @@ interface SocketClientEvents {
   error: (err: Error) => void;
 }
 
+export interface JoinResult {
+  bufferedMessages: unknown[];
+  /**
+   * Base64-encoded KEM public key the relay has bound to this channel.
+   * Populated for wallet joins (v2 protocol). `null` if the dApp hasn't
+   * registered a PK yet — wallet callers must treat this as a retry signal.
+   */
+  channelPublicKey: string | null;
+}
+
 export class SocketClient extends EventEmitter<SocketClientEvents> {
   private socket: Socket | null = null;
   private relayUrl: string;
   private channelId: string | null = null;
   private clientType: 'dapp' | 'wallet';
+  // The dApp's own PK (base64) that must be uploaded with every join
+  // attempt so the relay can bind it to the channel. Wallet-side leaves
+  // this undefined.
+  private publicKeyBase64: string | null = null;
   private seq = 0;
   private pendingJoin: {
     channelId: string;
-    promise: Promise<{ bufferedMessages: unknown[] }>;
-    resolve: (result: { bufferedMessages: unknown[] }) => void;
+    promise: Promise<JoinResult>;
+    resolve: (result: JoinResult) => void;
     reject: (error: Error) => void;
   } | null = null;
 
@@ -34,6 +48,17 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
     super();
     this.relayUrl = relayUrl;
     this.clientType = clientType;
+  }
+
+  /**
+   * dApp-only: stash the PK so it gets uploaded on every join_channel
+   * attempt (including auto-rejoins after reconnect).
+   */
+  setPublicKey(publicKeyBase64: string): void {
+    if (this.clientType !== 'dapp') {
+      throw new Error('SocketClient.setPublicKey is only valid for dApp clients');
+    }
+    this.publicKeyBase64 = publicKeyBase64;
   }
 
   /**
@@ -103,9 +128,10 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
   }
 
   /**
-   * Join a relay channel.
+   * Join a relay channel. Resolves with any buffered messages plus the
+   * dApp's public key bound to the channel (for wallet joins).
    */
-  async joinChannel(channelId: string): Promise<{ bufferedMessages: unknown[] }> {
+  async joinChannel(channelId: string): Promise<JoinResult> {
     if (!this.socket) {
       throw new Error('Socket not initialized. Call connect() before joinChannel()');
     }
@@ -127,9 +153,9 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
       this.pendingJoin = null;
     }
 
-    let resolvePending!: (result: { bufferedMessages: unknown[] }) => void;
+    let resolvePending!: (result: JoinResult) => void;
     let rejectPending!: (error: Error) => void;
-    const promise = new Promise<{ bufferedMessages: unknown[] }>((resolve, reject) => {
+    const promise = new Promise<JoinResult>((resolve, reject) => {
       resolvePending = resolve;
       rejectPending = reject;
     });
@@ -144,20 +170,37 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
     return promise;
   }
 
-  private joinChannelNow(channelId: string): Promise<{ bufferedMessages: unknown[] }> {
+  private joinChannelNow(channelId: string): Promise<JoinResult> {
     return new Promise((resolve, reject) => {
       if (!this.socket?.connected) {
         reject(new Error('Socket not connected'));
         return;
       }
 
+      const payload: {
+        channelId: string;
+        clientType: 'dapp' | 'wallet';
+        publicKey?: string;
+      } = { channelId, clientType: this.clientType };
+      if (this.clientType === 'dapp' && this.publicKeyBase64) {
+        payload.publicKey = this.publicKeyBase64;
+      }
+
       this.socket.emit(
         'join_channel',
-        { channelId, clientType: this.clientType },
-        (response: { success: boolean; error?: string; bufferedMessages?: unknown[] }) => {
+        payload,
+        (response: {
+          success: boolean;
+          error?: string;
+          bufferedMessages?: unknown[];
+          channelPublicKey?: string | null;
+        }) => {
           if (response.success) {
             log('Socket', `Joined channel ${channelId}`);
-            resolve({ bufferedMessages: response.bufferedMessages || [] });
+            resolve({
+              bufferedMessages: response.bufferedMessages || [],
+              channelPublicKey: response.channelPublicKey ?? null,
+            });
           } else {
             logError('Socket', `Failed to join channel: ${response.error}`);
             reject(new Error(response.error || 'Failed to join channel'));

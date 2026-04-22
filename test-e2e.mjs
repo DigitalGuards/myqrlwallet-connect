@@ -15,10 +15,19 @@ import {
   QRLConnect,
   KeyExchange,
   parseConnectionURI,
+  computeFingerprint,
+  fingerprintEquals,
   KeyExchangeMessageType,
   MessageType,
   PROTOCOL_VERSION,
 } from './dist/index.mjs';
+
+function fromBase64(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 const TEST_PORT = 3001;
 const RELAY_URL = `http://localhost:${TEST_PORT}`;
@@ -41,9 +50,11 @@ function createSocket() {
   });
 }
 
-function joinChannel(socket, channelId, clientType) {
+function joinChannel(socket, channelId, clientType, publicKey) {
   return new Promise((resolve, reject) => {
-    socket.emit('join_channel', { channelId, clientType }, (res) => {
+    const payload = { channelId, clientType };
+    if (publicKey) payload.publicKey = publicKey;
+    socket.emit('join_channel', payload, (res) => {
       if (res?.success) resolve(res);
       else reject(new Error(res?.error || 'join failed'));
     });
@@ -114,16 +125,16 @@ async function run() {
     });
 
     const uri = await dapp.getConnectionURI();
-    console.log(`   URI length: ${uri.length} chars (v2 PQP1 blob)`);
+    console.log(`   URI length: ${uri.length} chars (v2 PQP2 blob, compact)`);
     if (!uri.startsWith('qrlconnect://?q=')) {
       throw new Error('dApp generated a non-v2 URI');
     }
 
-    console.log('3. Wallet: parsing URI (extracts cid + pk)');
-    const { cid, pk } = await parseConnectionURI(uri);
-    if (pk.length !== 1184) throw new Error(`Wallet parsed bad pk length ${pk.length}`);
+    console.log('3. Wallet: parsing URI (extracts cid + fp, no pk)');
+    const { cid, fp } = await parseConnectionURI(uri);
+    if (fp.length !== 32) throw new Error(`Wallet parsed bad fp length ${fp.length}`);
 
-    console.log('4. Wallet: joining channel on relay');
+    console.log('4. Wallet: joining channel on relay → receives PK from ack');
     const walletKex = new KeyExchange(false);
     walletSocket = createSocket();
     await new Promise((resolve, reject) => {
@@ -132,7 +143,20 @@ async function run() {
     });
     const waitForMessage = makeMessageQueue(walletSocket);
     const channelIdStr = dapp.getChannelId();
-    await joinChannel(walletSocket, channelIdStr, 'wallet');
+    const joinAck = await joinChannel(walletSocket, channelIdStr, 'wallet');
+    if (!joinAck.channelPublicKey) {
+      throw new Error('Wallet did not receive channelPublicKey in join_channel ack');
+    }
+    const pk = fromBase64(joinAck.channelPublicKey);
+    if (pk.length !== 1184) {
+      throw new Error(`Relay returned bad pk length ${pk.length}`);
+    }
+
+    console.log('   Wallet: verifying PK fingerprint against QR out-of-band commitment');
+    const expectedFp = await computeFingerprint(cid, pk);
+    if (!fingerprintEquals(fp, expectedFp)) {
+      throw new Error('Fingerprint mismatch — relay may have substituted the PK');
+    }
 
     console.log('5. Wallet: running receiveQR → Encaps + seal HELLO_WALLET');
     const synack = await walletKex.receiveQR(cid, pk);
@@ -234,6 +258,9 @@ async function run() {
     );
 
     console.log('\n✅ E2E v2 SUCCESS');
+    console.log('   - PQP2 QR (cid + 32-byte fingerprint, no embedded PK)');
+    console.log('   - Relay binds dApp PK, serves it to wallet via join_channel ack');
+    console.log('   - Wallet verifies fp(pk) before using it — MITM by relay impossible');
     console.log('   - ML-KEM-768 keygen + encap + decap');
     console.log('   - AES-256-GCM bidirectional AEAD bound to transcript H_tx');
     console.log('   - SYNACK / ACK handshake over relay');

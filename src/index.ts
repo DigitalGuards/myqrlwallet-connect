@@ -30,6 +30,12 @@ export {
   cidToString,
   cidFromString,
   cidRandom,
+  computeFingerprint,
+  fingerprintEquals,
+  BLOB_LEN,
+  CID_LEN,
+  FP_LEN,
+  type ParsedURI,
 } from './utils/qrUri.js';
 export { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
 export {
