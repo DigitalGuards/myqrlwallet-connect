@@ -249,9 +249,12 @@ btnNewConn.addEventListener('click', async () => {
 });
 
 // ─── Disconnect ──────────────────────────────────────────
-btnDisconnect.addEventListener('click', () => {
+btnDisconnect.addEventListener('click', async () => {
   userDisconnected = true;
-  qrl.disconnect();
+  // Await so the TERMINATE is flushed to the relay before we update the UI
+  // — otherwise the wallet lands in its stale-session grace period and the
+  // user sees a ~3s lag on the mobile side.
+  await qrl.disconnect();
   log('Disconnected', 'info');
   updateStatus(ConnectionStatus.DISCONNECTED);
   showDisconnectedUI();

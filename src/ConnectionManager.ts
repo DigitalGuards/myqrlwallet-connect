@@ -29,6 +29,9 @@ import {
 } from './types.js';
 
 const DAPP_PARTICIPANT_CONFLICT_ERROR_MSG = 'dapp participant is already connected';
+// Best-effort cap: give the outbound TERMINATE up to this long to land on
+// the relay before we tear the socket down. Matches the wallet side.
+const TERMINATE_SEND_TIMEOUT_MS = 800;
 
 interface ConnectionManagerEvents {
   status_changed: (status: ConnectionStatus) => void;
@@ -317,19 +320,31 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   /**
+   * Best-effort TERMINATE delivery before we tear the socket down. Without
+   * awaiting, the socket.disconnect() below would win the race against the
+   * outbound emit, the wallet would only see `participants_changed:
+   * disconnect` and enter its stale-session grace period instead of an
+   * instant disconnect. Mirrors the wallet side's pattern.
+   */
+  private async flushTerminate(): Promise<void> {
+    if (!this.keyExchange?.areKeysExchanged()) return;
+    const send = this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {});
+    const timeout = new Promise<void>((resolve) =>
+      setTimeout(resolve, TERMINATE_SEND_TIMEOUT_MS)
+    );
+    await Promise.race([send, timeout]);
+  }
+
+  /**
    * Reset to a fresh channel + keypair. Sends TERMINATE to any live peer,
    * drops the persisted session, and prepares a clean state for
    * getConnectionURI() to be called again.
    */
-  resetForNewChannel(): void {
+  async resetForNewChannel(): Promise<void> {
     this.clearUnresponsiveTimer();
     this.walletPresent = false;
 
-    if (this.keyExchange?.areKeysExchanged()) {
-      this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {
-        // best-effort
-      });
-    }
+    await this.flushTerminate();
 
     this.socketClient.leaveChannel();
     this.socketClient.disconnect();
@@ -345,15 +360,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.setStatus(ConnectionStatus.DISCONNECTED);
   }
 
-  disconnect(): void {
+  async disconnect(): Promise<void> {
     this.clearUnresponsiveTimer();
     this.walletPresent = false;
 
-    if (this.keyExchange?.areKeysExchanged()) {
-      this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {
-        // best-effort
-      });
-    }
+    await this.flushTerminate();
 
     this.socketClient.leaveChannel();
     this.socketClient.disconnect();
@@ -461,7 +472,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
       case MessageType.TERMINATE: {
         log('ConnectionManager', 'Received terminate from wallet');
-        this.disconnect();
+        // fire-and-forget here: we received the wallet's TERMINATE, we
+        // don't need to round-trip another one back at them.
+        void this.disconnect();
         break;
       }
 
