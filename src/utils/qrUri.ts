@@ -41,10 +41,7 @@ function bs(u: Uint8Array): BufferSource {
  * Compute the full 32-byte fingerprint binding (label || cid || pk).
  * Exported so the wallet side can re-derive and verify.
  */
-export async function computeFingerprint(
-  cid: Uint8Array,
-  pk: Uint8Array
-): Promise<Uint8Array> {
+export async function computeFingerprint(cid: Uint8Array, pk: Uint8Array): Promise<Uint8Array> {
   if (cid.length !== CID_LEN) {
     throw new Error(`qrUri: cid must be ${CID_LEN} bytes`);
   }
@@ -113,6 +110,19 @@ export interface ParsedURI {
  * relay and verify it against `fp` before trusting it — `parseConnectionURI`
  * only does syntactic validation here.
  */
+// The PQP1 magic we recognise in legacy blobs to give a targeted error.
+// Full-width check avoids false-positives on random 1208-byte payloads
+// whose 4th byte happens to be ASCII '1'.
+const PQP1_MAGIC = new Uint8Array([0x50, 0x51, 0x50, 0x31]);
+
+function startsWith(buf: Uint8Array, prefix: Uint8Array): boolean {
+  if (buf.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (buf[i] !== prefix[i]) return false;
+  }
+  return true;
+}
+
 export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   if (typeof uri !== 'string' || uri.length === 0) {
     throw new Error('qrUri: empty URI');
@@ -120,8 +130,17 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   if (!/^qrlconnect:/i.test(uri)) {
     throw new Error('qrUri: not a qrlconnect URI');
   }
-  const stripped = uri.replace(/^qrlconnect:\/?\/?\??/i, '');
-  const params = new URLSearchParams(stripped);
+  // Use WHATWG URL parsing (via a dummy http scheme swap since qrlconnect
+  // isn't a registered special scheme) so we reject genuinely malformed
+  // input like "qrlconnect:q=..." or fragments cleanly, and so parameter
+  // extraction matches what a browser does with the same URI.
+  let params: URLSearchParams;
+  try {
+    const swapped = new URL(uri.replace(/^qrlconnect:\/?\/?/i, 'https://qrlconnect/'));
+    params = swapped.searchParams;
+  } catch {
+    throw new Error('qrUri: malformed URI');
+  }
 
   if (params.has('channelId') || params.has('pubKey')) {
     throw new Error(
@@ -145,18 +164,14 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   if (blob.length !== BLOB_LEN) {
     // Distinguish the most likely footgun — a PQP1 URI encoded under the
     // older 1208-byte layout — from random gibberish.
-    if (blob.length === 1208 && blob[3] === 0x31 /* '1' */) {
-      throw new Error(
-        'qrUri: legacy PQP1 URI detected — regenerate the QR with a v2.0+ dApp SDK'
-      );
+    if (blob.length === 1208 && startsWith(blob, PQP1_MAGIC)) {
+      throw new Error('qrUri: legacy PQP1 URI detected — regenerate the QR with a v2.0+ dApp SDK');
     }
     throw new Error(`qrUri: expected ${BLOB_LEN}-byte blob, got ${blob.length}`);
   }
 
-  for (let i = 0; i < MAGIC.length; i++) {
-    if (blob[i] !== MAGIC[i]) {
-      throw new Error('qrUri: bad PQP2 magic');
-    }
+  if (!startsWith(blob, MAGIC)) {
+    throw new Error('qrUri: bad PQP2 magic');
   }
 
   const cid = blob.slice(4, 4 + CID_LEN);

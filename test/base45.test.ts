@@ -34,4 +34,14 @@ describe('base45 (RFC 9285)', () => {
   it('rejects invalid length (tail of 1)', () => {
     expect(() => base45Decode('BBBB')).toThrow();
   });
+
+  it('rejects non-ASCII characters (no silent decode to zero)', () => {
+    // Regression for a bug where char codes ≥128 indexed past the 128-slot
+    // Int8Array, returned undefined, and `undefined < 0` evaluated false —
+    // letting hostile input bypass the "invalid character" throw and
+    // decode to zero bytes.
+    expect(() => base45Decode('BBÿ')).toThrow(/invalid character/);
+    expect(() => base45Decode('BB')).toThrow(/invalid character/);
+    expect(() => base45Decode('あいう')).toThrow(/invalid character/);
+  });
 });
