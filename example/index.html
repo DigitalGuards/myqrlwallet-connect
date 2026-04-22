@@ -171,7 +171,7 @@
     </p>
     <ul>
       <li>Generate a <code>qrlconnect://</code> URI and render it as a QR code</li>
-      <li>Scan it with MyQRLWallet to run the 3-step ECIES key exchange (SYN, SYNACK, ACK)</li>
+      <li>Scan it with MyQRLWallet to run the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
       <li>Call <code>qrl_sendTransaction</code>, <code>personal_sign</code>, and read-only RPC methods</li>
       <li>Watch every encrypted message traverse the relay in the event log below</li>
     </ul>

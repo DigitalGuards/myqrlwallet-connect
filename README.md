@@ -10,7 +10,7 @@ Connect your dApp to QRL Wallet. Users scan a QR code (desktop) or tap a button 
 4. Your dApp sends JSON-RPC requests, the wallet prompts for approval
 5. Signed results come back to your dApp
 
-All communication is end-to-end encrypted (ECIES). The relay server never sees your data.
+All communication is end-to-end encrypted with ML-KEM-768 (FIPS 203) key encapsulation and AES-256-GCM. The relay server never sees your data.
 
 ## Install
 
@@ -124,7 +124,7 @@ The main class. Creates a connection manager and EIP-1193 provider.
 | `disconnected` | No active connection |
 | `connecting` | Connecting to relay server |
 | `waiting` | QR displayed, waiting for wallet to scan |
-| `key_exchange` | ECIES key exchange in progress |
+| `key_exchange` | Post-quantum key exchange in progress |
 | `connected` | Wallet connected, ready for requests |
 | `reconnecting` | Attempting to restore a previous session |
 
@@ -151,7 +151,7 @@ Recommended lifecycle:
 
 The relay is a lightweight Socket.IO server that routes encrypted messages between your dApp and the wallet. It runs at `wss://qrlwallet.com/relay`.
 
-- Messages are ECIES-encrypted end-to-end (the relay sees only ciphertext)
+- Messages are end-to-end encrypted with AES-256-GCM keyed from an ML-KEM-768 handshake (the relay sees only ciphertext)
 - Max 2 participants per channel
 - Messages are buffered for up to 5 minutes if the wallet is temporarily offline (e.g., app backgrounded)
 - Channels auto-expire after 30 minutes of inactivity
@@ -166,31 +166,6 @@ const qrl = new QRLConnect({
   relayUrl: 'https://my-relay-server.com',
 });
 ```
-
-## Bundler setup
-
-The SDK depends on Node's `Buffer` via `eciesjs`. If you're using Vite, add the polyfill plugin:
-
-```bash
-npm install vite-plugin-node-polyfills
-```
-
-```js
-// vite.config.js
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
-
-export default defineConfig({
-  plugins: [
-    nodePolyfills({
-      include: ['buffer'],
-      globals: { Buffer: true },
-    }),
-  ],
-  define: { global: 'globalThis' },
-});
-```
-
-For webpack 5, add `buffer` to `resolve.fallback` and the `ProvidePlugin` for `Buffer`.
 
 ## Development
 
@@ -245,16 +220,6 @@ The example connects to the production relay at `wss://qrlwallet.com/relay` by d
 - PIN or biometric authentication required for every transaction
 - dApp URL is displayed to the user before connecting
 - Unknown RPC methods are rejected with `-32601`
-
-### Migration from v1 (pre-quantum ECIES)
-
-v2 is a hard break: `@qrlwallet/connect@^2.0.0` only speaks the post-quantum
-protocol and does not negotiate with v1 wallets. Both the dApp SDK and the
-wallet must be on v2 for pairing to succeed. Existing v1 sessions cannot be
-migrated — users re-pair once to produce a fresh PQ session key.
-
-Consumers can delete any `nodePolyfills({ include: ['buffer'] })` entries
-from their Vite / webpack config; v2 has no Buffer dependency.
 
 ## License
 

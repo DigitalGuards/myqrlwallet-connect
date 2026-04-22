@@ -4,7 +4,7 @@
 
 QRL Connect (`@qrlwallet/connect`) is a self-hosted, end-to-end encrypted dApp-to-mobile-wallet protocol for the QRL network — the Quantum Resistant Ledger's EVM-compatible chain. It lets any QRL dApp show a QR code or deep link that users scan with the MyQRLWallet mobile app to connect their wallet, approve transactions, and sign messages remotely.
 
-We built this instead of using WalletConnect because WalletConnect v2 requires Reown cloud infrastructure and third-party wallets that can't handle Q-addresses. Since we control both the dApp SDK and the wallet, a custom self-hosted protocol gives us full control over the transport layer — which matters for the post-quantum migration on the roadmap.
+We built this instead of using WalletConnect because WalletConnect v2 requires Reown cloud infrastructure and third-party wallets that can't handle Q-addresses. Since we control both the dApp SDK and the wallet, a custom self-hosted protocol gives us full control over the transport layer — which is why QRL Connect ships with a post-quantum (ML-KEM-768) channel rather than the classical ECDH primitives WalletConnect uses.
 
 ## Architecture & Flow
 
@@ -18,7 +18,7 @@ We built this instead of using WalletConnect because WalletConnect v2 requires R
 │  - EIP-1193 provider│                  │           │ bridge       │
 └─────────────────────┘                  │  ┌────────▼─────────┐   │
            │                             │  │ WebView: Socket   │   │
-   ┌───────▼───────┐                     │  │ client, ECIES,    │   │
+   ┌───────▼───────┐                     │  │ client, ML-KEM,   │   │
    │ Relay Server   │                    │  │ signing, approval │   │
    │ (qrlwallet.com)│                    │  │ UI, sessions      │   │
    │ Socket.IO rooms│                    │  └──────────────────┘   │
@@ -27,13 +27,13 @@ We built this instead of using WalletConnect because WalletConnect v2 requires R
 
 ### SDK (`@qrlwallet/connect`)
 
-The npm package dApp developers install. Generates `qrlconnect://` URIs (for QR codes on desktop, deep links on mobile), manages the Socket.IO connection to the relay, performs ECIES key exchange, and exposes a standard EIP-1193 `provider.request()` interface so dApps interact with it exactly like a browser extension wallet.
+The npm package dApp developers install. Generates `qrlconnect://` URIs (for QR codes on desktop, deep links on mobile), manages the Socket.IO connection to the relay, runs the ML-KEM-768 handshake, and exposes a standard EIP-1193 `provider.request()` interface so dApps interact with it exactly like a browser extension wallet.
 
 Key files:
 - `src/QRLConnectProvider.ts` — EIP-1193 provider with pending request tracking and timeout
 - `src/ConnectionManager.ts` — Orchestrates socket, key exchange, encryption, session persistence
 - `src/KeyExchange.ts` — 3-step SYN/SYNACK/ACK handshake
-- `src/ECIESClient.ts` — ECIES encrypt/decrypt wrapper around `eciesjs`
+- `src/PQCrypto.ts` — ML-KEM-768 (FIPS 203) + AES-256-GCM AEAD, via `@noble/post-quantum` and WebCrypto
 - `src/SocketClient.ts` — Socket.IO client with auto-reconnect
 - `src/config.ts` — Restricted vs unrestricted RPC method lists, timeouts, defaults
 - `src/utils/qrUri.ts` — URI generation and parsing
@@ -49,25 +49,23 @@ The relay buffers messages when one participant disconnects (e.g., phone goes to
 
 ### Transport Layer
 
-Currently uses `eciesjs` (secp256k1 ECIES). The 3-step handshake works like this:
+Uses ML-KEM-768 (FIPS 203, NIST Level 3) for key encapsulation and AES-256-GCM for message encryption, via `@noble/post-quantum` and WebCrypto. The session key is bound to the full handshake transcript (`LABEL || cid || pk || ct`) so ML-KEM's malicious-peer unknown-key-share vulnerabilities can't produce an agreement with inconsistent identities across sessions. The 3-step handshake:
 
-1. **SYN**: dApp sends its ECIES public key to the wallet via the relay
-2. **SYNACK**: Wallet stores dApp's public key, responds with its own public key
-3. **ACK**: dApp confirms receipt — both sides can now encrypt messages to each other
+1. **SYN**: dApp sends its ML-KEM-768 public key to the wallet via the relay
+2. **SYNACK**: Wallet encapsulates a shared secret to the dApp's public key and returns the KEM ciphertext
+3. **ACK**: dApp decapsulates, derives the AEAD key from the transcript, and confirms — both sides can now encrypt messages to each other
 
-After key exchange, all JSON-RPC messages are encrypted with the counterparty's public key before being sent through the relay. The relay only ever sees base64 ciphertext.
+After key exchange, all JSON-RPC messages are encrypted with AES-256-GCM before being sent through the relay. The relay only ever sees base64 ciphertext. Tampering is detected exclusively at the AEAD tag — ML-KEM's FIPS 203 implicit rejection (which returns a pseudo-random secret on bad ciphertext) is NOT used for authentication.
 
 ### Mobile Integration
 
-All approval UI, transaction signing, and ECIES encryption happen inside the React Native WebView (not native code). This keeps seeds and private keys entirely within the WebView JavaScript context — they never cross the native bridge. The native app's role is minimal: QR scanning, receiving `qrlconnect://` deep links, and switching to the WebView tab when an approval modal needs to appear.
+All approval UI, transaction signing, and ML-KEM/AES-GCM encryption happen inside the React Native WebView (not native code). This keeps seeds and private keys entirely within the WebView JavaScript context — they never cross the native bridge. The native app's role is minimal: QR scanning, receiving `qrlconnect://` deep links, and switching to the WebView tab when an approval modal needs to appear.
 
 Relevant wallet-side code lives in `myqrlwallet-frontend/src/services/dappConnect/` and `myqrlwallet-frontend/src/components/Core/Body/DAppConnect/`.
 
 ### Hosted Example (`zondscan.com/dapp-example`)
 
 The `example/` directory is not just a local test harness — it's also publicly hosted as a live demo on ZondScan. Any change you merge here under `example/` will appear on `zondscan.com/dapp-example` the next time that explorer redeploys (its `prebuild` hook clones this repo, builds the example, and stages `dist/` into its `public/dapp-example/`). Treat copy, styling, and behavior in `example/` as user-facing.
-
-**Build-time quirk worth remembering:** `vite-plugin-node-polyfills` must be listed in the SDK's root `devDependencies` (not just `example/package.json`). When the example is built, Vite processes `eciesjs` from the SDK's hoisted `node_modules` and injects `import 'vite-plugin-node-polyfills/shims/buffer'` into it; Node's resolution walks up from `eciesjs/` and fails unless the plugin is hoisted to the SDK root. If someone "cleans up" that devDep thinking it's unused, `example/npm run build` will break with `Rollup failed to resolve "vite-plugin-node-polyfills/shims/buffer"`.
 
 `RELAY_URL` in `example/main.js` is hardcoded to `https://qrlwallet.com` so the hosted example works out of the box. Edit the constant when running locally against a dev backend.
 
@@ -102,7 +100,7 @@ qrlwallet-connect/
 │   ├── QRLConnectProvider.ts   # EIP-1193 provider
 │   ├── ConnectionManager.ts    # Connection orchestrator
 │   ├── KeyExchange.ts          # SYN/SYNACK/ACK handshake
-│   ├── ECIESClient.ts          # ECIES encryption wrapper
+│   ├── PQCrypto.ts             # ML-KEM-768 + AES-256-GCM
 │   ├── SocketClient.ts         # Socket.IO client
 │   ├── config.ts               # Constants, method lists
 │   ├── types.ts                # All TypeScript types/enums
@@ -137,18 +135,14 @@ Full request/response examples are documented in `docs/JSON-RPC-REFERENCE.md`.
 - The relay buffers up to 50 messages per channel for 5 minutes when one side disconnects
 - After 5 failed reconnection attempts, the SDK emits a `connection_lost` event
 
-## Future Roadmap: Post-Quantum Migration
+## Post-Quantum Transport
 
-**The next major architectural evolution for this repo is upgrading the transport layer from standard ECIES (secp256k1) to NIST-standardized Post-Quantum cryptography.** This means replacing the current `eciesjs`-based key exchange and encryption with:
+The transport layer is built on NIST-standardized post-quantum primitives, aligning QRL Connect's channel security with the same PQ guarantees the QRL network provides at the consensus layer:
 
-- **ML-KEM (Kyber)** for key encapsulation — establishing shared secrets resistant to quantum attacks
-- **ML-DSA (Dilithium)** for authentication — signing handshake messages to prevent MITM attacks
+- **ML-KEM-768 (Kyber)** — FIPS 203 key encapsulation, via `@noble/post-quantum`
+- **HKDF-SHA-256** — derives per-direction AEAD keys from the shared secret, bound to the full handshake transcript (`LABEL || cid || pk || ct`)
+- **AES-256-GCM** — authenticated encryption of every JSON-RPC payload, via WebCrypto SubtleCrypto
 
-The QRL ecosystem already has `@theqrl/mldsa87` and related libraries for post-quantum signatures. The migration path is:
+Authentication of the channel relies exclusively on the AES-GCM tag. ML-KEM's FIPS 203 implicit rejection (returning a pseudo-random secret on tampered ciphertext) is deliberately NOT used as an authentication signal.
 
-1. Replace `ECIESClient.ts` with a PQ-KEM client (ML-KEM-768 or ML-KEM-1024)
-2. Replace the SYN/SYNACK/ACK pubkey exchange with KEM encapsulation/decapsulation
-3. Add ML-DSA signatures to handshake messages for mutual authentication
-4. Bump `PROTOCOL_VERSION` to 2 and handle version negotiation for backward compatibility
-
-This aligns QRL Connect's transport security with the same post-quantum guarantees that the QRL network itself provides at the consensus layer.
+A future hardening step is adding **ML-DSA-87 (Dilithium)** signatures over the handshake transcript for explicit mutual authentication against active MITM. The QRL ecosystem already ships `@theqrl/mldsa87` for this.

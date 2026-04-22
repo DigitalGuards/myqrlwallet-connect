@@ -16,7 +16,7 @@ A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also th
 └──────────┬──────────┘                        │           │ bridge       │
            │                                   │  ┌────────▼─────────┐    │
            │ Socket.IO                         │  │ WebView: Socket  │    │
-           │ (E2E encrypted ciphertext)        │  │ client, ECIES,   │    │
+           │ (E2E encrypted ciphertext)        │  │ client, ML-KEM,  │    │
            ▼                                   │  │ signing, approval│    │
       ┌─────────────┐    Socket.IO             │  │ UI, sessions     │    │
       │ Relay Server│<===========================│                  │    │
@@ -25,7 +25,7 @@ A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also th
       └─────────────┘                          └──────────────────────────┘
 ```
 
-- **SDK (`@qrlwallet/connect`)** — the npm package your dApp installs. Generates `qrlconnect://` URIs, runs the ECIES key exchange, and exposes an EIP-1193 `provider.request()` interface so your dApp talks to it like a browser-extension wallet.
+- **SDK (`@qrlwallet/connect`)** — the npm package your dApp installs. Generates `qrlconnect://` URIs, runs the ML-KEM-768 handshake, and exposes an EIP-1193 `provider.request()` interface so your dApp talks to it like a browser-extension wallet.
 - **Relay** — a stateless Socket.IO message router in `myqrlwallet-backend/src/relay/`. Sees only ciphertext; buffers up to 50 messages for 5 min when the phone is backgrounded.
 - **Wallet** — signing, encryption, and approval UI all live inside the MyQRLWallet React Native WebView; the native layer only does QR scanning and deep-link handling.
 
