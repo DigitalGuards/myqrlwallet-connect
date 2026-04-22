@@ -252,19 +252,24 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     }
     this.pendingRequests.clear();
 
-    this.connectionManager.resetForNewChannel();
+    // Await so the outbound TERMINATE has time to land on the relay
+    // before we rotate the socket. Wallet side sees instant disconnect.
+    await this.connectionManager.resetForNewChannel();
     return this.getConnectionURI();
   }
 
   /**
-   * Disconnect from wallet and clean up.
+   * Disconnect from wallet and clean up. Returns once the TERMINATE has
+   * either been flushed to the relay or the 800ms best-effort window has
+   * elapsed — the wallet gets an instant disconnect instead of landing in
+   * its stale-session grace period.
    */
-  disconnect(): void {
+  async disconnect(): Promise<void> {
     // Reject all pending requests
     for (const [, pending] of this.pendingRequests) {
       pending.reject(new Error('Disconnected'));
     }
     this.pendingRequests.clear();
-    this.connectionManager.disconnect();
+    await this.connectionManager.disconnect();
   }
 }

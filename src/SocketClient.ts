@@ -5,6 +5,12 @@
 import { io, Socket } from 'socket.io-client';
 import EventEmitter from 'eventemitter3';
 import { RELAY_PATH } from './config.js';
+
+// Cap how long a deferred joinChannel() will wait for the socket to come
+// up before giving up. Without this the caller's await hangs forever if
+// the relay is unreachable (socket.io retries internally, but our
+// pendingJoin only resolves on `connect`).
+const PENDING_JOIN_TIMEOUT_MS = 20000;
 import { log, warn, error as logError } from './utils/logger.js';
 import type { RelayMessage } from './types.js';
 
@@ -17,23 +23,49 @@ interface SocketClientEvents {
   error: (err: Error) => void;
 }
 
+export interface JoinResult {
+  bufferedMessages: unknown[];
+  /**
+   * Base64-encoded KEM public key the relay has bound to this channel.
+   * Populated for wallet joins (v2 protocol). `null` if the dApp hasn't
+   * registered a PK yet — wallet callers must treat this as a retry signal.
+   */
+  channelPublicKey: string | null;
+}
+
 export class SocketClient extends EventEmitter<SocketClientEvents> {
   private socket: Socket | null = null;
   private relayUrl: string;
   private channelId: string | null = null;
   private clientType: 'dapp' | 'wallet';
+  // The dApp's own PK (base64) that must be uploaded with every join
+  // attempt so the relay can bind it to the channel. Wallet-side leaves
+  // this undefined.
+  private publicKeyBase64: string | null = null;
   private seq = 0;
   private pendingJoin: {
     channelId: string;
-    promise: Promise<{ bufferedMessages: unknown[] }>;
-    resolve: (result: { bufferedMessages: unknown[] }) => void;
+    promise: Promise<JoinResult>;
+    resolve: (result: JoinResult) => void;
     reject: (error: Error) => void;
+    watchdog: ReturnType<typeof setTimeout>;
   } | null = null;
 
   constructor(relayUrl: string, clientType: 'dapp' | 'wallet') {
     super();
     this.relayUrl = relayUrl;
     this.clientType = clientType;
+  }
+
+  /**
+   * dApp-only: stash the PK so it gets uploaded on every join_channel
+   * attempt (including auto-rejoins after reconnect).
+   */
+  setPublicKey(publicKeyBase64: string): void {
+    if (this.clientType !== 'dapp') {
+      throw new Error('SocketClient.setPublicKey is only valid for dApp clients');
+    }
+    this.publicKeyBase64 = publicKeyBase64;
   }
 
   /**
@@ -63,18 +95,12 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
         const reconnectChannelId = this.channelId;
         this.joinChannelNow(reconnectChannelId)
           .then((result) => {
-            if (this.pendingJoin && this.pendingJoin.channelId === reconnectChannelId) {
-              this.pendingJoin.resolve(result);
-              this.pendingJoin = null;
-            }
+            this.settlePendingJoin(reconnectChannelId, { result });
             this.emit('reconnected');
           })
           .catch((err) => {
             const reconnectErr = err instanceof Error ? err : new Error(String(err));
-            if (this.pendingJoin && this.pendingJoin.channelId === reconnectChannelId) {
-              this.pendingJoin.reject(reconnectErr);
-              this.pendingJoin = null;
-            }
+            this.settlePendingJoin(reconnectChannelId, { error: reconnectErr });
             logError('Socket', `Rejoin failed: ${reconnectErr.message}`);
             this.emit('error', reconnectErr);
           });
@@ -98,14 +124,40 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
 
     this.socket.on('connect_error', (err) => {
       warn('Socket', `Connection error: ${err.message}`);
+      // If the caller's `joinChannel()` is waiting on this connection and
+      // we've exhausted the underlying socket.io retry budget (rare — it
+      // retries forever by default), the watchdog in `pendingJoin` will
+      // reject. We don't reject here because socket.io will retry
+      // automatically, but we do emit so subscribers can react.
       this.emit('error', err);
     });
   }
 
   /**
-   * Join a relay channel.
+   * Resolve or reject the currently-pending `joinChannel` promise, if it
+   * matches the given channelId. Clears the watchdog timer on settle so
+   * it doesn't fire after the fact.
    */
-  async joinChannel(channelId: string): Promise<{ bufferedMessages: unknown[] }> {
+  private settlePendingJoin(
+    channelId: string,
+    outcome: { result: JoinResult } | { error: Error }
+  ): void {
+    if (!this.pendingJoin || this.pendingJoin.channelId !== channelId) return;
+    clearTimeout(this.pendingJoin.watchdog);
+    const pending = this.pendingJoin;
+    this.pendingJoin = null;
+    if ('result' in outcome) {
+      pending.resolve(outcome.result);
+    } else {
+      pending.reject(outcome.error);
+    }
+  }
+
+  /**
+   * Join a relay channel. Resolves with any buffered messages plus the
+   * dApp's public key bound to the channel (for wallet joins).
+   */
+  async joinChannel(channelId: string): Promise<JoinResult> {
     if (!this.socket) {
       throw new Error('Socket not initialized. Call connect() before joinChannel()');
     }
@@ -123,41 +175,69 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
       if (this.pendingJoin.channelId === channelId) {
         return this.pendingJoin.promise;
       }
+      clearTimeout(this.pendingJoin.watchdog);
       this.pendingJoin.reject(new Error('Join request superseded by a newer channel'));
       this.pendingJoin = null;
     }
 
-    let resolvePending!: (result: { bufferedMessages: unknown[] }) => void;
+    let resolvePending!: (result: JoinResult) => void;
     let rejectPending!: (error: Error) => void;
-    const promise = new Promise<{ bufferedMessages: unknown[] }>((resolve, reject) => {
+    const promise = new Promise<JoinResult>((resolve, reject) => {
       resolvePending = resolve;
       rejectPending = reject;
     });
+
+    // Watchdog so an unreachable relay doesn't hang the caller forever.
+    // socket.io's own `reconnectionAttempts: Infinity` means no amount of
+    // connect_error events will ever abort from its side.
+    const watchdog = setTimeout(() => {
+      this.settlePendingJoin(channelId, {
+        error: new Error(`joinChannel timed out after ${PENDING_JOIN_TIMEOUT_MS}ms`),
+      });
+    }, PENDING_JOIN_TIMEOUT_MS);
 
     this.pendingJoin = {
       channelId,
       promise,
       resolve: resolvePending,
       reject: rejectPending,
+      watchdog,
     };
 
     return promise;
   }
 
-  private joinChannelNow(channelId: string): Promise<{ bufferedMessages: unknown[] }> {
+  private joinChannelNow(channelId: string): Promise<JoinResult> {
     return new Promise((resolve, reject) => {
       if (!this.socket?.connected) {
         reject(new Error('Socket not connected'));
         return;
       }
 
+      const payload: {
+        channelId: string;
+        clientType: 'dapp' | 'wallet';
+        publicKey?: string;
+      } = { channelId, clientType: this.clientType };
+      if (this.clientType === 'dapp' && this.publicKeyBase64) {
+        payload.publicKey = this.publicKeyBase64;
+      }
+
       this.socket.emit(
         'join_channel',
-        { channelId, clientType: this.clientType },
-        (response: { success: boolean; error?: string; bufferedMessages?: unknown[] }) => {
+        payload,
+        (response: {
+          success: boolean;
+          error?: string;
+          bufferedMessages?: unknown[];
+          channelPublicKey?: string | null;
+        }) => {
           if (response.success) {
             log('Socket', `Joined channel ${channelId}`);
-            resolve({ bufferedMessages: response.bufferedMessages || [] });
+            resolve({
+              bufferedMessages: response.bufferedMessages || [],
+              channelPublicKey: response.channelPublicKey ?? null,
+            });
           } else {
             logError('Socket', `Failed to join channel: ${response.error}`);
             reject(new Error(response.error || 'Failed to join channel'));
@@ -197,6 +277,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    */
   leaveChannel(): void {
     if (this.pendingJoin) {
+      clearTimeout(this.pendingJoin.watchdog);
       this.pendingJoin.reject(new Error('Channel left before join completed'));
       this.pendingJoin = null;
     }
@@ -211,6 +292,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    */
   disconnect(): void {
     if (this.pendingJoin) {
+      clearTimeout(this.pendingJoin.watchdog);
       this.pendingJoin.reject(new Error('Socket disconnected before join completed'));
       this.pendingJoin = null;
     }

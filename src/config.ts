@@ -1,6 +1,6 @@
 export const DEFAULT_RELAY_URL = 'https://qrlwallet.com';
 export const RELAY_PATH = '/relay';
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const STORAGE_KEY_PREFIX = '@qrlwallet/connect';
 export const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes

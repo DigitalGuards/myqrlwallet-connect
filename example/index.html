@@ -8,22 +8,50 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0a0a17;
+      background: #1a1a1a;
       color: #e0e0e0;
       min-height: 100vh;
       padding: 2rem;
     }
-    h1 { color: #4aafff; margin-bottom: 0.25rem; }
-    .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+    h1 { color: #ffa729; margin-bottom: 0.25rem; }
+    .subtitle { color: #9ca3af; margin-bottom: 1.25rem; font-size: 0.9rem; }
+    .intro {
+      max-width: 720px;
+      margin-bottom: 2rem;
+      background: linear-gradient(to bottom right, #2d2d2d, #1f1f1f);
+      border: 1px solid #2d2d2d;
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      color: #d1d5db;
+      font-size: 0.92rem;
+      line-height: 1.55;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    .intro p { margin-bottom: 0.75rem; }
+    .intro p:last-child { margin-bottom: 0; }
+    .intro strong { color: #e0e0e0; }
+    .intro code {
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
+      border-radius: 4px;
+      padding: 0.05rem 0.35rem;
+      font-size: 0.85rem;
+      color: #ffa729;
+    }
+    .intro a { color: #ffa729; text-decoration: none; }
+    .intro a:hover { text-decoration: underline; }
+    .intro ul { margin: 0.25rem 0 0 1.25rem; }
+    .intro li { margin-bottom: 0.25rem; }
     .card {
-      background: #12132a;
-      border: 1px solid #1e2045;
+      background: linear-gradient(to bottom right, #2d2d2d, #1f1f1f);
+      border: 1px solid #2d2d2d;
       border-radius: 12px;
       padding: 1.5rem;
       margin-bottom: 1.5rem;
       max-width: 480px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
     }
-    .card h2 { color: #4aafff; font-size: 1.1rem; margin-bottom: 1rem; }
+    .card h2 { color: #ffa729; font-size: 1.1rem; margin-bottom: 1rem; }
     .status-row {
       display: flex;
       align-items: center;
@@ -49,73 +77,75 @@
     #qr-container canvas { display: block; }
     #qr-container.hidden { display: none; }
     .uri-box {
-      background: #0a0a17;
-      border: 1px solid #1e2045;
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
       border-radius: 6px;
       padding: 0.75rem;
       font-family: monospace;
       font-size: 0.75rem;
       word-break: break-all;
-      color: #888;
+      color: #9ca3af;
       margin: 0.75rem 0;
       max-height: 80px;
       overflow-y: auto;
     }
     button {
-      background: #4aafff;
-      color: #000;
+      background: #ffa729;
+      color: #1a1a1a;
       border: none;
       border-radius: 8px;
       padding: 0.7rem 1.5rem;
       font-size: 0.95rem;
       font-weight: 600;
       cursor: pointer;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, background 0.15s;
     }
-    button:hover { opacity: 0.85; }
+    button:hover { background: #ffb85c; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     button.outline {
       background: transparent;
-      border: 1px solid #4aafff;
-      color: #4aafff;
+      border: 1px solid #ffa729;
+      color: #ffa729;
     }
+    button.outline:hover { background: rgba(255, 167, 41, 0.1); }
     button.danger {
       background: #ef4444;
       color: #fff;
     }
+    button.danger:hover { background: #f87171; }
     .btn-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
     input, select {
       width: 100%;
-      background: #0a0a17;
-      border: 1px solid #1e2045;
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
       border-radius: 6px;
       color: #e0e0e0;
       padding: 0.6rem 0.75rem;
       font-size: 0.9rem;
       margin-bottom: 0.75rem;
     }
-    input:focus, select:focus { outline: none; border-color: #4aafff; }
-    label { display: block; font-size: 0.8rem; color: #888; margin-bottom: 0.25rem; }
-    .info { font-family: monospace; font-size: 0.85rem; color: #4aafff; word-break: break-all; }
+    input:focus, select:focus { outline: none; border-color: #ffa729; }
+    label { display: block; font-size: 0.8rem; color: #9ca3af; margin-bottom: 0.25rem; }
+    .info { font-family: monospace; font-size: 0.85rem; color: #ffa729; word-break: break-all; }
     .log-area {
-      background: #0a0a17;
-      border: 1px solid #1e2045;
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
       border-radius: 6px;
       padding: 0.75rem;
       font-family: monospace;
       font-size: 0.75rem;
       max-height: 200px;
       overflow-y: auto;
-      color: #888;
+      color: #9ca3af;
       line-height: 1.6;
     }
-    .log-area .log-entry { border-bottom: 1px solid #1e2045; padding: 2px 0; }
+    .log-area .log-entry { border-bottom: 1px solid #2d2d2d; padding: 2px 0; }
     .log-area .log-entry:last-child { border-bottom: none; }
     .log-entry.error { color: #ef4444; }
     .log-entry.success { color: #22c55e; }
-    .log-entry.info { color: #4aafff; }
+    .log-entry.info { color: #ffa729; }
     .result-box {
-      background: #0a0a17;
+      background: #1a1a1a;
       border: 1px solid #22c55e;
       border-radius: 6px;
       padding: 0.75rem;
@@ -130,7 +160,29 @@
 <body>
 
   <h1>QRL Connect Test dApp</h1>
-  <p class="subtitle">Scan the QR code with MyQRLWallet to connect</p>
+  <p class="subtitle">Live demo of <code>@qrlwallet/connect</code>. Pair a dApp with MyQRLWallet over an end-to-end encrypted channel.</p>
+
+  <div class="intro">
+    <p>
+      <strong>QRL Connect</strong> is a self-hosted, end-to-end encrypted protocol that lets any QRL dApp connect to the MyQRLWallet mobile app. It fills the same role as WalletConnect, but is built for the Quantum Resistant Ledger: it handles <code>Q</code>-addresses natively and can migrate to post-quantum cryptography on our own timeline. The dApp ships an EIP-1193 provider; the wallet handles all signing and approval UI. A stateless relay server just shuttles ciphertext between them, so it never sees your keys or plaintext.
+    </p>
+    <p>
+      <strong>This page demonstrates the full flow end-to-end</strong>, so you can try the protocol without writing any code:
+    </p>
+    <ul>
+      <li>Generate a <code>qrlconnect://</code> URI and render it as a QR code</li>
+      <li>Scan it with MyQRLWallet to run the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
+      <li>Call <code>qrl_sendTransaction</code>, <code>personal_sign</code>, and read-only RPC methods</li>
+      <li>Watch every encrypted message traverse the relay in the event log below</li>
+    </ul>
+    <p>
+      Get the SDK on npm: <code>npm install @qrlwallet/connect</code> &nbsp;&middot;&nbsp;
+      Source and docs:
+      <a href="https://github.com/DigitalGuards/myqrlwallet-connect" target="_blank" rel="noopener">github.com/DigitalGuards/myqrlwallet-connect</a>
+      &nbsp;&middot;&nbsp; Get the wallet:
+      <a href="https://qrlwallet.com" target="_blank" rel="noopener">qrlwallet.com</a>
+    </p>
+  </div>
 
   <!-- Connection Card -->
   <div class="card">
@@ -148,7 +200,7 @@
 
     <div id="account-info" class="hidden">
       <label>Connected Account</label>
-      <div class="info" id="account-address">—</div>
+      <div class="info" id="account-address">Not connected</div>
     </div>
 
     <div class="btn-row">

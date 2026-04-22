@@ -230,6 +230,45 @@ describe('SocketClient', () => {
 
       await expect(joinPromise).rejects.toThrow('Channel is full');
     });
+
+    it('should time out the deferred join if `connect` never fires', async () => {
+      // Regression for the "unreachable relay → caller hangs forever" bug:
+      // socket.io-client's `reconnection: true + reconnectionAttempts:
+      // Infinity` means connect_error will retry internally and never
+      // abort from its side. Without a watchdog the caller's await hangs.
+      vi.useFakeTimers();
+      try {
+        client.connect();
+        // Socket never transitions to connected; no `connect` handler fires.
+        const joinPromise = client.joinChannel('test-channel');
+        // Attach a handler so vitest doesn't warn about unhandled rejection
+        // while we're advancing the clock.
+        const caught = joinPromise.catch((e) => e);
+        await vi.advanceTimersByTimeAsync(21000);
+        const err = await caught;
+        expect((err as Error).message).toMatch(/timed out/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should clear the watchdog when leaveChannel is called before the socket connects', async () => {
+      vi.useFakeTimers();
+      try {
+        client.connect();
+        const joinPromise = client.joinChannel('test-channel');
+        const caught = joinPromise.catch((e) => e);
+        // User abandons the pairing before connect fires.
+        client.leaveChannel();
+        const err = await caught;
+        expect((err as Error).message).toMatch(/Channel left/i);
+        // Advance past the watchdog deadline — a lingering timer would
+        // reject again and this test would fail on an unhandled promise.
+        await vi.advanceTimersByTimeAsync(25000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('sendMessage', () => {

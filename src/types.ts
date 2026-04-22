@@ -1,3 +1,5 @@
+import type { PersistedSession } from './KeyExchange.js';
+
 /** dApp metadata shown to user in approval UI */
 export interface DAppMetadata {
   name: string;
@@ -5,11 +7,17 @@ export interface DAppMetadata {
   icon?: string;
 }
 
-/** Stored session for reconnection */
+/**
+ * Stored session for reconnection.
+ *
+ * v2 persists the derived AES-256 session key (not the ML-KEM secret key) —
+ * the ML-KEM keypair is ephemeral and zeroized after the handshake.
+ * Re-pair (generate a new QR) to rotate the session key.
+ */
 export interface DAppSession {
+  version: 2;
   channelId: string;
-  privateKey: string;
-  otherPublicKey: string | null;
+  keyExchange: PersistedSession;
   dappMetadata: DAppMetadata;
   connectedAccounts: string[];
   chainId: string;
@@ -27,7 +35,13 @@ export interface PendingRequest {
   timestamp: number;
 }
 
-/** Key exchange message types */
+/**
+ * Key-exchange wire-message types.
+ *
+ * v2 note: only SYNACK (wallet→dApp) and ACK (dApp→wallet) are transmitted
+ * over the relay. The SYN step is carried by the QR code itself — the dApp's
+ * ML-KEM-768 encapsulation key is embedded in the URI, not sent on the wire.
+ */
 export enum KeyExchangeMessageType {
   SYN = 'key_handshake_SYN',
   SYNACK = 'key_handshake_SYNACK',
@@ -47,10 +61,10 @@ export enum MessageType {
 
 /** Wire message format sent through the relay */
 export interface RelayMessage {
-  id: string; // channelId
+  id: string;
   clientType: 'dapp' | 'wallet';
-  message: string | object; // encrypted base64 string or plaintext object (for key exchange)
-  seq?: number; // Monotonic sequence number for replay protection
+  message: string | object;
+  seq?: number;
 }
 
 /** Connection state */

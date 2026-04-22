@@ -10,7 +10,7 @@ Connect your dApp to QRL Wallet. Users scan a QR code (desktop) or tap a button 
 4. Your dApp sends JSON-RPC requests, the wallet prompts for approval
 5. Signed results come back to your dApp
 
-All communication is end-to-end encrypted (ECIES). The relay server never sees your data.
+All communication is end-to-end encrypted with ML-KEM-768 (FIPS 203) key encapsulation and AES-256-GCM. The relay server never sees your data.
 
 ## Install
 
@@ -25,7 +25,7 @@ import { QRLConnect } from '@qrlwallet/connect';
 
 const qrl = new QRLConnect({
   dappMetadata: {
-    name: 'My Zond dApp',
+    name: 'My QRL dApp',
     url: 'https://mydapp.com',
   },
 });
@@ -80,7 +80,7 @@ const qrl = new QRLConnect({
 
   // Optional
   relayUrl: 'https://qrlwallet.com',  // default relay
-  chainId: '0x0',                      // Zond chain ID
+  chainId: '0x0',                      // QRL chain ID
   autoReconnect: true,                 // reconnect on page load (default: true)
   debug: false,                        // console logging
 });
@@ -124,7 +124,7 @@ The main class. Creates a connection manager and EIP-1193 provider.
 | `disconnected` | No active connection |
 | `connecting` | Connecting to relay server |
 | `waiting` | QR displayed, waiting for wallet to scan |
-| `key_exchange` | ECIES key exchange in progress |
+| `key_exchange` | Post-quantum key exchange in progress |
 | `connected` | Wallet connected, ready for requests |
 | `reconnecting` | Attempting to restore a previous session |
 
@@ -151,7 +151,7 @@ Recommended lifecycle:
 
 The relay is a lightweight Socket.IO server that routes encrypted messages between your dApp and the wallet. It runs at `wss://qrlwallet.com/relay`.
 
-- Messages are ECIES-encrypted end-to-end (the relay sees only ciphertext)
+- Messages are end-to-end encrypted with AES-256-GCM keyed from an ML-KEM-768 handshake (the relay sees only ciphertext)
 - Max 2 participants per channel
 - Messages are buffered for up to 5 minutes if the wallet is temporarily offline (e.g., app backgrounded)
 - Channels auto-expire after 30 minutes of inactivity
@@ -166,31 +166,6 @@ const qrl = new QRLConnect({
   relayUrl: 'https://my-relay-server.com',
 });
 ```
-
-## Bundler setup
-
-The SDK depends on Node's `Buffer` via `eciesjs`. If you're using Vite, add the polyfill plugin:
-
-```bash
-npm install vite-plugin-node-polyfills
-```
-
-```js
-// vite.config.js
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
-
-export default defineConfig({
-  plugins: [
-    nodePolyfills({
-      include: ['buffer'],
-      globals: { Buffer: true },
-    }),
-  ],
-  define: { global: 'globalThis' },
-});
-```
-
-For webpack 5, add `buffer` to `resolve.fallback` and the `ProvidePlugin` for `Buffer`.
 
 ## Development
 
@@ -211,12 +186,14 @@ npm test
 npm run lint
 
 # E2E test (starts a local relay, simulates dApp + wallet handshake)
-node test-e2e.js
+node test-e2e.mjs
 ```
 
 ## Running the example dApp
 
 The `example/` directory contains a Vite test dApp with QR code generation, transaction sending, message signing, and read-only RPC calls.
+
+> **Want to try it without any setup?** The same example is hosted live at [zondscan.com/dapp-example](https://zondscan.com/dapp-example) — it pairs with the production relay and MyQRLWallet mobile app out of the box.
 
 ```bash
 # 1. Build the SDK first (the example links to it locally)
@@ -234,8 +211,12 @@ The example connects to the production relay at `wss://qrlwallet.com/relay` by d
 ## Security
 
 - Private keys and seeds never leave the wallet
-- All relay traffic is ECIES-encrypted (Elliptic Curve Integrated Encryption Scheme)
-- Key exchange uses a 3-step SYN/SYNACK/ACK handshake
+- All relay traffic is end-to-end encrypted with **AES-256-GCM** bound to a
+  **transcript hash** derived from the full handshake (`LABEL || cid || pk || ct`)
+- Session keys are established with **ML-KEM-768** (FIPS 203, NIST Level 3),
+  carried in the QR code so the relay never sees an uncommitted public key
+- Ciphertext tampering is detected exclusively at the AES-GCM tag;
+  ML-KEM's implicit rejection is NOT used for authentication
 - PIN or biometric authentication required for every transaction
 - dApp URL is displayed to the user before connecting
 - Unknown RPC methods are rejected with `-32601`
