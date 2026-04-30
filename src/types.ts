@@ -103,6 +103,19 @@ export interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
+/**
+ * EIP-6963 wallet identity advertised to dApps.
+ *
+ * `rdns` MUST be unique to this wallet and SHOULD be a reverse-DNS string
+ * (per EIP-6963). Defaults work for most consumers — override only when
+ * embedding the SDK inside a different branded wallet.
+ */
+export interface EIP6963ProviderInfoOverride {
+  name?: string;
+  icon?: string;
+  rdns?: string;
+}
+
 /** QRL Connect configuration */
 export interface QRLConnectOptions {
   dappMetadata: DAppMetadata;
@@ -114,4 +127,13 @@ export interface QRLConnectOptions {
   storageKey?: string;
   /** Enable debug logging */
   debug?: boolean;
+  /**
+   * Announce the provider via EIP-6963 so dApp wallet pickers can see it
+   * alongside the QRL browser extension. Defaults to true in browser
+   * environments. Set false to suppress (e.g. when the dApp wires the
+   * provider in manually).
+   */
+  announceProvider?: boolean;
+  /** Override the EIP-6963 announce metadata (name / icon / rdns). */
+  providerInfo?: EIP6963ProviderInfoOverride;
 }

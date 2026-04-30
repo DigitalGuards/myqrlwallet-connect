@@ -19,10 +19,45 @@ import {
 
 let requestCounter = 0;
 
+/**
+ * Default EIP-6963 identity for the QRL Connect provider. The `rdns` is
+ * deliberately distinct from the QRL browser extension (`theqrl.org`) so
+ * both wallets can coexist in the same dApp picker.
+ */
+export const QRL_CONNECT_PROVIDER_INFO = {
+  name: 'MyQRLWallet (Mobile)',
+  rdns: 'com.qrlwallet.connect',
+  // Compact inline mark — base64 SVG, ~600 bytes — keeps the announce payload
+  // small while still rendering crisply in standard EIP-6963 pickers.
+  icon:
+    'data:image/svg+xml;base64,' +
+    'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA' +
+    '2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxYTF' +
+    'hMWEiLz48dGV4dCB4PSI1MCUiIHk9IjU0JSIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSI' +
+    'gdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iI2ZmYTcyOSIgZm9udC1mYW1pbHk9Ii1hcHB' +
+    'sZS1zeXN0ZW0sU2Vnb2UgVUksc2Fucy1zZXJpZiIgZm9udC1zaXplPSIzNiIgZm9udC13ZWl' +
+    'naHQ9IjcwMCI+UTwvdGV4dD48L3N2Zz4=',
+} as const;
+
+const EIP6963_ANNOUNCE_EVENT = 'eip6963:announceProvider';
+const EIP6963_REQUEST_EVENT = 'eip6963:requestProvider';
+
+function generateUuid(): string {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  // RFC4122 v4 fallback
+  const r = (n: number) => Math.floor(Math.random() * n);
+  const hex = (n: number, len: number) => n.toString(16).padStart(len, '0');
+  return `${hex(r(0x100000000), 8)}-${hex(r(0x10000), 4)}-${hex(0x4000 | r(0x1000), 4)}-${hex(0x8000 | r(0x4000), 4)}-${hex(r(0x100000000), 8)}${hex(r(0x10000), 4)}`;
+}
+
 export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private connectionManager: ConnectionManager;
   private pendingRequests = new Map<string | number, PendingRequest>();
   private options: QRLConnectOptions;
+  private eip6963Detail: { info: { uuid: string; name: string; icon: string; rdns: string }; provider: QRLConnectProvider } | null = null;
+  private eip6963RequestListener: (() => void) | null = null;
   readonly isQRLConnect = true;
 
   constructor(options: QRLConnectOptions) {
@@ -46,6 +81,55 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     if (options.autoReconnect !== false) {
       this.connectionManager.reconnect();
     }
+
+    // EIP-6963 announce so dApp pickers see this provider next to the
+    // QRL browser extension. Default-on in browsers; opt-out via
+    // `announceProvider: false`.
+    if (options.announceProvider !== false) {
+      this.startEip6963Announce();
+    }
+  }
+
+  private startEip6963Announce(): void {
+    if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') {
+      return;
+    }
+
+    const overrides = this.options.providerInfo ?? {};
+    this.eip6963Detail = Object.freeze({
+      info: Object.freeze({
+        uuid: generateUuid(),
+        name: overrides.name ?? QRL_CONNECT_PROVIDER_INFO.name,
+        icon: overrides.icon ?? QRL_CONNECT_PROVIDER_INFO.icon,
+        rdns: overrides.rdns ?? QRL_CONNECT_PROVIDER_INFO.rdns,
+      }),
+      provider: this,
+    }) as typeof this.eip6963Detail;
+
+    const announce = () => {
+      if (!this.eip6963Detail) return;
+      window.dispatchEvent(
+        new CustomEvent(EIP6963_ANNOUNCE_EVENT, { detail: this.eip6963Detail }),
+      );
+    };
+
+    // Spec requires re-announce every time a dApp dispatches `requestProvider`,
+    // not just once at construction (pickers fire it on mount, after our
+    // initial announce has already gone past).
+    this.eip6963RequestListener = announce;
+    window.addEventListener(EIP6963_REQUEST_EVENT, announce);
+    announce();
+  }
+
+  /**
+   * Stop announcing this provider over EIP-6963. Safe to call from any env.
+   */
+  stopEip6963Announce(): void {
+    if (typeof window !== 'undefined' && this.eip6963RequestListener) {
+      window.removeEventListener(EIP6963_REQUEST_EVENT, this.eip6963RequestListener);
+    }
+    this.eip6963RequestListener = null;
+    this.eip6963Detail = null;
   }
 
   private setupConnectionListeners(): void {
