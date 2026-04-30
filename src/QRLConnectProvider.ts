@@ -56,7 +56,10 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private connectionManager: ConnectionManager;
   private pendingRequests = new Map<string | number, PendingRequest>();
   private options: QRLConnectOptions;
-  private eip6963Detail: { info: { uuid: string; name: string; icon: string; rdns: string }; provider: QRLConnectProvider } | null = null;
+  private eip6963Detail: {
+    info: { uuid: string; name: string; icon: string; rdns: string };
+    provider: QRLConnectProvider;
+  } | null = null;
   private eip6963RequestListener: (() => void) | null = null;
   readonly isQRLConnect = true;
 
@@ -108,9 +111,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
 
     const announce = () => {
       if (!this.eip6963Detail) return;
-      window.dispatchEvent(
-        new CustomEvent(EIP6963_ANNOUNCE_EVENT, { detail: this.eip6963Detail }),
-      );
+      window.dispatchEvent(new CustomEvent(EIP6963_ANNOUNCE_EVENT, { detail: this.eip6963Detail }));
     };
 
     // Spec requires re-announce every time a dApp dispatches `requestProvider`,
