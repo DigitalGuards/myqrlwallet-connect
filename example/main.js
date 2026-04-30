@@ -77,11 +77,24 @@ function renderWalletPicker() {
   for (const detail of discovered.values()) {
     const row = document.createElement('button');
     row.className = 'wallet-row';
-    row.innerHTML = `
-      <img class="wallet-icon" src="${detail.info.icon}" alt="" />
-      <span class="wallet-name">${detail.info.name}</span>
-      <span class="wallet-rdns">${detail.info.rdns}</span>
-    `;
+
+    // Build with createElement + textContent rather than innerHTML — wallet
+    // metadata is attacker-controlled (any page script can dispatch
+    // `eip6963:announceProvider`), so any HTML interpolation is XSS.
+    const icon = document.createElement('img');
+    icon.className = 'wallet-icon';
+    icon.src = detail.info.icon;
+    icon.alt = detail.info.name;
+
+    const name = document.createElement('span');
+    name.className = 'wallet-name';
+    name.textContent = detail.info.name;
+
+    const rdns = document.createElement('span');
+    rdns.className = 'wallet-rdns';
+    rdns.textContent = detail.info.rdns;
+
+    row.append(icon, name, rdns);
     row.addEventListener('click', () => connectWith(detail));
     walletList.appendChild(row);
   }
@@ -189,7 +202,10 @@ qrl.on('disconnect', async ({ code, message }) => {
   }
 
   // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect.
+  // Hide the picker — we know the user just had a relay session, so the QR
+  // is the right thing to show, not a wallet picker on top of it.
   showDisconnectedUI();
+  hidePicker();
   log('Regenerating QR code for reconnection...', 'info');
   try {
     activeProvider = qrl;
