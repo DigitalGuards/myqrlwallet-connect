@@ -55,6 +55,13 @@ function updateStatus(status) {
   statusText.textContent = cfg.label;
 }
 
+// Direct status writer for non-relay flows (e.g. extension), so we don't
+// reuse the relay-specific labels in `STATUS_CONFIG`.
+function setStatus(color, label) {
+  statusDot.className = `dot ${color}`;
+  statusText.textContent = label;
+}
+
 // ─── EIP-6963 wallet discovery ───────────────────────────
 //
 // The dApp listens for any wallet that announces itself via EIP-6963 — both
@@ -322,18 +329,33 @@ async function connectViaRelay(detail) {
 async function connectViaExtension(detail) {
   activeProvider = detail.provider;
   activeProviderInfo = detail.info;
-  log(`Connecting via extension: ${detail.info.name}...`, 'info');
-  updateStatus(ConnectionStatus.CONNECTING);
+  const walletName = detail.info.name;
+  log(`Requesting accounts from ${walletName}...`, 'info');
+  setStatus('yellow', `Waiting for ${walletName} approval...`);
+
+  // Some extensions (incl. QRL Web3 Wallet on MV3) silently swallow
+  // `browser.action.openPopup()` failures and the request just hangs while
+  // the user has no idea a popup was attempted. Surface a hint after 3s so
+  // the user knows to click the toolbar icon manually.
+  const hintTimer = setTimeout(() => {
+    log(
+      `If no approval window appeared, click the ${walletName} icon in your browser toolbar to approve the connection.`,
+      'info',
+    );
+    setStatus('yellow', `Approve in ${walletName} (toolbar icon)`);
+  }, 3000);
 
   try {
     const accounts = await detail.provider.request({ method: 'qrl_requestAccounts' });
+    clearTimeout(hintTimer);
     if (!accounts || accounts.length === 0) {
       log('Extension returned no accounts', 'error');
+      setStatus('red', 'No accounts returned');
       showDisconnectedUI();
       return;
     }
-    log(`Extension connected: ${accounts.join(', ')}`, 'success');
-    updateStatus(ConnectionStatus.CONNECTED);
+    log(`Connected via ${walletName}: ${accounts.join(', ')}`, 'success');
+    setStatus('green', `Connected via ${walletName}`);
     showConnectedUI(accounts, detail.info);
 
     // Listen for extension-side account/chain changes if it follows EIP-1193.
@@ -342,7 +364,7 @@ async function connectViaExtension(detail) {
       log(`[ext] accountsChanged: ${newAccounts.join(', ')}`, 'info');
       if (newAccounts.length === 0) {
         showDisconnectedUI();
-        updateStatus(ConnectionStatus.DISCONNECTED);
+        setStatus('red', 'Disconnected');
       } else {
         showConnectedUI(newAccounts, detail.info);
       }
@@ -352,9 +374,16 @@ async function connectViaExtension(detail) {
       log(`[ext] chainChanged: ${chainId}`, 'info');
     });
   } catch (err) {
-    log(`Extension connect failed: ${err.message ?? err}`, 'error');
+    clearTimeout(hintTimer);
+    const code = err?.code;
+    if (code === 4001) {
+      log(`${walletName}: connection request rejected by user.`, 'error');
+      setStatus('red', 'Rejected');
+    } else {
+      log(`${walletName} connect failed: ${err.message ?? err}`, 'error');
+      setStatus('red', 'Connect failed');
+    }
     showDisconnectedUI();
-    updateStatus(ConnectionStatus.DISCONNECTED);
   }
 }
 
