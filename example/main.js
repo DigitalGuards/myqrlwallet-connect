@@ -486,9 +486,19 @@ btnSign.addEventListener('click', async () => {
   log(`Requesting signature for: "${message}"`, 'info');
 
   try {
+    // EIP-191 / EIP-1474: params[0] must be the message hex-encoded as Data,
+    // not a raw UTF-8 string. The QRL Web3 Wallet extension takes this
+    // literally and shows an empty message in the approval popup if you
+    // pass plain text. (The relay/mobile flow is more lenient, but we send
+    // the spec-correct form for both providers.)
+    const hexMessage =
+      '0x' +
+      Array.from(new TextEncoder().encode(message))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
     const signature = await activeProvider.request({
       method: 'personal_sign',
-      params: [message, connectedAccount],
+      params: [hexMessage, connectedAccount],
     });
 
     log('Message signed successfully', 'success');
