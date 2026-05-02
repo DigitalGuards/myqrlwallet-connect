@@ -502,7 +502,18 @@ btnSign.addEventListener('click', async () => {
     });
 
     log('Message signed successfully', 'success');
-    signResult.textContent = `sig: ${signature}`;
+    // QRL extensions return {signature, publicKey} (post-quantum MLDSA-87 sigs
+    // need the public key to verify), while the relay/mobile flow returns the
+    // raw signature string. Render either form without `[object Object]`.
+    signResult.replaceChildren();
+    signResult.style.whiteSpace = 'pre-wrap';
+    if (signature && typeof signature === 'object') {
+      const sig = signature.signature ?? '(missing)';
+      const pk = signature.publicKey;
+      signResult.textContent = pk ? `sig: ${sig}\npubKey: ${pk}` : `sig: ${sig}`;
+    } else {
+      signResult.textContent = `sig: ${signature}`;
+    }
     signResult.classList.remove('hidden');
   } catch (err) {
     log(`Signing failed: ${err.message}`, 'error');
