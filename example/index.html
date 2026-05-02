@@ -114,6 +114,47 @@
     }
     button.danger:hover { background: #f87171; }
     .btn-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+    .wallet-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+    .wallet-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #2d2d2d;
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .wallet-row:hover {
+      border-color: #ffa729;
+      background: #232323;
+    }
+    .wallet-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      flex-shrink: 0;
+      background: #000;
+    }
+    .wallet-name { flex: 1; font-weight: 600; color: #e0e0e0; }
+    .wallet-rdns { font-family: monospace; font-size: 0.7rem; color: #9ca3af; }
+    .wallet-empty {
+      color: #9ca3af;
+      font-size: 0.85rem;
+      padding: 0.5rem 0;
+    }
+    .picker-hint { color: #9ca3af; font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .active-wallet { color: #9ca3af; font-size: 0.8rem; margin-top: 0.25rem; }
     input, select {
       width: 100%;
       background: #1a1a1a;
@@ -167,13 +208,13 @@
       <strong>QRL Connect</strong> is a self-hosted, end-to-end encrypted protocol that lets any QRL dApp connect to the MyQRLWallet mobile app. It fills the same role as WalletConnect, but is built for the Quantum Resistant Ledger: it handles <code>Q</code>-addresses natively and can migrate to post-quantum cryptography on our own timeline. The dApp ships an EIP-1193 provider; the wallet handles all signing and approval UI. A stateless relay server just shuttles ciphertext between them, so it never sees your keys or plaintext.
     </p>
     <p>
-      <strong>This page demonstrates the full flow end-to-end</strong>, so you can try the protocol without writing any code:
+      <strong>This page demonstrates the full flow end-to-end</strong>, so you can try the protocol without writing any code. The picker below uses <strong>EIP-6963</strong> wallet discovery, so any QRL wallet that announces itself shows up automatically - including:
     </p>
     <ul>
-      <li>Generate a <code>qrlconnect://</code> URI and render it as a QR code</li>
-      <li>Scan it with MyQRLWallet to run the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
-      <li>Call <code>qrl_sendTransaction</code>, <code>personal_sign</code>, and read-only RPC methods</li>
-      <li>Watch every encrypted message traverse the relay in the event log below</li>
+      <li>The official <strong>QRL Web3 Wallet</strong> browser extension (<code>theqrl.org</code>)</li>
+      <li><strong>MyQRLWallet (mobile)</strong> via <code>qrlconnect://</code> - QR code on desktop, deep link on mobile, then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
+      <li>Once connected, call <code>qrl_sendTransaction</code>, <code>personal_sign</code>, and read-only RPC methods through whichever wallet was picked</li>
+      <li>Watch every encrypted relay message in the event log below</li>
     </ul>
     <p>
       Get the SDK on npm: <code>npm install @qrlwallet/connect</code> &nbsp;&middot;&nbsp;
@@ -192,6 +233,11 @@
       <span id="status-text">Disconnected</span>
     </div>
 
+    <div id="wallet-picker">
+      <div class="picker-hint">Pick a wallet - both the QRL browser extension and MyQRLWallet (mobile) are detected automatically via EIP-6963.</div>
+      <div class="wallet-list" id="wallet-list"></div>
+    </div>
+
     <div id="qr-container" class="hidden">
       <canvas id="qr-canvas"></canvas>
     </div>
@@ -201,11 +247,12 @@
     <div id="account-info" class="hidden">
       <label>Connected Account</label>
       <div class="info" id="account-address">Not connected</div>
+      <div class="active-wallet" id="active-wallet"></div>
     </div>
 
     <div class="btn-row">
-      <button id="btn-connect">Connect Wallet</button>
       <button id="btn-new-connection" class="outline hidden">New Connection</button>
+      <button id="btn-switch-wallet" class="outline hidden">Switch Wallet</button>
       <button id="btn-disconnect" class="danger hidden">Disconnect</button>
     </div>
   </div>

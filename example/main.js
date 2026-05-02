@@ -1,4 +1,4 @@
-import { QRLConnect, ConnectionStatus } from '@qrlwallet/connect';
+import { QRLConnect, ConnectionStatus, QRL_CONNECT_PROVIDER_INFO } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
 // ─── Config ──────────────────────────────────────────────
@@ -8,23 +8,26 @@ const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'https://qrlwallet.com';
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
-const statusDot   = $('status-dot');
-const statusText  = $('status-text');
-const qrContainer = $('qr-container');
-const qrCanvas    = $('qr-canvas');
-const uriDisplay  = $('uri-display');
-const accountInfo = $('account-info');
-const accountAddr = $('account-address');
-const btnConnect  = $('btn-connect');
-const btnNewConn  = $('btn-new-connection');
-const btnDisconnect = $('btn-disconnect');
-const btnSend     = $('btn-send');
-const btnSign     = $('btn-sign');
-const btnRpc      = $('btn-rpc');
-const txResult    = $('tx-result');
-const signResult  = $('sign-result');
-const rpcResult   = $('rpc-result');
-const logArea     = $('log-area');
+const statusDot       = $('status-dot');
+const statusText      = $('status-text');
+const qrContainer     = $('qr-container');
+const qrCanvas        = $('qr-canvas');
+const uriDisplay      = $('uri-display');
+const accountInfo     = $('account-info');
+const accountAddr     = $('account-address');
+const activeWalletEl  = $('active-wallet');
+const walletPicker    = $('wallet-picker');
+const walletList      = $('wallet-list');
+const btnNewConn      = $('btn-new-connection');
+const btnDisconnect   = $('btn-disconnect');
+const btnSwitchWallet = $('btn-switch-wallet');
+const btnSend         = $('btn-send');
+const btnSign         = $('btn-sign');
+const btnRpc          = $('btn-rpc');
+const txResult        = $('tx-result');
+const signResult      = $('sign-result');
+const rpcResult       = $('rpc-result');
+const logArea         = $('log-area');
 
 // ─── Logger ──────────────────────────────────────────────
 function log(msg, type = '') {
@@ -52,9 +55,74 @@ function updateStatus(status) {
   statusText.textContent = cfg.label;
 }
 
-// ─── QRLConnect instance (created once, persists across page loads) ───
+// Direct status writer for non-relay flows (e.g. extension), so we don't
+// reuse the relay-specific labels in `STATUS_CONFIG`.
+function setStatus(color, label) {
+  statusDot.className = `dot ${color}`;
+  statusText.textContent = label;
+}
+
+// ─── EIP-6963 wallet discovery ───────────────────────────
+//
+// The dApp listens for any wallet that announces itself via EIP-6963 - both
+// the official QRL browser extension (rdns: theqrl.org) and our own SDK
+// (rdns: com.qrlwallet.connect, announced when QRLConnect is constructed).
+const QRL_EXTENSION_RDNS = 'theqrl.org';
+const QRL_CONNECT_RDNS   = QRL_CONNECT_PROVIDER_INFO.rdns;
+
+const discovered = new Map(); // uuid -> { info, provider }
+
+function renderWalletPicker() {
+  walletList.innerHTML = '';
+  if (discovered.size === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'wallet-empty';
+    empty.textContent = 'No QRL wallets detected. Install the QRL Web3 Wallet extension or use MyQRLWallet on mobile.';
+    walletList.appendChild(empty);
+    return;
+  }
+  for (const detail of discovered.values()) {
+    const row = document.createElement('button');
+    row.className = 'wallet-row';
+
+    // Build with createElement + textContent rather than innerHTML - wallet
+    // metadata is attacker-controlled (any page script can dispatch
+    // `eip6963:announceProvider`), so any HTML interpolation is XSS.
+    const icon = document.createElement('img');
+    icon.className = 'wallet-icon';
+    icon.src = detail.info.icon;
+    icon.alt = detail.info.name;
+
+    const name = document.createElement('span');
+    name.className = 'wallet-name';
+    name.textContent = detail.info.name;
+
+    const rdns = document.createElement('span');
+    rdns.className = 'wallet-rdns';
+    rdns.textContent = detail.info.rdns;
+
+    row.append(icon, name, rdns);
+    row.addEventListener('click', () => connectWith(detail));
+    walletList.appendChild(row);
+  }
+}
+
+function showPicker() {
+  walletPicker.classList.remove('hidden');
+}
+
+function hidePicker() {
+  walletPicker.classList.add('hidden');
+}
+
+// ─── QRLConnect (mobile relay) instance ──────────────────
+//
+// Constructing it triggers the EIP-6963 announce, so it shows up in our
+// own picker alongside any extension provider.
 let connectedAccount = null;
-let userDisconnected = false; // Track if disconnect was user-initiated
+let userDisconnected = false;
+let activeProvider = null;       // The wallet provider currently in use.
+let activeProviderInfo = null;   // EIP-6963 info for the active wallet.
 
 const qrl = new QRLConnect({
   dappMetadata: {
@@ -66,15 +134,38 @@ const qrl = new QRLConnect({
   autoReconnect: true,
 });
 
-function showConnectedUI(accounts) {
+window.addEventListener('eip6963:announceProvider', (event) => {
+  const { detail } = event;
+  if (!detail?.info?.uuid) return;
+  if (discovered.has(detail.info.uuid)) return;
+  discovered.set(detail.info.uuid, detail);
+  log(`Wallet detected: ${detail.info.name} (${detail.info.rdns})`, 'info');
+  renderWalletPicker();
+});
+
+// Spec: dispatch requestProvider after listener is registered so any wallet
+// that already announced before we listened will re-announce.
+window.dispatchEvent(new Event('eip6963:requestProvider'));
+
+// ─── Active-wallet UI helpers ────────────────────────────
+function showConnectedUI(accounts, providerInfo) {
   connectedAccount = accounts?.[0] || null;
   accountAddr.textContent = connectedAccount;
+  activeWalletEl.textContent = providerInfo
+    ? `${providerInfo.name} (${providerInfo.rdns})`
+    : '';
   accountInfo.classList.remove('hidden');
   qrContainer.classList.add('hidden');
   uriDisplay.classList.add('hidden');
-  btnConnect.classList.add('hidden');
-  btnNewConn.classList.remove('hidden');
+  hidePicker();
   btnDisconnect.classList.remove('hidden');
+  btnSwitchWallet.classList.remove('hidden');
+  // "New Connection" only makes sense for the relay flow, not the extension.
+  if (providerInfo?.rdns === QRL_CONNECT_RDNS) {
+    btnNewConn.classList.remove('hidden');
+  } else {
+    btnNewConn.classList.add('hidden');
+  }
   btnSend.disabled = false;
   btnSign.disabled = false;
   btnRpc.disabled = false;
@@ -82,26 +173,26 @@ function showConnectedUI(accounts) {
 
 function showDisconnectedUI() {
   connectedAccount = null;
+  activeProvider = null;
+  activeProviderInfo = null;
   accountInfo.classList.add('hidden');
   btnDisconnect.classList.add('hidden');
+  btnNewConn.classList.add('hidden');
+  btnSwitchWallet.classList.add('hidden');
   btnSend.disabled = true;
   btnSign.disabled = true;
   btnRpc.disabled = true;
-  btnConnect.classList.remove('hidden');
-  btnNewConn.classList.add('hidden');
+  showPicker();
 }
 
-// ─── Wire events ─────────────────────────────────────────
+// ─── SDK event wiring (relay flow) ───────────────────────
 qrl.on('connect', ({ chainId }) => {
   log(`Wallet connected (chainId: ${chainId})`, 'success');
   updateStatus(ConnectionStatus.CONNECTED);
-  // On reconnect (e.g. after the mobile wallet was killed and relaunched)
-  // the SDK doesn't re-emit accountsChanged because the accounts array
-  // didn't change. If we had accounts from a prior connect, restore the
-  // connected UI here so sign/send buttons light up again.
+  // Re-emit on auto-reconnect: accounts didn't change, but UI should refresh.
   const cached = qrl.getAccounts();
-  if (cached.length > 0) {
-    showConnectedUI(cached);
+  if (cached.length > 0 && activeProvider === qrl) {
+    showConnectedUI(cached, activeProviderInfo);
   }
 });
 
@@ -109,17 +200,26 @@ qrl.on('disconnect', async ({ code, message }) => {
   log(`Wallet disconnected: ${message} (${code})`, 'error');
   updateStatus(ConnectionStatus.DISCONNECTED);
 
+  if (activeProvider !== qrl) return;
+
   if (userDisconnected) {
-    // User clicked Disconnect, show clean state
     userDisconnected = false;
     showDisconnectedUI();
     return;
   }
 
-  // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect
+  // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect.
+  // Hide the picker - we know the user just had a relay session, so the QR
+  // is the right thing to show, not a wallet picker on top of it.
   showDisconnectedUI();
+  hidePicker();
   log('Regenerating QR code for reconnection...', 'info');
   try {
+    activeProvider = qrl;
+    activeProviderInfo = {
+      name: QRL_CONNECT_PROVIDER_INFO.name,
+      rdns: QRL_CONNECT_RDNS,
+    };
     const uri = await qrl.getConnectionURI();
     await showQR(uri);
     log(`QR ready. Scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
@@ -130,19 +230,22 @@ qrl.on('disconnect', async ({ code, message }) => {
 });
 
 qrl.on('accountsChanged', (accounts) => {
+  if (activeProvider !== qrl) return;
   log(`Accounts: ${accounts.join(', ')}`, 'success');
-  showConnectedUI(accounts);
+  showConnectedUI(accounts, activeProviderInfo);
 });
 
 qrl.on('chainChanged', (chainId) => {
+  if (activeProvider !== qrl) return;
   log(`Chain changed: ${chainId}`, 'info');
 });
 
 qrl.on('statusChanged', (status) => {
+  if (activeProvider !== qrl) return;
   updateStatus(status);
 });
 
-// ─── Show QR code helper ─────────────────────────────────
+// ─── QR rendering helper ─────────────────────────────────
 async function showQR(uri) {
   qrContainer.classList.remove('hidden');
   await QRCode.toCanvas(qrCanvas, uri, {
@@ -154,7 +257,7 @@ async function showQR(uri) {
   uriDisplay.classList.remove('hidden');
 }
 
-// ─── Mobile deep link helper ──────────────────────────────
+// ─── Mobile deep link helper ─────────────────────────────
 function tryOpenMobileDeepLink(uri, sourceLabel) {
   if (!qrl.isMobile()) return false;
 
@@ -166,7 +269,6 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
     document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('pagehide', onPageHide);
   };
-
   const onVisibilityChange = () => {
     if (document.visibilityState === 'hidden' && !settled) {
       settled = true;
@@ -174,7 +276,6 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
       cleanup();
     }
   };
-
   const onPageHide = () => {
     if (!settled) {
       settled = true;
@@ -182,7 +283,6 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
       cleanup();
     }
   };
-
   document.addEventListener('visibilitychange', onVisibilityChange);
   window.addEventListener('pagehide', onPageHide);
 
@@ -198,12 +298,45 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
   return true;
 }
 
-// ─── Connect (first time) ───────────────────────────────
-btnConnect.addEventListener('click', async () => {
-  btnConnect.disabled = true;
-  btnConnect.textContent = 'Generating...';
-  log('Creating connection...', 'info');
+// Track which extension providers we've already wired EIP-1193 listeners to,
+// so reconnecting via the picker doesn't stack duplicate handlers.
+const wiredProviders = new WeakSet();
 
+function wireExtensionProviderEvents(detail) {
+  if (typeof detail.provider.on !== 'function') return;
+  if (wiredProviders.has(detail.provider)) return;
+  wiredProviders.add(detail.provider);
+
+  detail.provider.on('accountsChanged', (newAccounts) => {
+    if (activeProvider !== detail.provider) return;
+    log(`[ext] accountsChanged: ${newAccounts.join(', ')}`, 'info');
+    if (newAccounts.length === 0) {
+      showDisconnectedUI();
+      setStatus('red', 'Disconnected');
+    } else {
+      showConnectedUI(newAccounts, detail.info);
+    }
+  });
+  detail.provider.on('chainChanged', (chainId) => {
+    if (activeProvider !== detail.provider) return;
+    log(`[ext] chainChanged: ${chainId}`, 'info');
+  });
+}
+
+// ─── Connect dispatch ────────────────────────────────────
+async function connectWith(detail) {
+  hidePicker();
+  if (detail.info.rdns === QRL_CONNECT_RDNS) {
+    await connectViaRelay(detail);
+  } else {
+    await connectViaExtension(detail);
+  }
+}
+
+async function connectViaRelay(detail) {
+  activeProvider = qrl;
+  activeProviderInfo = detail.info;
+  log('Creating connection via QRL Connect (mobile)...', 'info');
   try {
     const uri = await qrl.getConnectionURI();
     log(`Connection URI generated (channel: ${qrl.getChannelId()})`, 'info');
@@ -211,18 +344,76 @@ btnConnect.addEventListener('click', async () => {
     if (!openedMobile) {
       await showQR(uri);
     }
-    btnConnect.textContent = 'Connect Wallet';
-    btnConnect.disabled = false;
     updateStatus(ConnectionStatus.WAITING);
   } catch (err) {
     log(`Connection error: ${err.message}`, 'error');
-    btnConnect.textContent = 'Connect Wallet';
-    btnConnect.disabled = false;
+    showDisconnectedUI();
   }
+}
+
+async function connectViaExtension(detail) {
+  activeProvider = detail.provider;
+  activeProviderInfo = detail.info;
+  const walletName = detail.info.name;
+  log(`Requesting accounts from ${walletName}...`, 'info');
+  setStatus('yellow', `Waiting for ${walletName} approval...`);
+
+  // Some extensions (incl. QRL Web3 Wallet on MV3) silently swallow
+  // `browser.action.openPopup()` failures and the request just hangs while
+  // the user has no idea a popup was attempted. Surface a hint after 3s so
+  // the user knows to click the toolbar icon manually.
+  const hintTimer = setTimeout(() => {
+    log(
+      `If no approval window appeared, click the ${walletName} icon in your browser toolbar to approve the connection.`,
+      'info',
+    );
+    setStatus('yellow', `Approve in ${walletName} (toolbar icon)`);
+  }, 3000);
+
+  try {
+    const accounts = await detail.provider.request({ method: 'qrl_requestAccounts' });
+    clearTimeout(hintTimer);
+    if (!accounts || accounts.length === 0) {
+      log('Extension returned no accounts', 'error');
+      setStatus('red', 'No accounts returned');
+      showDisconnectedUI();
+      return;
+    }
+    log(`Connected via ${walletName}: ${accounts.join(', ')}`, 'success');
+    setStatus('green', `Connected via ${walletName}`);
+    showConnectedUI(accounts, detail.info);
+
+    // Wire EIP-1193 events once per provider — extension provider objects are
+    // long-lived singletons, so re-wiring on every connect would stack
+    // duplicate handlers and produce duplicate log lines on each event.
+    wireExtensionProviderEvents(detail);
+  } catch (err) {
+    clearTimeout(hintTimer);
+    const code = err?.code;
+    if (code === 4001) {
+      log(`${walletName}: connection request rejected by user.`, 'error');
+      setStatus('red', 'Rejected');
+    } else {
+      log(`${walletName} connect failed: ${err.message ?? err}`, 'error');
+      setStatus('red', 'Connect failed');
+    }
+    showDisconnectedUI();
+  }
+}
+
+// ─── Switch wallet (re-open picker) ──────────────────────
+btnSwitchWallet.addEventListener('click', async () => {
+  if (activeProvider === qrl) {
+    userDisconnected = true;
+    await qrl.disconnect();
+  }
+  showDisconnectedUI();
+  updateStatus(ConnectionStatus.DISCONNECTED);
 });
 
-// ─── New Connection (reset channel and re-pair) ──────────
+// ─── New Connection (relay-only, fresh channel) ──────────
 btnNewConn.addEventListener('click', async () => {
+  if (activeProvider !== qrl) return;
   btnNewConn.disabled = true;
   btnNewConn.textContent = 'Generating...';
   log('Creating new connection (resetting existing session)...', 'info');
@@ -230,16 +421,17 @@ btnNewConn.addEventListener('click', async () => {
   try {
     const uri = await qrl.newConnection();
     log(`New connection URI generated (channel: ${qrl.getChannelId()})`, 'info');
-    showDisconnectedUI();
+    accountInfo.classList.add('hidden');
+    btnDisconnect.classList.add('hidden');
+    btnSend.disabled = true;
+    btnSign.disabled = true;
+    btnRpc.disabled = true;
     const openedMobile = tryOpenMobileDeepLink(uri, 'newConnection');
     if (!openedMobile) {
       await showQR(uri);
     }
     btnNewConn.textContent = 'New Connection';
     btnNewConn.disabled = false;
-    // Keep "New Connection" visible while waiting for scan
-    btnConnect.classList.add('hidden');
-    btnNewConn.classList.remove('hidden');
     updateStatus(ConnectionStatus.WAITING);
   } catch (err) {
     log(`New connection error: ${err.message}`, 'error');
@@ -250,11 +442,10 @@ btnNewConn.addEventListener('click', async () => {
 
 // ─── Disconnect ──────────────────────────────────────────
 btnDisconnect.addEventListener('click', async () => {
-  userDisconnected = true;
-  // Await so the TERMINATE is flushed to the relay before we update the UI
-  // — otherwise the wallet lands in its stale-session grace period and the
-  // user sees a ~3s lag on the mobile side.
-  await qrl.disconnect();
+  if (activeProvider === qrl) {
+    userDisconnected = true;
+    await qrl.disconnect();
+  }
   log('Disconnected', 'info');
   updateStatus(ConnectionStatus.DISCONNECTED);
   showDisconnectedUI();
@@ -276,7 +467,7 @@ btnSend.addEventListener('click', async () => {
   log(`Sending ${qrlAmount} QRL to ${to}...`, 'info');
 
   try {
-    const txHash = await qrl.request({
+    const txHash = await activeProvider.request({
       method: 'qrl_sendTransaction',
       params: [{
         from: connectedAccount,
@@ -309,13 +500,44 @@ btnSign.addEventListener('click', async () => {
   log(`Requesting signature for: "${message}"`, 'info');
 
   try {
-    const signature = await qrl.request({
+    // EIP-191 / EIP-1474: params[0] must be the message hex-encoded as Data,
+    // not a raw UTF-8 string. The QRL Web3 Wallet extension takes this
+    // literally and shows an empty message in the approval popup if you
+    // pass plain text. (The relay/mobile flow is more lenient, but we send
+    // the spec-correct form for both providers.)
+    const hexMessage =
+      '0x' +
+      Array.from(new TextEncoder().encode(message))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    const signature = await activeProvider.request({
       method: 'personal_sign',
-      params: [message, connectedAccount],
+      params: [hexMessage, connectedAccount],
     });
 
     log('Message signed successfully', 'success');
-    signResult.textContent = `sig: ${signature}`;
+    // The QRL extension returns an object (post-quantum MLDSA-87 needs the
+    // public key alongside the signature for verification); the relay/mobile
+    // flow returns just the signature hex string. Render whichever shape we
+    // get without `[object Object]` and log the raw payload for visibility.
+    log(`Raw response: ${JSON.stringify(signature)}`, 'info');
+    signResult.replaceChildren();
+    signResult.style.whiteSpace = 'pre-wrap';
+    if (signature && typeof signature === 'object') {
+      // Walk known keys first, then fall back to a pretty-printed dump of
+      // whatever keys the wallet actually returned.
+      const known = ['signature', 'publicKey', 'pubKey', 'address', 'message', 'messageHash', 'r', 's', 'v'];
+      const lines = [];
+      for (const k of known) {
+        if (signature[k] != null) lines.push(`${k}: ${signature[k]}`);
+      }
+      if (lines.length === 0) {
+        lines.push(JSON.stringify(signature, null, 2));
+      }
+      signResult.textContent = lines.join('\n');
+    } else {
+      signResult.textContent = `sig: ${signature}`;
+    }
     signResult.classList.remove('hidden');
   } catch (err) {
     log(`Signing failed: ${err.message}`, 'error');
@@ -341,9 +563,8 @@ btnRpc.addEventListener('click', async () => {
   log(`Calling ${method}...`, 'info');
 
   try {
-    const result = await qrl.request({ method, params });
+    const result = await activeProvider.request({ method, params });
     const display = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-
     log(`${method} => ${display}`, 'success');
     rpcResult.textContent = display;
     rpcResult.classList.remove('hidden');
@@ -360,9 +581,16 @@ btnRpc.addEventListener('click', async () => {
 log(`Relay: ${RELAY_URL}`, 'info');
 log(`Platform: ${navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'}`, 'info');
 
+// Auto-reconnect to a stored relay session if one is present.
 if (qrl.hasStoredSession()) {
-  log('Found existing session, reconnecting...', 'info');
+  log('Found existing QRL Connect session, reconnecting...', 'info');
+  activeProvider = qrl;
+  activeProviderInfo = {
+    name: QRL_CONNECT_PROVIDER_INFO.name,
+    rdns: QRL_CONNECT_RDNS,
+  };
+  hidePicker();
   updateStatus(ConnectionStatus.RECONNECTING);
 } else {
-  log('No stored session. Click "Connect Wallet" to start.', 'info');
+  log('No stored session. Pick a wallet to start.', 'info');
 }

@@ -1,4 +1,4 @@
-export { QRLConnectProvider } from './QRLConnectProvider.js';
+export { QRLConnectProvider, QRL_CONNECT_PROVIDER_INFO } from './QRLConnectProvider.js';
 export { ConnectionManager } from './ConnectionManager.js';
 export { KeyExchange } from './KeyExchange.js';
 export { SocketClient } from './SocketClient.js';
@@ -10,6 +10,7 @@ export {
   type JsonRpcRequest,
   type JsonRpcResponse,
   type QRLConnectOptions,
+  type EIP6963ProviderInfoOverride,
   type ProviderEvents,
   type RelayMessage,
   ConnectionStatus,
