@@ -64,7 +64,7 @@ function setStatus(color, label) {
 
 // ─── EIP-6963 wallet discovery ───────────────────────────
 //
-// The dApp listens for any wallet that announces itself via EIP-6963 — both
+// The dApp listens for any wallet that announces itself via EIP-6963 - both
 // the official QRL browser extension (rdns: theqrl.org) and our own SDK
 // (rdns: com.qrlwallet.connect, announced when QRLConnect is constructed).
 const QRL_EXTENSION_RDNS = 'theqrl.org';
@@ -85,7 +85,7 @@ function renderWalletPicker() {
     const row = document.createElement('button');
     row.className = 'wallet-row';
 
-    // Build with createElement + textContent rather than innerHTML — wallet
+    // Build with createElement + textContent rather than innerHTML - wallet
     // metadata is attacker-controlled (any page script can dispatch
     // `eip6963:announceProvider`), so any HTML interpolation is XSS.
     const icon = document.createElement('img');
@@ -209,7 +209,7 @@ qrl.on('disconnect', async ({ code, message }) => {
   }
 
   // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect.
-  // Hide the picker — we know the user just had a relay session, so the QR
+  // Hide the picker - we know the user just had a relay session, so the QR
   // is the right thing to show, not a wallet picker on top of it.
   showDisconnectedUI();
   hidePicker();
@@ -502,15 +502,25 @@ btnSign.addEventListener('click', async () => {
     });
 
     log('Message signed successfully', 'success');
-    // QRL extensions return {signature, publicKey} (post-quantum MLDSA-87 sigs
-    // need the public key to verify), while the relay/mobile flow returns the
-    // raw signature string. Render either form without `[object Object]`.
+    // The QRL extension returns an object (post-quantum MLDSA-87 needs the
+    // public key alongside the signature for verification); the relay/mobile
+    // flow returns just the signature hex string. Render whichever shape we
+    // get without `[object Object]` and log the raw payload for visibility.
+    log(`Raw response: ${JSON.stringify(signature)}`, 'info');
     signResult.replaceChildren();
     signResult.style.whiteSpace = 'pre-wrap';
     if (signature && typeof signature === 'object') {
-      const sig = signature.signature ?? '(missing)';
-      const pk = signature.publicKey;
-      signResult.textContent = pk ? `sig: ${sig}\npubKey: ${pk}` : `sig: ${sig}`;
+      // Walk known keys first, then fall back to a pretty-printed dump of
+      // whatever keys the wallet actually returned.
+      const known = ['signature', 'publicKey', 'pubKey', 'address', 'message', 'messageHash', 'r', 's', 'v'];
+      const lines = [];
+      for (const k of known) {
+        if (signature[k] != null) lines.push(`${k}: ${signature[k]}`);
+      }
+      if (lines.length === 0) {
+        lines.push(JSON.stringify(signature, null, 2));
+      }
+      signResult.textContent = lines.join('\n');
     } else {
       signResult.textContent = `sig: ${signature}`;
     }

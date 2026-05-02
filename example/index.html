@@ -208,11 +208,11 @@
       <strong>QRL Connect</strong> is a self-hosted, end-to-end encrypted protocol that lets any QRL dApp connect to the MyQRLWallet mobile app. It fills the same role as WalletConnect, but is built for the Quantum Resistant Ledger: it handles <code>Q</code>-addresses natively and can migrate to post-quantum cryptography on our own timeline. The dApp ships an EIP-1193 provider; the wallet handles all signing and approval UI. A stateless relay server just shuttles ciphertext between them, so it never sees your keys or plaintext.
     </p>
     <p>
-      <strong>This page demonstrates the full flow end-to-end</strong>, so you can try the protocol without writing any code. The picker below uses <strong>EIP-6963</strong> wallet discovery, so any QRL wallet that announces itself shows up automatically — including:
+      <strong>This page demonstrates the full flow end-to-end</strong>, so you can try the protocol without writing any code. The picker below uses <strong>EIP-6963</strong> wallet discovery, so any QRL wallet that announces itself shows up automatically - including:
     </p>
     <ul>
       <li>The official <strong>QRL Web3 Wallet</strong> browser extension (<code>theqrl.org</code>)</li>
-      <li><strong>MyQRLWallet (mobile)</strong> via <code>qrlconnect://</code> — QR code on desktop, deep link on mobile, then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
+      <li><strong>MyQRLWallet (mobile)</strong> via <code>qrlconnect://</code> - QR code on desktop, deep link on mobile, then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
       <li>Once connected, call <code>qrl_sendTransaction</code>, <code>personal_sign</code>, and read-only RPC methods through whichever wallet was picked</li>
       <li>Watch every encrypted relay message in the event log below</li>
     </ul>
@@ -234,7 +234,7 @@
     </div>
 
     <div id="wallet-picker">
-      <div class="picker-hint">Pick a wallet — both the QRL browser extension and MyQRLWallet (mobile) are detected automatically via EIP-6963.</div>
+      <div class="picker-hint">Pick a wallet - both the QRL browser extension and MyQRLWallet (mobile) are detected automatically via EIP-6963.</div>
       <div class="wallet-list" id="wallet-list"></div>
     </div>
 
