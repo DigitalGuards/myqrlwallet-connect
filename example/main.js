@@ -298,6 +298,31 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
   return true;
 }
 
+// Track which extension providers we've already wired EIP-1193 listeners to,
+// so reconnecting via the picker doesn't stack duplicate handlers.
+const wiredProviders = new WeakSet();
+
+function wireExtensionProviderEvents(detail) {
+  if (typeof detail.provider.on !== 'function') return;
+  if (wiredProviders.has(detail.provider)) return;
+  wiredProviders.add(detail.provider);
+
+  detail.provider.on('accountsChanged', (newAccounts) => {
+    if (activeProvider !== detail.provider) return;
+    log(`[ext] accountsChanged: ${newAccounts.join(', ')}`, 'info');
+    if (newAccounts.length === 0) {
+      showDisconnectedUI();
+      setStatus('red', 'Disconnected');
+    } else {
+      showConnectedUI(newAccounts, detail.info);
+    }
+  });
+  detail.provider.on('chainChanged', (chainId) => {
+    if (activeProvider !== detail.provider) return;
+    log(`[ext] chainChanged: ${chainId}`, 'info');
+  });
+}
+
 // ─── Connect dispatch ────────────────────────────────────
 async function connectWith(detail) {
   hidePicker();
@@ -358,21 +383,10 @@ async function connectViaExtension(detail) {
     setStatus('green', `Connected via ${walletName}`);
     showConnectedUI(accounts, detail.info);
 
-    // Listen for extension-side account/chain changes if it follows EIP-1193.
-    detail.provider.on?.('accountsChanged', (newAccounts) => {
-      if (activeProvider !== detail.provider) return;
-      log(`[ext] accountsChanged: ${newAccounts.join(', ')}`, 'info');
-      if (newAccounts.length === 0) {
-        showDisconnectedUI();
-        setStatus('red', 'Disconnected');
-      } else {
-        showConnectedUI(newAccounts, detail.info);
-      }
-    });
-    detail.provider.on?.('chainChanged', (chainId) => {
-      if (activeProvider !== detail.provider) return;
-      log(`[ext] chainChanged: ${chainId}`, 'info');
-    });
+    // Wire EIP-1193 events once per provider — extension provider objects are
+    // long-lived singletons, so re-wiring on every connect would stack
+    // duplicate handlers and produce duplicate log lines on each event.
+    wireExtensionProviderEvents(detail);
   } catch (err) {
     clearTimeout(hintTimer);
     const code = err?.code;
