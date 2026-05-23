@@ -272,13 +272,31 @@
 
   <!-- Sign Message Card -->
   <div class="card" id="sign-card">
-    <h2>3. Sign Message</h2>
-    <label>Message</label>
+    <h2>3. Sign (Post-Quantum)</h2>
+    <p class="subtle">
+      Both methods use ML-DSA-87 (NIST FIPS 204) over a SHAKE256 digest.
+      The wallet returns <code>{ signature, publicKey, signer, digest, schemeVersion }</code>
+      and the dApp re-verifies it locally below.
+    </p>
+
+    <label>Opaque-bytes message (qrl_signMessage)</label>
     <input type="text" id="sign-message" placeholder="Hello from QRL Connect!" value="Hello from QRL Connect!" />
     <div class="btn-row">
       <button id="btn-sign" disabled>Sign Message</button>
     </div>
     <div id="sign-result" class="result-box hidden"></div>
+
+    <label style="margin-top: 1rem;">Typed-data payload (qrl_signTypedData)</label>
+    <textarea
+      id="sign-typed-payload"
+      rows="14"
+      spellcheck="false"
+      style="font-family: monospace; font-size: 0.85rem; width: 100%; resize: vertical;"
+    ></textarea>
+    <div class="btn-row">
+      <button id="btn-sign-typed" disabled>Sign Typed Data</button>
+    </div>
+    <div id="sign-typed-result" class="result-box hidden"></div>
   </div>
 
   <!-- Read-only RPC Card -->

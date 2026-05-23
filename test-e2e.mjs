@@ -20,7 +20,19 @@ import {
   KeyExchangeMessageType,
   MessageType,
   PROTOCOL_VERSION,
+  bytesToHex,
+  computeMessageDigest,
+  computeTypedDataDigest,
+  hexToBytes,
+  SCHEME_TAG_MSG,
+  SCHEME_TAG_TYPED,
+  SCHEME_VERSION_MSG,
+  SCHEME_VERSION_TYPED,
+  verifyMessage,
+  verifyTypedData,
 } from './dist/index.mjs';
+import * as mldsa from '@theqrl/mldsa87';
+import { newWalletFromExtendedSeed } from '@theqrl/wallet.js';
 
 function fromBase64(b64) {
   const bin = atob(b64);
@@ -36,6 +48,25 @@ const RELAY_PATH = '/relay';
 const WALLET_ADDRESS = 'Q208318ecd68f26726CE7C54b29CaBA94584969B6';
 const TEST_TX_HASH =
   '0x3e306b5a5a37532e1734503f7d2427a86f2c992fbe471f5be403b9f734e661c5';
+
+/**
+ * Stable extended seed used only by the e2e signing tests. Same shape as a
+ * real wallet seed (descriptor + 48 random bytes, hex-encoded). Never used
+ * in production: purely a deterministic test vector.
+ */
+const E2E_HEX_SEED =
+  '0x0100005bb4c0cea35e758d19a93923d014e41615e7d3d35076c9b659b880156b5c37bc3a6ccf3d3b7beaef012c4ff930fcb270';
+
+function signE2E(digest, ctxTag) {
+  const wallet = newWalletFromExtendedSeed(E2E_HEX_SEED);
+  try {
+    const sig = new Uint8Array(mldsa.CryptoBytes);
+    mldsa.cryptoSignSignature(sig, digest, wallet.sk, false, ctxTag);
+    return { signature: sig, publicKey: new Uint8Array(wallet.pk) };
+  } finally {
+    wallet.zeroize();
+  }
+}
 
 const TIMEOUT = setTimeout(() => {
   console.error('❌ E2E TEST TIMED OUT after 15s');
@@ -252,20 +283,133 @@ async function run() {
     }
     console.log(`    dApp resolved tx hash: ${txResult}`);
 
+    console.log('12. dApp: firing qrl_signMessage via provider.request()');
+    const MSG_HEX = '0x48656c6c6f2c20514f4c21';
+    const msgRpcPromise = dapp.request({
+      method: 'qrl_signMessage',
+      params: [WALLET_ADDRESS, MSG_HEX],
+    });
+    const msgRpcEnc = (
+      await waitForMessage((d) => typeof d?.message === 'string')
+    ).message;
+    const msgRpcMsg = JSON.parse(await walletKex.decryptMessage(msgRpcEnc));
+    if (msgRpcMsg.method !== 'qrl_signMessage') {
+      throw new Error(`wallet saw wrong method: ${msgRpcMsg.method}`);
+    }
+    const msgDigest = computeMessageDigest(hexToBytes(MSG_HEX));
+    const msgSig = signE2E(msgDigest, SCHEME_TAG_MSG);
+    const msgResult = {
+      signature: bytesToHex(msgSig.signature),
+      publicKey: bytesToHex(msgSig.publicKey),
+      signer: WALLET_ADDRESS,
+      digest: bytesToHex(msgDigest),
+      schemeVersion: SCHEME_VERSION_MSG,
+    };
+    await sendMessage(
+      walletSocket,
+      channelIdStr,
+      'wallet',
+      await walletKex.encryptMessage(
+        JSON.stringify({
+          type: MessageType.JSONRPC,
+          jsonrpc: '2.0',
+          id: msgRpcMsg.id,
+          result: msgResult,
+        })
+      )
+    );
+    const msgRpcResult = await msgRpcPromise;
+    if (
+      !verifyMessage({
+        signature: msgRpcResult.signature,
+        publicKey: msgRpcResult.publicKey,
+        messageBytes: MSG_HEX,
+      })
+    ) {
+      throw new Error('dApp verifyMessage rejected a valid signature');
+    }
+    console.log('    dApp verifyMessage() returned true');
+
+    console.log('13. dApp: firing qrl_signTypedData via provider.request()');
+    const TYPED_PAYLOAD = {
+      types: {
+        QRLDomain: [{ name: 'name', type: 'string' }],
+        LoginChallenge: [
+          { name: 'account', type: 'address' },
+          { name: 'nonce', type: 'bytes32' },
+          { name: 'issuedAt', type: 'uint64' },
+        ],
+      },
+      primaryType: 'LoginChallenge',
+      domain: { name: 'e2e.local' },
+      message: {
+        account: WALLET_ADDRESS,
+        nonce: '0x' + 'cd'.repeat(32),
+        issuedAt: '1747700000',
+      },
+    };
+    const typedRpcPromise = dapp.request({
+      method: 'qrl_signTypedData',
+      params: [WALLET_ADDRESS, TYPED_PAYLOAD],
+    });
+    const typedRpcEnc = (
+      await waitForMessage((d) => typeof d?.message === 'string')
+    ).message;
+    const typedRpcMsg = JSON.parse(await walletKex.decryptMessage(typedRpcEnc));
+    if (typedRpcMsg.method !== 'qrl_signTypedData') {
+      throw new Error(`wallet saw wrong method: ${typedRpcMsg.method}`);
+    }
+    const typedDigest = computeTypedDataDigest(TYPED_PAYLOAD);
+    const typedSig = signE2E(typedDigest, SCHEME_TAG_TYPED);
+    const typedResult = {
+      signature: bytesToHex(typedSig.signature),
+      publicKey: bytesToHex(typedSig.publicKey),
+      signer: WALLET_ADDRESS,
+      digest: bytesToHex(typedDigest),
+      schemeVersion: SCHEME_VERSION_TYPED,
+      domain: TYPED_PAYLOAD.domain,
+    };
+    await sendMessage(
+      walletSocket,
+      channelIdStr,
+      'wallet',
+      await walletKex.encryptMessage(
+        JSON.stringify({
+          type: MessageType.JSONRPC,
+          jsonrpc: '2.0',
+          id: typedRpcMsg.id,
+          result: typedResult,
+        })
+      )
+    );
+    const typedRpcResult = await typedRpcPromise;
+    if (
+      !verifyTypedData({
+        signature: typedRpcResult.signature,
+        publicKey: typedRpcResult.publicKey,
+        payload: TYPED_PAYLOAD,
+      })
+    ) {
+      throw new Error('dApp verifyTypedData rejected a valid signature');
+    }
+    console.log('    dApp verifyTypedData() returned true');
+
     const stats = io.channelManager.getStats();
     console.log(
-      `12. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
+      `14. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
     );
 
     console.log('\n✅ E2E v2 SUCCESS');
     console.log('   - PQP2 QR (cid + 32-byte fingerprint, no embedded PK)');
     console.log('   - Relay binds dApp PK, serves it to wallet via join_channel ack');
-    console.log('   - Wallet verifies fp(pk) before using it — MITM by relay impossible');
+    console.log('   - Wallet verifies fp(pk) before using it; MITM by relay impossible');
     console.log('   - ML-KEM-768 keygen + encap + decap');
     console.log('   - AES-256-GCM bidirectional AEAD bound to transcript H_tx');
     console.log('   - SYNACK / ACK handshake over relay');
     console.log('   - ORIGINATOR_INFO / WALLET_INFO metadata exchange');
     console.log('   - qrl_sendTransaction request/response round-trip');
+    console.log('   - qrl_signMessage round-trip with local verifyMessage');
+    console.log('   - qrl_signTypedData round-trip with local verifyTypedData');
   } catch (err) {
     console.error('\n❌ E2E TEST FAILED:', err.message);
     console.error(err.stack);
