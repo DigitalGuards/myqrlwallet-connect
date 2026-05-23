@@ -50,65 +50,115 @@ const txHash = await provider.request({
 // => "0x3e306b5a5a37532e1734503f7d2427a86f2c992fbe471f5be403b9f734e661c5"
 ```
 
-### personal_sign
+### qrl_signMessage
 
-Sign a plain-text message. The wallet shows the message for approval and returns the signature + public key.
+Sign opaque bytes (off-chain auth challenges, ownership proofs, anything without internal structure). The wallet displays the message for approval, hashes it with SHAKE256, signs with ML-DSA-87, and returns a stateless-verifiable response object.
+
+`params[0]` is the signer Q-address (must equal the connected account).
+`params[1]` is the message as **strict 0x-hex bytes**. The SDK does not accept bare UTF-8 strings here; the dApp UTF-8-encodes before sending so the wallet receives a single canonical form.
 
 ```typescript
-const signedData = await provider.request({
-  method: "personal_sign",
+const result = await provider.request({
+  method: "qrl_signMessage",
   params: [
-    "0x506c65617365207369676e2074686973206d657373616765",  // hex-encoded UTF-8
     "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
+    "0x48656c6c6f2c20514f4c21",  // "Hello, QRL!" in 0x-hex
   ],
 });
-// => { signature: "0x0087c28d89...", publicKey: "0x04bfcabf8c..." }
+// => {
+//   signature:     "0x...<4595-byte ML-DSA-87 signature>",
+//   publicKey:     "0x...<2592-byte ML-DSA-87 public key>",
+//   signer:        "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
+//   digest:        "0x...<64-byte SHAKE256 digest>",
+//   schemeVersion: "QRL-SIGN-MSG-v1"
+// }
+
+// Verify locally (no relay round-trip):
+import { verifyMessage } from "@qrlwallet/connect";
+const ok = verifyMessage({
+  signature: result.signature,
+  publicKey: result.publicKey,
+  messageBytes: "0x48656c6c6f2c20514f4c21",
+});
 ```
 
-### qrl_signTypedData_v4
+Digest computation: `digest = SHAKE256("QRL-SIGN-MSG-v1" || messageBytes, 64)`.
+Signing uses `ctx = utf8("QRL-SIGN-MSG-v1")` and FIPS 204 §3.4 randomized (hedged) mode.
 
-Sign structured data (EIP-712). The wallet renders the typed data in a readable format.
+### qrl_signTypedData
+
+Sign EIP-712-shaped structured data. Same shape as Ethereum's `signTypedData_v4` (`types`/`primaryType`/`domain`/`message`), but with post-quantum primitives: SHAKE256 hashing, native Dilithium ctx, 64-byte digests throughout, and `QRLDomain` in place of `EIP712Domain`.
+
+`QRLDomain` is wallet-reserved. Allowed fields (each with a fixed type):
+
+| Field | Type | Required |
+|-------|------|----------|
+| `name` | `string` | yes |
+| `version` | `string` | no |
+| `chainId` | `uint256` | no |
+| `verifyingContract` | `address` | no |
+| `salt` | `bytes32` | no |
+
+Any other field name, or a type mismatch on a reserved name, is rejected by the wallet before signing.
 
 ```typescript
-const signedData = await provider.request({
-  method: "qrl_signTypedData_v4",
+const result = await provider.request({
+  method: "qrl_signTypedData",
   params: [
     "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
     {
       types: {
-        EIP712Domain: [
-          { name: "name", type: "string" },
-          { name: "version", type: "string" },
-          { name: "chainId", type: "uint256" },
-          { name: "verifyingContract", type: "address" },
-        ],
-        Person: [
-          { name: "name", type: "string" },
-          { name: "wallet", type: "address" },
-        ],
-        Mail: [
-          { name: "from", type: "Person" },
-          { name: "to", type: "Person" },
-          { name: "contents", type: "string" },
+        QRLDomain: [{ name: "name", type: "string" }],
+        LoginChallenge: [
+          { name: "account",  type: "address" },
+          { name: "nonce",    type: "bytes32" },
+          { name: "issuedAt", type: "uint64"  },
         ],
       },
-      primaryType: "Mail",
-      domain: {
-        name: "Ether Mail",
-        version: "1",
-        chainId: 1,
-        verifyingContract: "QDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF",
-      },
+      primaryType: "LoginChallenge",
+      domain: { name: "zondscan.com" },
       message: {
-        from: { name: "Alice", wallet: "QCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826" },
-        to: { name: "Bob", wallet: "QbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB" },
-        contents: "Hello, Bob!",
+        account:  "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
+        nonce:    "0xababab...",   // exactly 32 bytes
+        issuedAt: "1747699200",     // string or 0x-hex for uintN ≥ 64
       },
     },
   ],
 });
-// => { signature: "0x0087c28d89...", publicKey: "0x04bfcabf8c..." }
+// => {
+//   signature, publicKey, signer, digest,
+//   schemeVersion: "QRL-SIGN-TYPED-v1",
+//   domain:        { name: "zondscan.com" }
+// }
+
+import { verifyTypedData } from "@qrlwallet/connect";
+const ok = verifyTypedData({
+  signature: result.signature,
+  publicKey: result.publicKey,
+  payload, // same payload the dApp sent
+});
 ```
+
+Digest pipeline:
+
+```
+SCHEME_TAG_TYPED = utf8("QRL-SIGN-TYPED-v1")
+domainHash  = SHAKE256(typeHash("QRLDomain") || encodedFields(domain), 64)
+messageHash = SHAKE256(typeHash(primaryType) || encodedFields(message), 64)
+digest      = SHAKE256(SCHEME_TAG_TYPED || domainHash || messageHash, 64)
+```
+
+Type system mirrors EIP-712: `address`, `bool`, `string`, `bytes`, `uintN` / `intN` (N ∈ multiples of 8, 8 ≤ N ≤ 256), `bytesN` (1 ≤ N ≤ 32), arrays `T[]` and `T[N]`, struct references. `uint64` and wider must be passed as strings or 0x-hex; JS `number` literals above the safe-integer range are rejected.
+
+### Removed in v3.0.0
+
+The Ethereum-flavored signing methods are no longer supported. A dApp that still calls them via `@qrlwallet/connect@^3` will get a "method not supported" error before the relay round-trip:
+
+- `personal_sign` → replaced by `qrl_signMessage`
+- `qrl_sign` → replaced by `qrl_signMessage` (with `[signer, messageHex]` argument order)
+- `qrl_signTypedData_v3` / `qrl_signTypedData_v4` → replaced by `qrl_signTypedData` (single canonical version, no `_v3`/`_v4`)
+
+Old signatures produced before the upgrade cannot be reproduced and aren't verifiable by the new helpers.
 
 ### wallet_addQrlChain
 
