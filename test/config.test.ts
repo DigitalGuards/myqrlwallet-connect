@@ -19,14 +19,18 @@ describe('config', () => {
     it('should contain transaction signing methods', () => {
       expect(RESTRICTED_METHODS.has('qrl_sendTransaction')).toBe(true);
       expect(RESTRICTED_METHODS.has('qrl_signTransaction')).toBe(true);
-      expect(RESTRICTED_METHODS.has('qrl_sign')).toBe(true);
-      expect(RESTRICTED_METHODS.has('personal_sign')).toBe(true);
     });
 
-    it('should contain typed data signing methods', () => {
+    it('should contain post-quantum signing methods (v3.0.0)', () => {
+      expect(RESTRICTED_METHODS.has('qrl_signMessage')).toBe(true);
       expect(RESTRICTED_METHODS.has('qrl_signTypedData')).toBe(true);
-      expect(RESTRICTED_METHODS.has('qrl_signTypedData_v3')).toBe(true);
-      expect(RESTRICTED_METHODS.has('qrl_signTypedData_v4')).toBe(true);
+    });
+
+    it('should NOT contain removed Ethereum-flavored signing methods', () => {
+      expect(RESTRICTED_METHODS.has('personal_sign')).toBe(false);
+      expect(RESTRICTED_METHODS.has('qrl_sign')).toBe(false);
+      expect(RESTRICTED_METHODS.has('qrl_signTypedData_v3')).toBe(false);
+      expect(RESTRICTED_METHODS.has('qrl_signTypedData_v4')).toBe(false);
     });
 
     it('should contain chain management methods', () => {
@@ -34,8 +38,8 @@ describe('config', () => {
       expect(RESTRICTED_METHODS.has('wallet_switchQrlChain')).toBe(true);
     });
 
-    it('should have exactly 10 restricted methods', () => {
-      expect(RESTRICTED_METHODS.size).toBe(10);
+    it('should have exactly 7 restricted methods', () => {
+      expect(RESTRICTED_METHODS.size).toBe(7);
     });
   });
 
