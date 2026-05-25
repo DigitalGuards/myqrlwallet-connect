@@ -4,6 +4,7 @@ import {
   QRL_CONNECT_PROVIDER_INFO,
   verifyMessage,
   verifyTypedData,
+  bytesToHex,
 } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
@@ -534,11 +535,7 @@ btnSign.addEventListener('click', async () => {
 
   // params[1] is strict 0x-hex bytes; the dApp UTF-8-encodes here so the
   // wallet receives a single canonical form.
-  const messageHex =
-    '0x' +
-    Array.from(new TextEncoder().encode(message))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
+  const messageHex = bytesToHex(new TextEncoder().encode(message));
 
   try {
     const result = await activeProvider.request({
