@@ -34,4 +34,4 @@ export {
   type VerifyTypedDataParams,
 } from './verify.js';
 
-export { bytesToHex, hexToBytes, concatBytes } from './bytes.js';
+export { bytesToHex, hexToBytes, concatBytes, concatBytesArr } from './bytes.js';
