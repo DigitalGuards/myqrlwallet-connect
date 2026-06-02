@@ -270,6 +270,17 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       return false;
     }
 
+    return this.joinAndSettle();
+  }
+
+  /**
+   * (Re)open the socket, join the persisted channel, drain buffered relay
+   * messages, and settle status. Shared by the cold-restore reconnect() and
+   * the warm resume() path whose socket was torn down by the reconnect probe.
+   * Assumes channelId and a hydrated keyExchange are already in place, and
+   * that the caller has reset walletPresent + set RECONNECTING status.
+   */
+  private async joinAndSettle(): Promise<boolean> {
     this.socketClient.connect();
     try {
       const { bufferedMessages, participants, terminated } = await this.socketClient.joinChannel(
@@ -326,7 +337,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       return;
     }
     if (this.channelId && this.keyExchange?.areKeysExchanged()) {
-      this.socketClient.connect();
+      // If the SocketClient still holds the channelId (a transient/background
+      // socket drop), re-opening is enough: its connect handler re-joins the
+      // channel and drains the buffer. But armReconnectProbe()'s timeout tears
+      // the socket down AND nulls the SocketClient channelId, so there the
+      // auto-rejoin can never fire — the socket would re-open but sit unjoined.
+      // Detect that case and re-join explicitly.
+      if (this.socketClient.getChannelId()) {
+        this.socketClient.connect();
+      } else {
+        this.setStatus(ConnectionStatus.RECONNECTING);
+        this.walletPresent = false;
+        void this.joinAndSettle();
+      }
     }
   }
 
