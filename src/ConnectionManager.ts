@@ -353,9 +353,13 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         'ConnectionManager',
         `No wallet rejoined within ${RECONNECT_WALLET_PROBE_MS}ms; treating reconnect as dead`
       );
-      // Keep the stored session (the wallet may just be off right now and
-      // could reconnect on a later attempt); surfacing DISCONNECTED lets the
-      // consumer offer a fresh QR. An explicit terminate clears the session.
+      // Leave the channel and drop the socket so that if the wallet rejoins
+      // later, participants_changed cannot flip the dApp back to CONNECTED and
+      // emit phantom events after it already handled the disconnect. The
+      // stored session is kept (the consumer offers a fresh QR; an explicit
+      // terminate is what clears it).
+      this.socketClient.leaveChannel();
+      this.socketClient.disconnect();
       this.setStatus(ConnectionStatus.DISCONNECTED);
     }, RECONNECT_WALLET_PROBE_MS);
   }
@@ -465,6 +469,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.setStatus(ConnectionStatus.DISCONNECTED);
     this.clearSession();
     this.connectedAccounts = [];
+    // Fully terminate the session: without clearing these, a later
+    // visibilitychange/online resume() would re-open the socket and re-join
+    // the channel after an explicit disconnect.
+    this.pendingRestore = null;
+    this.keyExchange = null;
   }
 
   // ── Internals ──────────────────────────────────────────────
