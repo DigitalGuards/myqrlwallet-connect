@@ -363,6 +363,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.clearUnresponsiveTimer();
     this.walletPresent = false;
     this.pendingRestore = null;
+    // Null the key exchange too. Otherwise channelId + areKeysExchanged() stay
+    // truthy and a later resume() (tab foreground / online) would try to
+    // re-join the now-dead channel. disconnect() clears it for the same reason.
+    this.keyExchange = null;
     this.clearSession();
     this.setStatus(ConnectionStatus.DISCONNECTED);
   }
