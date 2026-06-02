@@ -139,6 +139,10 @@ const qrl = new QRLConnect({
   dappMetadata: {
     name: 'QRL Connect Test dApp',
     url: location.origin,
+    // Return-to-dApp target (WalletConnect-style peer redirect): after the
+    // wallet approves a request on mobile, it bounces the user back here
+    // instead of stranding them in the wallet app.
+    redirectUrl: location.href,
   },
   relayUrl: RELAY_URL,
   debug: true,
@@ -690,15 +694,25 @@ log(`Relay: ${RELAY_URL}`, 'info');
 log(`Platform: ${navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'}`, 'info');
 
 // Auto-reconnect to a stored relay session if one is present.
+//
+// hasStoredSession() is presence-only (a saved localStorage record within
+// its TTL), NOT proof the wallet is still reachable. The SDK's reconnect()
+// (fired in the QRLConnect constructor) bounds the wait: it reads the relay
+// participant roster, and if no wallet re-appears within its probe window it
+// surfaces a 'disconnect', which our handler above turns into a fresh QR.
+// So phrase this tentatively rather than asserting a reconnection.
 if (qrl.hasStoredSession()) {
-  log('Found existing QRL Connect session, reconnecting...', 'info');
+  log('Found a saved session, checking if your wallet is still reachable...', 'info');
   activeProvider = qrl;
   activeProviderInfo = {
     name: QRL_CONNECT_PROVIDER_INFO.name,
     rdns: QRL_CONNECT_RDNS,
   };
   hidePicker();
-  updateStatus(ConnectionStatus.RECONNECTING);
+  // Reflect the SDK's actual current status. reconnect() already ran in the
+  // constructor (before our statusChanged listener was attached), so read it
+  // directly instead of assuming RECONNECTING.
+  updateStatus(qrl.getStatus());
 } else {
   log('No stored session. Pick a wallet to start.', 'info');
 }
