@@ -5,6 +5,13 @@ export interface DAppMetadata {
   name: string;
   url: string;
   icon?: string;
+  /**
+   * Optional "return to dApp" target (a URL or app deep-link scheme). Sent to
+   * the wallet in ORIGINATOR_INFO; after the wallet resolves a restricted
+   * request it bounces the user back here (WalletConnect-style peer redirect)
+   * so a same-device deep-link flow does not strand the user in the wallet.
+   */
+  redirectUrl?: string;
 }
 
 /**

@@ -213,7 +213,7 @@
     <ul>
       <li>The official <strong>QRL Web3 Wallet</strong> browser extension (<code>theqrl.org</code>)</li>
       <li><strong>MyQRLWallet (mobile)</strong> via <code>qrlconnect://</code> - QR code on desktop, deep link on mobile, then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
-      <li>Once connected, call <code>qrl_sendTransaction</code>, <code>personal_sign</code>, and read-only RPC methods through whichever wallet was picked</li>
+      <li>Once connected, call <code>qrl_sendTransaction</code>, <code>qrl_signMessage</code>, <code>qrl_signTypedData</code>, and read-only RPC methods through whichever wallet was picked</li>
       <li>Watch every encrypted relay message in the event log below</li>
     </ul>
     <p>
@@ -320,7 +320,7 @@
   <div class="card">
     <h2>Event Log</h2>
     <div class="log-area" id="log-area">
-      <div class="log-entry info">Ready. Click "Generate QR Code" to start.</div>
+      <div class="log-entry info">Ready. Pick a wallet to start.</div>
     </div>
   </div>
 
