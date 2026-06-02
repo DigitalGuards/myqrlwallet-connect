@@ -52,6 +52,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     provider: QRLConnectProvider;
   } | null = null;
   private eip6963RequestListener: (() => void) | null = null;
+  private resumeDebounce: ReturnType<typeof setTimeout> | null = null;
   readonly isQRLConnect = true;
 
   constructor(options: QRLConnectOptions) {
@@ -75,6 +76,11 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     if (options.autoReconnect !== false) {
       this.connectionManager.reconnect();
     }
+
+    // Recover the relay socket when the dApp tab returns to the foreground
+    // (its JS is throttled/frozen while backgrounded on the same device, so
+    // socket.io's own retry can lag). Independent of any native bridge.
+    this.setupResumeListeners();
 
     // EIP-6963 announce so dApp pickers see this provider next to the
     // QRL browser extension. Default-on in browsers; opt-out via
@@ -111,6 +117,28 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     this.eip6963RequestListener = announce;
     window.addEventListener(EIP6963_REQUEST_EVENT, announce);
     announce();
+  }
+
+  /**
+   * Re-open the relay socket when the dApp tab regains focus or the network
+   * comes back. Debounced because visibilitychange + online can fire together.
+   * No-op when already connected (ConnectionManager.resume guards that).
+   */
+  private setupResumeListeners(): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+    const resume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (this.resumeDebounce) clearTimeout(this.resumeDebounce);
+      this.resumeDebounce = setTimeout(() => {
+        this.resumeDebounce = null;
+        this.connectionManager.resume();
+      }, 300);
+    };
+
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('online', resume);
+    window.addEventListener('pageshow', resume);
   }
 
   /**

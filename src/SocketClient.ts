@@ -31,6 +31,18 @@ export interface JoinResult {
    * registered a PK yet — wallet callers must treat this as a retry signal.
    */
   channelPublicKey: string | null;
+  /**
+   * Client types of the OTHER participants already in the channel at join
+   * time (e.g. `['wallet']` or `[]`). Lets a (re)joining peer detect an
+   * absent counterparty immediately instead of waiting on a future
+   * participants_changed event. Empty array on older relays.
+   */
+  participants: string[];
+  /**
+   * True if the channel was explicitly closed (a terminated tombstone). The
+   * peer should drop its stored session rather than wait or re-pair.
+   */
+  terminated: boolean;
 }
 
 export class SocketClient extends EventEmitter<SocketClientEvents> {
@@ -231,12 +243,16 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
           error?: string;
           bufferedMessages?: unknown[];
           channelPublicKey?: string | null;
+          participants?: string[];
+          terminated?: boolean;
         }) => {
           if (response.success) {
             log('Socket', `Joined channel ${channelId}`);
             resolve({
               bufferedMessages: response.bufferedMessages || [],
               channelPublicKey: response.channelPublicKey ?? null,
+              participants: response.participants || [],
+              terminated: response.terminated === true,
             });
           } else {
             logError('Socket', `Failed to join channel: ${response.error}`);
