@@ -116,6 +116,55 @@ export interface EIP6963ProviderInfoOverride {
   rdns?: string;
 }
 
+/**
+ * Rich response object returned by both `qrl_signMessage` and
+ * `qrl_signTypedData`. The signature alone is not enough to verify since
+ * ML-DSA-87 public keys cannot be recovered from a signature, so the
+ * wallet always returns the public key explicitly. Stateless verifiers
+ * (e.g. the SDK's `verifyMessage` / `verifyTypedData`) need every field.
+ */
+export interface QrlSignedResult {
+  /** 0x-hex of the 4595-byte ML-DSA-87 signature. */
+  signature: string;
+  /** 0x-hex of the 2592-byte ML-DSA-87 public key. */
+  publicKey: string;
+  /** 41-char checksummed Q-address derived from `publicKey`. */
+  signer: string;
+  /** 0x-hex of the 64-byte SHAKE256 digest that was signed. */
+  digest: string;
+  /** Scheme tag: 'QRL-SIGN-MSG-v1' or 'QRL-SIGN-TYPED-v1'. */
+  schemeVersion: string;
+}
+
+/**
+ * Response from `qrl_signTypedData`. Echoes `domain` so a stateless
+ * verifier doesn't need to be told the domain out-of-band.
+ */
+export interface QrlSignedTypedDataResult extends QrlSignedResult {
+  domain: Record<string, unknown>;
+}
+
+/**
+ * `qrl_signMessage` params: `[signer, messageHex]`. `signer` must equal the
+ * dApp's currently-connected account; the wallet rejects mismatches before
+ * unlocking. `messageHex` is strict `0x`-prefixed bytes (no UTF-8 strings).
+ */
+export type QrlSignMessageParams = [string, string];
+
+/**
+ * `qrl_signTypedData` params: `[signer, payload]`. Payload mirrors EIP-712
+ * shape: `{ types, primaryType, domain, message }`, but with `QRLDomain`
+ * in place of `EIP712Domain` and SHAKE256-based hashing. See `signing/`
+ * for the full encoder.
+ */
+export interface QrlTypedDataPayload {
+  types: Record<string, ReadonlyArray<{ name: string; type: string }>>;
+  primaryType: string;
+  domain: Record<string, unknown>;
+  message: Record<string, unknown>;
+}
+export type QrlSignTypedDataParams = [string, QrlTypedDataPayload];
+
 /** QRL Connect configuration */
 export interface QRLConnectOptions {
   dappMetadata: DAppMetadata;

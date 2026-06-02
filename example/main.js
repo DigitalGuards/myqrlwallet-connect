@@ -1,4 +1,11 @@
-import { QRLConnect, ConnectionStatus, QRL_CONNECT_PROVIDER_INFO } from '@qrlwallet/connect';
+import {
+  QRLConnect,
+  ConnectionStatus,
+  QRL_CONNECT_PROVIDER_INFO,
+  verifyMessage,
+  verifyTypedData,
+  bytesToHex,
+} from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
 // ─── Config ──────────────────────────────────────────────
@@ -23,9 +30,12 @@ const btnDisconnect   = $('btn-disconnect');
 const btnSwitchWallet = $('btn-switch-wallet');
 const btnSend         = $('btn-send');
 const btnSign         = $('btn-sign');
+const btnSignTyped    = $('btn-sign-typed');
+const signTypedInput  = $('sign-typed-payload');
 const btnRpc          = $('btn-rpc');
 const txResult        = $('tx-result');
 const signResult      = $('sign-result');
+const signTypedResult = $('sign-typed-result');
 const rpcResult       = $('rpc-result');
 const logArea         = $('log-area');
 
@@ -121,6 +131,7 @@ function hidePicker() {
 // own picker alongside any extension provider.
 let connectedAccount = null;
 let userDisconnected = false;
+let typedEdited = false; // becomes true once the user edits the typed-data box
 let activeProvider = null;       // The wallet provider currently in use.
 let activeProviderInfo = null;   // EIP-6963 info for the active wallet.
 
@@ -150,6 +161,8 @@ window.dispatchEvent(new Event('eip6963:requestProvider'));
 // ─── Active-wallet UI helpers ────────────────────────────
 function showConnectedUI(accounts, providerInfo) {
   connectedAccount = accounts?.[0] || null;
+  // Reflect the connected account as the StakeIntent staker (unless edited).
+  if (!typedEdited) refreshTypedPlaceholder();
   accountAddr.textContent = connectedAccount;
   activeWalletEl.textContent = providerInfo
     ? `${providerInfo.name} (${providerInfo.rdns})`
@@ -168,6 +181,7 @@ function showConnectedUI(accounts, providerInfo) {
   }
   btnSend.disabled = false;
   btnSign.disabled = false;
+  btnSignTyped.disabled = false;
   btnRpc.disabled = false;
 }
 
@@ -181,6 +195,7 @@ function showDisconnectedUI() {
   btnSwitchWallet.classList.add('hidden');
   btnSend.disabled = true;
   btnSign.disabled = true;
+  btnSignTyped.disabled = true;
   btnRpc.disabled = true;
   showPicker();
 }
@@ -425,6 +440,7 @@ btnNewConn.addEventListener('click', async () => {
     btnDisconnect.classList.add('hidden');
     btnSend.disabled = true;
     btnSign.disabled = true;
+    btnSignTyped.disabled = true;
     btnRpc.disabled = true;
     const openedMobile = tryOpenMobileDeepLink(uri, 'newConnection');
     if (!openedMobile) {
@@ -489,7 +505,28 @@ btnSend.addEventListener('click', async () => {
   }
 });
 
-// ─── Sign Message ────────────────────────────────────────
+// ─── Sign helpers ────────────────────────────────────────
+const SHORT_HEX = (s) => (typeof s === 'string' && s.length > 24 ? `${s.slice(0, 12)}...${s.slice(-8)}` : s);
+
+function renderSignResultCard(box, result, verifyOk) {
+  box.replaceChildren();
+  box.style.whiteSpace = 'pre-wrap';
+  const lines = [
+    `${verifyOk ? '✓ verified locally' : '✗ LOCAL VERIFY FAILED'}`,
+    `schemeVersion : ${result.schemeVersion}`,
+    `signer        : ${result.signer}`,
+    `digest        : ${SHORT_HEX(result.digest)}`,
+    `publicKey     : ${SHORT_HEX(result.publicKey)}`,
+    `signature     : ${SHORT_HEX(result.signature)}`,
+  ];
+  if (result.domain) {
+    lines.push(`domain        : ${JSON.stringify(result.domain)}`);
+  }
+  box.textContent = lines.join('\n');
+  box.classList.remove('hidden');
+}
+
+// ─── Sign Message (qrl_signMessage v1) ───────────────────
 btnSign.addEventListener('click', async () => {
   const message = $('sign-message').value.trim();
   if (!message) { log('Enter a message to sign', 'error'); return; }
@@ -497,55 +534,126 @@ btnSign.addEventListener('click', async () => {
   btnSign.disabled = true;
   btnSign.textContent = 'Waiting for approval...';
   signResult.classList.add('hidden');
-  log(`Requesting signature for: "${message}"`, 'info');
+  log(`Requesting qrl_signMessage for: "${message}"`, 'info');
+
+  // params[1] is strict 0x-hex bytes; the dApp UTF-8-encodes here so the
+  // wallet receives a single canonical form.
+  const messageHex = bytesToHex(new TextEncoder().encode(message));
 
   try {
-    // EIP-191 / EIP-1474: params[0] must be the message hex-encoded as Data,
-    // not a raw UTF-8 string. The QRL Web3 Wallet extension takes this
-    // literally and shows an empty message in the approval popup if you
-    // pass plain text. (The relay/mobile flow is more lenient, but we send
-    // the spec-correct form for both providers.)
-    const hexMessage =
-      '0x' +
-      Array.from(new TextEncoder().encode(message))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-    const signature = await activeProvider.request({
-      method: 'personal_sign',
-      params: [hexMessage, connectedAccount],
+    const result = await activeProvider.request({
+      method: 'qrl_signMessage',
+      params: [connectedAccount, messageHex],
     });
+    log('Wallet returned a signed-message response', 'success');
 
-    log('Message signed successfully', 'success');
-    // The QRL extension returns an object (post-quantum MLDSA-87 needs the
-    // public key alongside the signature for verification); the relay/mobile
-    // flow returns just the signature hex string. Render whichever shape we
-    // get without `[object Object]` and log the raw payload for visibility.
-    log(`Raw response: ${JSON.stringify(signature)}`, 'info');
-    signResult.replaceChildren();
-    signResult.style.whiteSpace = 'pre-wrap';
-    if (signature && typeof signature === 'object') {
-      // Walk known keys first, then fall back to a pretty-printed dump of
-      // whatever keys the wallet actually returned.
-      const known = ['signature', 'publicKey', 'pubKey', 'address', 'message', 'messageHash', 'r', 's', 'v'];
-      const lines = [];
-      for (const k of known) {
-        if (signature[k] != null) lines.push(`${k}: ${signature[k]}`);
-      }
-      if (lines.length === 0) {
-        lines.push(JSON.stringify(signature, null, 2));
-      }
-      signResult.textContent = lines.join('\n');
-    } else {
-      signResult.textContent = `sig: ${signature}`;
-    }
-    signResult.classList.remove('hidden');
+    const ok = verifyMessage({
+      signature: result.signature,
+      publicKey: result.publicKey,
+      messageBytes: messageHex,
+    });
+    log(`Local verifyMessage(): ${ok ? 'OK' : 'FAILED'}`, ok ? 'success' : 'error');
+    renderSignResultCard(signResult, result, ok);
   } catch (err) {
-    log(`Signing failed: ${err.message}`, 'error');
+    log(`qrl_signMessage failed: ${err.message}`, 'error');
     signResult.textContent = `Error: ${err.message}`;
     signResult.classList.remove('hidden');
   } finally {
     btnSign.disabled = false;
     btnSign.textContent = 'Sign Message';
+  }
+});
+
+// ─── Sign Typed Data (qrl_signTypedData v1) ──────────────
+function defaultTypedPayload() {
+  // A realistic QuantaPool example: an off-chain, gasless "stake intent" that
+  // authorizes the pool to stake `qrlAmount` of QRL for stQRL liquid-staking
+  // shares (with a slippage floor), bound to the QuantaPool DepositPoolV2
+  // domain. nonce + deadline give it replay protection, exactly what a real
+  // protocol relayer would later honor on-chain.
+  return {
+    types: {
+      QRLDomain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      StakeIntent: [
+        { name: 'staker', type: 'address' },
+        { name: 'qrlAmount', type: 'uint256' },
+        { name: 'minShares', type: 'uint256' },
+        { name: 'referrer', type: 'address' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint64' },
+      ],
+    },
+    primaryType: 'StakeIntent',
+    domain: {
+      name: 'QuantaPool',
+      version: '1',
+      chainId: '1337',
+      // DepositPoolV2 (placeholder; set to the deployed pool address)
+      verifyingContract: 'Q0000000000000000000000000000000000000000',
+    },
+    message: {
+      staker: connectedAccount || '',
+      qrlAmount: '100000000000000000000', // 100 QRL (in planck)
+      minShares: '98500000000000000000', // >= 98.5 stQRL (1.5% slippage floor)
+      referrer: 'Q0000000000000000000000000000000000000000', // zero = none
+      nonce: '0',
+      deadline: String(Math.floor(Date.now() / 1000) + 3600), // valid for 1h
+    },
+  };
+}
+
+function refreshTypedPlaceholder() {
+  signTypedInput.value = JSON.stringify(defaultTypedPayload(), null, 2);
+}
+refreshTypedPlaceholder();
+
+// Track manual edits so refreshing on connect never clobbers them.
+signTypedInput.addEventListener('input', () => { typedEdited = true; });
+
+btnSignTyped.addEventListener('click', async () => {
+  let payload;
+  try {
+    payload = JSON.parse(signTypedInput.value);
+  } catch (e) {
+    log(`Typed-data payload is not valid JSON: ${e.message}`, 'error');
+    return;
+  }
+  // Auto-fill the staker with the connected account if left blank
+  if (payload?.message && !payload.message.staker) {
+    payload.message.staker = connectedAccount;
+  }
+
+  btnSignTyped.disabled = true;
+  btnSignTyped.textContent = 'Waiting for approval...';
+  signTypedResult.classList.add('hidden');
+  log(`Requesting qrl_signTypedData (primary=${payload.primaryType})`, 'info');
+
+  try {
+    const result = await activeProvider.request({
+      method: 'qrl_signTypedData',
+      params: [connectedAccount, payload],
+    });
+    log('Wallet returned a signed typed-data response', 'success');
+
+    const ok = verifyTypedData({
+      signature: result.signature,
+      publicKey: result.publicKey,
+      payload,
+    });
+    log(`Local verifyTypedData(): ${ok ? 'OK' : 'FAILED'}`, ok ? 'success' : 'error');
+    renderSignResultCard(signTypedResult, result, ok);
+  } catch (err) {
+    log(`qrl_signTypedData failed: ${err.message}`, 'error');
+    signTypedResult.textContent = `Error: ${err.message}`;
+    signTypedResult.classList.remove('hidden');
+  } finally {
+    btnSignTyped.disabled = false;
+    btnSignTyped.textContent = 'Sign Typed Data';
   }
 });
 

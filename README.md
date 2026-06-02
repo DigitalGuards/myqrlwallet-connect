@@ -131,7 +131,9 @@ The main class. Creates a connection manager and EIP-1193 provider.
 ### Supported RPC methods
 
 **Require user approval:**
-`qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_sign`, `personal_sign`, `qrl_signTypedData_v4`, `wallet_addQrlChain`, `wallet_switchQrlChain`
+`qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_addQrlChain`, `wallet_switchQrlChain`
+
+`qrl_signMessage` and `qrl_signTypedData` (v3.0.0) replace the Ethereum-flavored `personal_sign` / `qrl_sign` / `qrl_signTypedData_v3` / `qrl_signTypedData_v4`. Both use SHAKE256 + native ML-DSA-87 ctx and return a rich `{ signature, publicKey, signer, digest, schemeVersion }` object; verify locally with `verifyMessage` / `verifyTypedData` exported from this package.
 
 **Auto-proxied (no approval needed):**
 `qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_blockNumber`, `qrl_chainId`, `qrl_getTransactionReceipt`, and 30+ more read-only methods.
