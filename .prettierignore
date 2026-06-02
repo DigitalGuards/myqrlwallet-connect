@@ -1,2 +1,5 @@
 dist/
 node_modules/
+# Pinned cross-repo parity fixtures: must stay byte-identical with the
+# wallet's copy at myqrlwallet-frontend/src/utils/signing/__fixtures__/.
+src/signing/__fixtures__/

@@ -122,7 +122,7 @@ qrlwallet-connect/
 
 ## Supported RPC Methods
 
-**Restricted** (require wallet approval): `qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_sign`, `personal_sign`, `qrl_signTypedData`, `qrl_signTypedData_v3`, `qrl_signTypedData_v4`, `wallet_addQrlChain`, `wallet_switchQrlChain`
+**Restricted** (require wallet approval): `qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_addQrlChain`, `wallet_switchQrlChain`. The PQ-native `qrl_signMessage` (opaque bytes) and `qrl_signTypedData` (EIP-712-shaped) replaced the Ethereum-flavored set in v3.0.0; see docs/JSON-RPC-REFERENCE.md.
 
 **Unrestricted** (auto-proxied, no approval): `qrl_chainId`, `qrl_blockNumber`, `qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_gasPrice`, `qrl_getTransactionByHash`, `qrl_getTransactionReceipt`, and 25+ more — see `src/config.ts` for the full list.
 

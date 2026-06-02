@@ -6,16 +6,23 @@ export const STORAGE_KEY_PREFIX = '@qrlwallet/connect';
 export const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export const WALLET_UNRESPONSIVE_MS = 30 * 1000; // 30 seconds
 
-/** RPC methods that require user approval in the wallet */
+/**
+ * RPC methods that require user approval in the wallet.
+ *
+ * v3.0.0 replaces the Ethereum-flavored signing surface with two
+ * post-quantum-native methods: `qrl_signMessage` for opaque bytes and
+ * `qrl_signTypedData` for structured payloads (EIP-712-shaped, but with
+ * SHAKE256 + native Dilithium ctx). The legacy methods (`personal_sign`,
+ * `qrl_sign`, `qrl_signTypedData_v3`, `qrl_signTypedData_v4`) are no
+ * longer accepted; a dApp calling them via this SDK will get a
+ * "method not supported" error before the relay round-trip.
+ */
 export const RESTRICTED_METHODS = new Set([
   'qrl_requestAccounts',
   'qrl_sendTransaction',
   'qrl_signTransaction',
-  'qrl_sign',
-  'personal_sign',
+  'qrl_signMessage',
   'qrl_signTypedData',
-  'qrl_signTypedData_v3',
-  'qrl_signTypedData_v4',
   'wallet_addQrlChain',
   'wallet_switchQrlChain',
 ]);
