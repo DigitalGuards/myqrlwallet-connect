@@ -131,6 +131,7 @@ function hidePicker() {
 // own picker alongside any extension provider.
 let connectedAccount = null;
 let userDisconnected = false;
+let typedEdited = false; // becomes true once the user edits the typed-data box
 let activeProvider = null;       // The wallet provider currently in use.
 let activeProviderInfo = null;   // EIP-6963 info for the active wallet.
 
@@ -160,6 +161,8 @@ window.dispatchEvent(new Event('eip6963:requestProvider'));
 // ─── Active-wallet UI helpers ────────────────────────────
 function showConnectedUI(accounts, providerInfo) {
   connectedAccount = accounts?.[0] || null;
+  // Reflect the connected account as the StakeIntent staker (unless edited).
+  if (!typedEdited) refreshTypedPlaceholder();
   accountAddr.textContent = connectedAccount;
   activeWalletEl.textContent = providerInfo
     ? `${providerInfo.name} (${providerInfo.rdns})`
@@ -563,21 +566,43 @@ btnSign.addEventListener('click', async () => {
 
 // ─── Sign Typed Data (qrl_signTypedData v1) ──────────────
 function defaultTypedPayload() {
+  // A realistic QuantaPool example: an off-chain, gasless "stake intent" that
+  // authorizes the pool to stake `qrlAmount` of QRL for stQRL liquid-staking
+  // shares (with a slippage floor), bound to the QuantaPool DepositPoolV2
+  // domain. nonce + deadline give it replay protection, exactly what a real
+  // protocol relayer would later honor on-chain.
   return {
     types: {
-      QRLDomain: [{ name: 'name', type: 'string' }],
-      LoginChallenge: [
-        { name: 'account', type: 'address' },
-        { name: 'nonce', type: 'bytes32' },
-        { name: 'issuedAt', type: 'uint64' },
+      QRLDomain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      StakeIntent: [
+        { name: 'staker', type: 'address' },
+        { name: 'qrlAmount', type: 'uint256' },
+        { name: 'minShares', type: 'uint256' },
+        { name: 'referrer', type: 'address' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint64' },
       ],
     },
-    primaryType: 'LoginChallenge',
-    domain: { name: window.location.host || 'zondscan.com' },
+    primaryType: 'StakeIntent',
+    domain: {
+      name: 'QuantaPool',
+      version: '1',
+      chainId: '1337',
+      // DepositPoolV2 (placeholder; set to the deployed pool address)
+      verifyingContract: 'Q0000000000000000000000000000000000000000',
+    },
     message: {
-      account: connectedAccount || '',
-      nonce: '0x' + 'ab'.repeat(32),
-      issuedAt: String(Math.floor(Date.now() / 1000)),
+      staker: connectedAccount || '',
+      qrlAmount: '100000000000000000000', // 100 QRL (in planck)
+      minShares: '98500000000000000000', // >= 98.5 stQRL (1.5% slippage floor)
+      referrer: 'Q0000000000000000000000000000000000000000', // zero = none
+      nonce: '0',
+      deadline: String(Math.floor(Date.now() / 1000) + 3600), // valid for 1h
     },
   };
 }
@@ -587,6 +612,9 @@ function refreshTypedPlaceholder() {
 }
 refreshTypedPlaceholder();
 
+// Track manual edits so refreshing on connect never clobbers them.
+signTypedInput.addEventListener('input', () => { typedEdited = true; });
+
 btnSignTyped.addEventListener('click', async () => {
   let payload;
   try {
@@ -595,9 +623,9 @@ btnSignTyped.addEventListener('click', async () => {
     log(`Typed-data payload is not valid JSON: ${e.message}`, 'error');
     return;
   }
-  // Auto-fill account if blank
-  if (payload?.message && !payload.message.account) {
-    payload.message.account = connectedAccount;
+  // Auto-fill the staker with the connected account if left blank
+  if (payload?.message && !payload.message.staker) {
+    payload.message.staker = connectedAccount;
   }
 
   btnSignTyped.disabled = true;
