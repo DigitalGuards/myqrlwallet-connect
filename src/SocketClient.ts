@@ -18,7 +18,7 @@ interface SocketClientEvents {
   message: (data: RelayMessage) => void;
   connected: () => void;
   disconnected: (reason: string) => void;
-  reconnected: () => void;
+  reconnected: (result: JoinResult) => void;
   participants_changed: (data: { event: string; clientType?: string }) => void;
   error: (err: Error) => void;
 }
@@ -31,6 +31,18 @@ export interface JoinResult {
    * registered a PK yet — wallet callers must treat this as a retry signal.
    */
   channelPublicKey: string | null;
+  /**
+   * Client types of the OTHER participants already in the channel at join
+   * time (e.g. `['wallet']` or `[]`). Lets a (re)joining peer detect an
+   * absent counterparty immediately instead of waiting on a future
+   * participants_changed event. Empty array on older relays.
+   */
+  participants: string[];
+  /**
+   * True if the channel was explicitly closed (a terminated tombstone). The
+   * peer should drop its stored session rather than wait or re-pair.
+   */
+  terminated: boolean;
 }
 
 export class SocketClient extends EventEmitter<SocketClientEvents> {
@@ -72,7 +84,14 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * Connect to the relay server.
    */
   connect(): void {
-    if (this.socket?.connected) return;
+    if (this.socket) {
+      // A socket already exists. It may be mid socket.io auto-reconnect
+      // (non-null but disconnected). Constructing a second io() here would
+      // orphan the first — it keeps retrying forever and double-joins the
+      // channel. Reuse the existing socket; nudge it if it is currently down.
+      if (!this.socket.connected) this.socket.connect();
+      return;
+    }
 
     log('Socket', `Connecting to ${this.relayUrl}`);
 
@@ -96,7 +115,10 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
         this.joinChannelNow(reconnectChannelId)
           .then((result) => {
             this.settlePendingJoin(reconnectChannelId, { result });
-            this.emit('reconnected');
+            // Carry the re-join ack (roster + terminated) so ConnectionManager
+            // can re-derive walletPresent instead of relying on the stale flag
+            // cleared by the preceding 'disconnected'.
+            this.emit('reconnected', result);
           })
           .catch((err) => {
             const reconnectErr = err instanceof Error ? err : new Error(String(err));
@@ -231,12 +253,16 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
           error?: string;
           bufferedMessages?: unknown[];
           channelPublicKey?: string | null;
+          participants?: string[];
+          terminated?: boolean;
         }) => {
           if (response.success) {
             log('Socket', `Joined channel ${channelId}`);
             resolve({
               bufferedMessages: response.bufferedMessages || [],
               channelPublicKey: response.channelPublicKey ?? null,
+              participants: response.participants || [],
+              terminated: response.terminated === true,
             });
           } else {
             logError('Socket', `Failed to join channel: ${response.error}`);

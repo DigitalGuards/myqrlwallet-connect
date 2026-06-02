@@ -13,6 +13,7 @@ import {
   STORAGE_KEY_PREFIX,
   SESSION_TTL_MS,
   WALLET_UNRESPONSIVE_MS,
+  RECONNECT_WALLET_PROBE_MS,
 } from './config.js';
 import { cidFromString, generateConnectionURI } from './utils/qrUri.js';
 import { toBase64 } from './PQCrypto.js';
@@ -54,6 +55,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private connectedAccounts: string[] = [];
   private storageKey: string;
   private unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectProbeTimer: ReturnType<typeof setTimeout> | null = null;
   private failedReconnects = 0;
   private walletPresent = false;
   private pendingRestore: DAppSession | null = null;
@@ -97,13 +99,32 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
     });
 
-    this.socketClient.on('reconnected', () => {
+    this.socketClient.on('reconnected', (result) => {
+      // The re-join ack tells us, fresh, whether the channel was explicitly
+      // terminated and whether the wallet is still present. The preceding
+      // 'disconnected' cleared walletPresent, so without re-deriving it here
+      // an idle-but-present wallet looks absent and the probe would tear down
+      // a healthy session (and a tombstone would be ignored on auto-reconnect).
+      if (result?.terminated) {
+        log('ConnectionManager', 'Channel terminated, observed on auto-reconnect');
+        this.handleSessionTerminated();
+        return;
+      }
+      if (result) {
+        this.walletPresent = result.participants.includes('wallet');
+      }
       if (this.keyExchange?.areKeysExchanged()) {
         if (this.walletPresent) {
+          this.clearReconnectProbe();
           this.setStatus(ConnectionStatus.CONNECTED);
           this.failedReconnects = 0;
         } else {
+          // We have a live session but the wallet is not in the channel.
+          // Don't sit in WAITING forever: give it a bounded window to
+          // (re)appear, then surface DISCONNECTED so the dApp can fall back
+          // to a fresh QR.
           this.setStatus(ConnectionStatus.WAITING);
+          this.armReconnectProbe();
         }
       } else {
         // Handshake not yet complete; simply wait for wallet SYNACK.
@@ -135,10 +156,18 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
         this.clearUnresponsiveTimer();
+        this.clearReconnectProbe();
         if (this.keyExchange?.areKeysExchanged()) {
           this.failedReconnects = 0;
           this.setStatus(ConnectionStatus.CONNECTED);
         }
+      }
+      // 'close' is an explicit wallet/app-side termination (relay tombstone),
+      // not a transient drop. Treat it as definitive: drop the session.
+      if (data.event === 'close') {
+        log('ConnectionManager', 'Wallet closed the channel (explicit terminate)');
+        this.handleSessionTerminated();
+        return;
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
         if (data.clientType === 'wallet' || !data.clientType) {
@@ -160,6 +189,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (!this.keyExchange) return;
     this.keyExchange.on('keys_exchanged', () => {
       log('ConnectionManager', 'Key exchange complete');
+      this.clearReconnectProbe();
       this.setStatus(ConnectionStatus.CONNECTED);
       this.walletPresent = true;
       this.failedReconnects = 0;
@@ -182,6 +212,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    */
   async getConnectionURI(retryOnConflict = true): Promise<string> {
     this.setStatus(ConnectionStatus.CONNECTING);
+    this.clearReconnectProbe();
     this.pendingRestore = null;
     this.walletPresent = false;
 
@@ -252,24 +283,136 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       return false;
     }
 
+    return this.joinAndSettle();
+  }
+
+  /**
+   * (Re)open the socket, join the persisted channel, drain buffered relay
+   * messages, and settle status. Shared by the cold-restore reconnect() and
+   * the warm resume() path whose socket was torn down by the reconnect probe.
+   * Assumes channelId and a hydrated keyExchange are already in place, and
+   * that the caller has reset walletPresent + set RECONNECTING status.
+   */
+  private async joinAndSettle(): Promise<boolean> {
     this.socketClient.connect();
     try {
-      const { bufferedMessages } = await this.socketClient.joinChannel(this.channelId);
+      const { bufferedMessages, participants, terminated } = await this.socketClient.joinChannel(
+        this.channelId
+      );
+
+      // The channel was explicitly closed (wallet/app forgot us). Drop the
+      // stored session instead of waiting on a wallet that will never return.
+      if (terminated) {
+        log('ConnectionManager', 'Stored session was terminated by the wallet; dropping it');
+        this.handleSessionTerminated();
+        return false;
+      }
+
+      // Relay roster lets us know up front whether the wallet is present,
+      // rather than relying on a future participants_changed event.
+      if (participants.includes('wallet')) {
+        this.walletPresent = true;
+      }
+
       for (const msg of bufferedMessages) {
         this.enqueueRelayMessage(msg as RelayMessage);
       }
       await this.messageQueue;
 
-      if (this.keyExchange?.areKeysExchanged()) {
-        this.setStatus(this.walletPresent ? ConnectionStatus.CONNECTED : ConnectionStatus.WAITING);
+      if (this.keyExchange?.areKeysExchanged() && this.walletPresent) {
+        this.clearReconnectProbe();
+        this.setStatus(ConnectionStatus.CONNECTED);
       } else {
+        // Live channel but no wallet yet. Bound the wait so a gone wallet
+        // doesn't strand the dApp in WAITING forever.
         this.setStatus(ConnectionStatus.WAITING);
+        this.armReconnectProbe();
       }
       return true;
     } catch (err) {
       logError('ConnectionManager', 'Reconnect failed:', err);
       this.setStatus(ConnectionStatus.DISCONNECTED);
       return false;
+    }
+  }
+
+  /**
+   * Nudge the connection back to life after the dApp tab / wallet app was
+   * backgrounded. Idempotent and safe to call from visibilitychange / online
+   * / pageshow handlers. If a restored session has not yet been hydrated,
+   * runs the full reconnect(); otherwise just re-opens the socket, whose
+   * own connect handler re-joins the channel and drains the relay buffer.
+   */
+  resume(): void {
+    if (this.status === ConnectionStatus.CONNECTED) return;
+    if (this.pendingRestore && !this.keyExchange?.areKeysExchanged()) {
+      void this.reconnect();
+      return;
+    }
+    if (this.channelId && this.keyExchange?.areKeysExchanged()) {
+      // If the SocketClient still holds the channelId (a transient/background
+      // socket drop), re-opening is enough: its connect handler re-joins the
+      // channel and drains the buffer. But armReconnectProbe()'s timeout tears
+      // the socket down AND nulls the SocketClient channelId, so there the
+      // auto-rejoin can never fire — the socket would re-open but sit unjoined.
+      // Detect that case and re-join explicitly.
+      if (this.socketClient.getChannelId()) {
+        this.socketClient.connect();
+      } else {
+        this.setStatus(ConnectionStatus.RECONNECTING);
+        this.walletPresent = false;
+        void this.joinAndSettle();
+      }
+    }
+  }
+
+  /**
+   * A session was terminated for good (wallet sent a relay 'close', or the
+   * join ack reported a tombstone). Clear local state and surface
+   * DISCONNECTED so the consumer drops to a fresh-pairing UI.
+   */
+  private handleSessionTerminated(): void {
+    this.clearReconnectProbe();
+    this.clearUnresponsiveTimer();
+    this.walletPresent = false;
+    this.pendingRestore = null;
+    // Null the key exchange too. Otherwise channelId + areKeysExchanged() stay
+    // truthy and a later resume() (tab foreground / online) would try to
+    // re-join the now-dead channel. disconnect() clears it for the same reason.
+    this.keyExchange = null;
+    // Leave + drop the socket so we don't sit joined to a dead channel; the
+    // probe-timeout teardown path does the same. Routing is refused on a
+    // terminated channel, but a lingering joined socket is a needless resource.
+    this.socketClient.leaveChannel();
+    this.socketClient.disconnect();
+    this.clearSession();
+    this.setStatus(ConnectionStatus.DISCONNECTED);
+  }
+
+  private armReconnectProbe(): void {
+    this.clearReconnectProbe();
+    this.reconnectProbeTimer = setTimeout(() => {
+      this.reconnectProbeTimer = null;
+      if (this.walletPresent) return;
+      warn(
+        'ConnectionManager',
+        `No wallet rejoined within ${RECONNECT_WALLET_PROBE_MS}ms; treating reconnect as dead`
+      );
+      // Leave the channel and drop the socket so that if the wallet rejoins
+      // later, participants_changed cannot flip the dApp back to CONNECTED and
+      // emit phantom events after it already handled the disconnect. The
+      // stored session is kept (the consumer offers a fresh QR; an explicit
+      // terminate is what clears it).
+      this.socketClient.leaveChannel();
+      this.socketClient.disconnect();
+      this.setStatus(ConnectionStatus.DISCONNECTED);
+    }, RECONNECT_WALLET_PROBE_MS);
+  }
+
+  private clearReconnectProbe(): void {
+    if (this.reconnectProbeTimer) {
+      clearTimeout(this.reconnectProbeTimer);
+      this.reconnectProbeTimer = null;
     }
   }
 
@@ -340,6 +483,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    */
   async resetForNewChannel(): Promise<void> {
     this.clearUnresponsiveTimer();
+    this.clearReconnectProbe();
     this.walletPresent = false;
 
     await this.flushTerminate();
@@ -360,6 +504,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   async disconnect(): Promise<void> {
     this.clearUnresponsiveTimer();
+    this.clearReconnectProbe();
     this.walletPresent = false;
 
     await this.flushTerminate();
@@ -369,6 +514,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.setStatus(ConnectionStatus.DISCONNECTED);
     this.clearSession();
     this.connectedAccounts = [];
+    // Fully terminate the session: without clearing these, a later
+    // visibilitychange/online resume() would re-open the socket and re-join
+    // the channel after an explicit disconnect.
+    this.pendingRestore = null;
+    this.keyExchange = null;
   }
 
   // ── Internals ──────────────────────────────────────────────
@@ -385,6 +535,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private async handleRelayMessage(data: RelayMessage): Promise<void> {
     if (data.clientType === 'wallet') {
       this.walletPresent = true;
+      this.clearReconnectProbe();
       if (this.keyExchange?.areKeysExchanged() && this.status !== ConnectionStatus.CONNECTED) {
         this.failedReconnects = 0;
         this.setStatus(ConnectionStatus.CONNECTED);

@@ -52,6 +52,8 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     provider: QRLConnectProvider;
   } | null = null;
   private eip6963RequestListener: (() => void) | null = null;
+  private resumeListener: (() => void) | null = null;
+  private resumeDebounce: ReturnType<typeof setTimeout> | null = null;
   readonly isQRLConnect = true;
 
   constructor(options: QRLConnectOptions) {
@@ -75,6 +77,11 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     if (options.autoReconnect !== false) {
       this.connectionManager.reconnect();
     }
+
+    // Recover the relay socket when the dApp tab returns to the foreground
+    // (its JS is throttled/frozen while backgrounded on the same device, so
+    // socket.io's own retry can lag). Independent of any native bridge.
+    this.setupResumeListeners();
 
     // EIP-6963 announce so dApp pickers see this provider next to the
     // QRL browser extension. Default-on in browsers; opt-out via
@@ -111,6 +118,49 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     this.eip6963RequestListener = announce;
     window.addEventListener(EIP6963_REQUEST_EVENT, announce);
     announce();
+  }
+
+  /**
+   * Re-open the relay socket when the dApp tab regains focus or the network
+   * comes back. Debounced because visibilitychange + online can fire together.
+   * No-op when already connected (ConnectionManager.resume guards that).
+   */
+  private setupResumeListeners(): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    if (this.resumeListener) return; // already armed (idempotent re-arm)
+
+    const resume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (this.resumeDebounce) clearTimeout(this.resumeDebounce);
+      this.resumeDebounce = setTimeout(() => {
+        this.resumeDebounce = null;
+        this.connectionManager.resume();
+      }, 300);
+    };
+
+    this.resumeListener = resume;
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('online', resume);
+    window.addEventListener('pageshow', resume);
+  }
+
+  /**
+   * Remove the foreground/online resume listeners. Called on disconnect so a
+   * torn-down session can't be silently revived by a later tab focus; the
+   * listeners are re-armed by getConnectionURI()/newConnection() if the same
+   * provider is re-paired. Safe in any env.
+   */
+  private teardownResumeListeners(): void {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined' && this.resumeListener) {
+      document.removeEventListener('visibilitychange', this.resumeListener);
+      window.removeEventListener('online', this.resumeListener);
+      window.removeEventListener('pageshow', this.resumeListener);
+    }
+    this.resumeListener = null;
+    if (this.resumeDebounce) {
+      clearTimeout(this.resumeDebounce);
+      this.resumeDebounce = null;
+    }
   }
 
   /**
@@ -193,6 +243,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    * Generate a connection URI for QR code display or deep link redirect.
    */
   async getConnectionURI(): Promise<string> {
+    // Re-arm the foreground-resume listeners in case a prior disconnect tore
+    // them down and the dApp is re-pairing on this same provider instance.
+    this.setupResumeListeners();
     return this.connectionManager.getConnectionURI();
   }
 
@@ -346,6 +399,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       pending.reject(new Error('Disconnected'));
     }
     this.pendingRequests.clear();
+    this.teardownResumeListeners();
     await this.connectionManager.disconnect();
   }
 }

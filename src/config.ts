@@ -5,6 +5,13 @@ export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const STORAGE_KEY_PREFIX = '@qrlwallet/connect';
 export const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export const WALLET_UNRESPONSIVE_MS = 30 * 1000; // 30 seconds
+// After re-joining a restored session's channel with no wallet present, how
+// long to wait for the wallet to (re)appear before declaring the reconnect
+// dead and surfacing DISCONNECTED so the dApp can fall back to a fresh QR.
+// Comfortably longer than an observed iOS background-resume (~8s) so a merely
+// backgrounded wallet is not torn down, but short enough to avoid an
+// indefinite "reconnecting…" hang when the wallet is genuinely gone.
+export const RECONNECT_WALLET_PROBE_MS = 12 * 1000; // 12 seconds
 
 /**
  * RPC methods that require user approval in the wallet.

@@ -35,7 +35,7 @@ Full architectural details, RPC method list, and session/reconnect behavior live
 
 - Generates a connection URI and renders it as a scannable QR code
 - Connects to a wallet via the relay and walks through the 3-step SYN/SYNACK/ACK handshake
-- Lets you call `qrl_sendTransaction`, `personal_sign`, and a selection of read-only RPC methods
+- Lets you call `qrl_sendTransaction`, `qrl_signMessage`, `qrl_signTypedData`, and a selection of read-only RPC methods
 - Streams every inbound/outbound event to an on-page log so you can see the protocol in action
 
 The relay URL is hardcoded to `https://qrlwallet.com` (production) via the `RELAY_URL` constant at the top of `main.js`. For local development against a backend on `http://localhost:3000`, edit that constant before running `npm run dev`.
@@ -67,7 +67,7 @@ ZondScan's `ExplorerFrontend` has a `prebuild` script that clones this repo, run
 
 ## Testing with the mobile app
 
-1. Click **Generate QR Code** in the test dApp
+1. Pick **MyQRLWallet (Mobile)** in the test dApp's wallet picker to generate a QR code
 2. Open MyQRLWallet app on your phone
 3. Tap the QR scan button and scan the code
 4. The wallet should connect — you'll see the account address appear
