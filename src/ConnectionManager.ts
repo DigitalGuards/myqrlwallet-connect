@@ -99,7 +99,20 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
     });
 
-    this.socketClient.on('reconnected', () => {
+    this.socketClient.on('reconnected', (result) => {
+      // The re-join ack tells us, fresh, whether the channel was explicitly
+      // terminated and whether the wallet is still present. The preceding
+      // 'disconnected' cleared walletPresent, so without re-deriving it here
+      // an idle-but-present wallet looks absent and the probe would tear down
+      // a healthy session (and a tombstone would be ignored on auto-reconnect).
+      if (result?.terminated) {
+        log('ConnectionManager', 'Channel terminated, observed on auto-reconnect');
+        this.handleSessionTerminated();
+        return;
+      }
+      if (result) {
+        this.walletPresent = result.participants.includes('wallet');
+      }
       if (this.keyExchange?.areKeysExchanged()) {
         if (this.walletPresent) {
           this.clearReconnectProbe();
@@ -367,6 +380,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // truthy and a later resume() (tab foreground / online) would try to
     // re-join the now-dead channel. disconnect() clears it for the same reason.
     this.keyExchange = null;
+    // Leave + drop the socket so we don't sit joined to a dead channel; the
+    // probe-timeout teardown path does the same. Routing is refused on a
+    // terminated channel, but a lingering joined socket is a needless resource.
+    this.socketClient.leaveChannel();
+    this.socketClient.disconnect();
     this.clearSession();
     this.setStatus(ConnectionStatus.DISCONNECTED);
   }

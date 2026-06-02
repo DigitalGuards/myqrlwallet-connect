@@ -18,7 +18,7 @@ interface SocketClientEvents {
   message: (data: RelayMessage) => void;
   connected: () => void;
   disconnected: (reason: string) => void;
-  reconnected: () => void;
+  reconnected: (result: JoinResult) => void;
   participants_changed: (data: { event: string; clientType?: string }) => void;
   error: (err: Error) => void;
 }
@@ -84,7 +84,14 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * Connect to the relay server.
    */
   connect(): void {
-    if (this.socket?.connected) return;
+    if (this.socket) {
+      // A socket already exists. It may be mid socket.io auto-reconnect
+      // (non-null but disconnected). Constructing a second io() here would
+      // orphan the first — it keeps retrying forever and double-joins the
+      // channel. Reuse the existing socket; nudge it if it is currently down.
+      if (!this.socket.connected) this.socket.connect();
+      return;
+    }
 
     log('Socket', `Connecting to ${this.relayUrl}`);
 
@@ -108,7 +115,10 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
         this.joinChannelNow(reconnectChannelId)
           .then((result) => {
             this.settlePendingJoin(reconnectChannelId, { result });
-            this.emit('reconnected');
+            // Carry the re-join ack (roster + terminated) so ConnectionManager
+            // can re-derive walletPresent instead of relying on the stale flag
+            // cleared by the preceding 'disconnected'.
+            this.emit('reconnected', result);
           })
           .catch((err) => {
             const reconnectErr = err instanceof Error ? err : new Error(String(err));
