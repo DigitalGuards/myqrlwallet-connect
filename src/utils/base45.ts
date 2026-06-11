@@ -17,14 +17,14 @@ const DECODE: Int8Array = (() => {
 })();
 
 /**
- * Look up a character's base45 value. Char codes ≥128 are always invalid —
+ * Look up a character's base45 value. Char codes ≥128 are always invalid -
  * looking them up directly on the 128-slot Int8Array returns `undefined`,
  * and `undefined < 0` is false, which would let hostile input silently
  * decode to zero bytes and bypass the "invalid character" throw below.
  */
 function decodeChar(charCode: number): number {
   if (charCode < 0 || charCode >= 128) return -1;
-  return DECODE[charCode];
+  return DECODE[charCode] ?? -1;
 }
 
 export function base45Encode(bytes: Uint8Array): string {
@@ -32,19 +32,19 @@ export function base45Encode(bytes: Uint8Array): string {
   let out = '';
   let i = 0;
   while (i + 2 <= n) {
-    const v = (bytes[i] << 8) | bytes[i + 1];
+    const v = ((bytes[i] ?? 0) << 8) | (bytes[i + 1] ?? 0);
     const c2 = Math.floor(v / 2025);
     const r = v - c2 * 2025;
     const c1 = Math.floor(r / 45);
     const c0 = r - c1 * 45;
-    out += ALPHABET[c0] + ALPHABET[c1] + ALPHABET[c2];
+    out += `${ALPHABET[c0] ?? ''}${ALPHABET[c1] ?? ''}${ALPHABET[c2] ?? ''}`;
     i += 2;
   }
   if (i < n) {
-    const v = bytes[i];
+    const v = bytes[i] ?? 0;
     const c1 = Math.floor(v / 45);
     const c0 = v - c1 * 45;
-    out += ALPHABET[c0] + ALPHABET[c1];
+    out += `${ALPHABET[c0] ?? ''}${ALPHABET[c1] ?? ''}`;
   }
   return out;
 }

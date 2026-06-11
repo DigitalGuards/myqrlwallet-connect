@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { isMobileBrowser, getAppStoreUrl } from '../src/utils/platform.js';
 
 describe('platform utilities', () => {
@@ -28,23 +28,17 @@ describe('platform utilities', () => {
     });
 
     it('should detect Android', () => {
-      mockUserAgent(
-        'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36'
-      );
+      mockUserAgent('Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36');
       expect(isMobileBrowser()).toBe(true);
     });
 
     it('should detect iPhone', () => {
-      mockUserAgent(
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
-      );
+      mockUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15');
       expect(isMobileBrowser()).toBe(true);
     });
 
     it('should detect iPad', () => {
-      mockUserAgent(
-        'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
-      );
+      mockUserAgent('Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15');
       expect(isMobileBrowser()).toBe(true);
     });
 
@@ -63,9 +57,7 @@ describe('platform utilities', () => {
     });
 
     it('should return App Store URL for iOS/other', () => {
-      mockUserAgent(
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
-      );
+      mockUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)');
       expect(getAppStoreUrl()).toContain('apps.apple.com');
     });
 

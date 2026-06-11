@@ -28,7 +28,7 @@ export interface JoinResult {
   /**
    * Base64-encoded KEM public key the relay has bound to this channel.
    * Populated for wallet joins (v2 protocol). `null` if the dApp hasn't
-   * registered a PK yet — wallet callers must treat this as a retry signal.
+   * registered a PK yet - wallet callers must treat this as a retry signal.
    */
   channelPublicKey: string | null;
   /**
@@ -87,7 +87,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
     if (this.socket) {
       // A socket already exists. It may be mid socket.io auto-reconnect
       // (non-null but disconnected). Constructing a second io() here would
-      // orphan the first — it keeps retrying forever and double-joins the
+      // orphan the first - it keeps retrying forever and double-joins the
       // channel. Reuse the existing socket; nudge it if it is currently down.
       if (!this.socket.connected) this.socket.connect();
       return;
@@ -120,7 +120,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
             // cleared by the preceding 'disconnected'.
             this.emit('reconnected', result);
           })
-          .catch((err) => {
+          .catch((err: unknown) => {
             const reconnectErr = err instanceof Error ? err : new Error(String(err));
             this.settlePendingJoin(reconnectChannelId, { error: reconnectErr });
             logError('Socket', `Rejoin failed: ${reconnectErr.message}`);
@@ -139,15 +139,21 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
       this.emit('message', data);
     });
 
-    this.socket.on('participants_changed', (data) => {
-      log('Socket', `Participants changed: ${data.event}`);
-      this.emit('participants_changed', data);
+    this.socket.on('participants_changed', (data: unknown) => {
+      if (typeof data !== 'object' || data === null) return;
+      const rec: Record<string, unknown> = { ...data };
+      const event = typeof rec.event === 'string' ? rec.event : '';
+      log('Socket', `Participants changed: ${event}`);
+      this.emit('participants_changed', {
+        event,
+        ...(typeof rec.clientType === 'string' ? { clientType: rec.clientType } : {}),
+      });
     });
 
     this.socket.on('connect_error', (err) => {
       warn('Socket', `Connection error: ${err.message}`);
       // If the caller's `joinChannel()` is waiting on this connection and
-      // we've exhausted the underlying socket.io retry budget (rare — it
+      // we've exhausted the underlying socket.io retry budget (rare - it
       // retries forever by default), the watchdog in `pendingJoin` will
       // reject. We don't reject here because socket.io will retry
       // automatically, but we do emit so subscribers can react.
@@ -164,7 +170,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
     channelId: string,
     outcome: { result: JoinResult } | { error: Error }
   ): void {
-    if (!this.pendingJoin || this.pendingJoin.channelId !== channelId) return;
+    if (this.pendingJoin?.channelId !== channelId) return;
     clearTimeout(this.pendingJoin.watchdog);
     const pending = this.pendingJoin;
     this.pendingJoin = null;
@@ -259,14 +265,14 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
           if (response.success) {
             log('Socket', `Joined channel ${channelId}`);
             resolve({
-              bufferedMessages: response.bufferedMessages || [],
+              bufferedMessages: response.bufferedMessages ?? [],
               channelPublicKey: response.channelPublicKey ?? null,
-              participants: response.participants || [],
+              participants: response.participants ?? [],
               terminated: response.terminated === true,
             });
           } else {
             logError('Socket', `Failed to join channel: ${response.error}`);
-            reject(new Error(response.error || 'Failed to join channel'));
+            reject(new Error(response.error ?? 'Failed to join channel'));
           }
         }
       );
@@ -291,7 +297,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
           if (response?.success) {
             resolve({ success: true, buffered: response.buffered });
           } else {
-            reject(new Error(response?.error || 'Failed to send message'));
+            reject(new Error(response?.error ?? 'Failed to send message'));
           }
         }
       );

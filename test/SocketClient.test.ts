@@ -41,11 +41,14 @@ describe('SocketClient', () => {
     it('should create socket connection with correct options', async () => {
       const { io } = await import('socket.io-client');
       client.connect();
-      expect(io).toHaveBeenCalledWith('https://relay.test.com', expect.objectContaining({
-        path: '/relay',
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-      }));
+      expect(io).toHaveBeenCalledWith(
+        'https://relay.test.com',
+        expect.objectContaining({
+          path: '/relay',
+          transports: ['websocket', 'polling'],
+          reconnection: true,
+        })
+      );
     });
 
     it('should register event handlers', () => {
@@ -262,7 +265,7 @@ describe('SocketClient', () => {
         client.leaveChannel();
         const err = await caught;
         expect((err as Error).message).toMatch(/Channel left/i);
-        // Advance past the watchdog deadline — a lingering timer would
+        // Advance past the watchdog deadline - a lingering timer would
         // reject again and this test would fail on an unhandled promise.
         await vi.advanceTimersByTimeAsync(25000);
       } finally {
@@ -332,10 +335,7 @@ describe('SocketClient', () => {
       await client.joinChannel('test-channel');
       client.leaveChannel();
 
-      expect(mockSocket.emit).toHaveBeenCalledWith(
-        'leave_channel',
-        { channelId: 'test-channel' }
-      );
+      expect(mockSocket.emit).toHaveBeenCalledWith('leave_channel', { channelId: 'test-channel' });
       expect(client.getChannelId()).toBeNull();
     });
   });

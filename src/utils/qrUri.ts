@@ -20,11 +20,12 @@
  * substitution of a maliciously-crafted PK with the same fingerprint.
  *
  * Legacy v2.0 URIs (magic=PQP1, 1208-byte blob with embedded PK) are
- * rejected with a clear error by parseConnectionURI — this is a hard
+ * rejected with a clear error by parseConnectionURI - this is a hard
  * break before 2.0.0 ships, no backcompat.
  */
 
 import { base45Decode, base45Encode } from './base45.js';
+import { constantTimeEquals, randomBytes, sha256 } from '../crypto/primitives.js';
 
 const MAGIC = new Uint8Array([0x50, 0x51, 0x50, 0x32]); // "PQP2"
 const FP_LABEL = new TextEncoder().encode('pq-fp/v2');
@@ -32,10 +33,6 @@ const FP_LABEL = new TextEncoder().encode('pq-fp/v2');
 export const CID_LEN = 16;
 export const FP_LEN = 32;
 export const BLOB_LEN = 4 + CID_LEN + FP_LEN; // 52
-
-function bs(u: Uint8Array): BufferSource {
-  return u as unknown as BufferSource;
-}
 
 /**
  * Compute the full 32-byte fingerprint binding (label || cid || pk).
@@ -45,16 +42,11 @@ export async function computeFingerprint(cid: Uint8Array, pk: Uint8Array): Promi
   if (cid.length !== CID_LEN) {
     throw new Error(`qrUri: cid must be ${CID_LEN} bytes`);
   }
-  const c = globalThis.crypto;
-  if (!c || !c.subtle) {
-    throw new Error('qrUri: WebCrypto SubtleCrypto is not available');
-  }
   const buf = new Uint8Array(FP_LABEL.length + cid.length + pk.length);
   buf.set(FP_LABEL, 0);
   buf.set(cid, FP_LABEL.length);
   buf.set(pk, FP_LABEL.length + cid.length);
-  const digest = await c.subtle.digest('SHA-256', bs(buf));
-  return new Uint8Array(digest);
+  return sha256(buf);
 }
 
 /**
@@ -63,20 +55,17 @@ export async function computeFingerprint(cid: Uint8Array, pk: Uint8Array): Promi
  * don't leak which byte of `fp` diverged first.
  */
 export function fingerprintEquals(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
+  return constantTimeEquals(a, b);
 }
 
 /**
  * Encode (cid, pk) as a qrlconnect:// URI. Note the PK is not stored in the
- * URI — we compute its fingerprint and embed only that. The caller must
+ * URI - we compute its fingerprint and embed only that. The caller must
  * upload the PK to the relay separately before publishing this URI.
  *
  * The optional `relayUrl` rides as a sibling query param (not inside the
  * fp-bound blob) so a tampered relay can cause the pairing to fail but
- * cannot substitute the PK — the fp still pins that.
+ * cannot substitute the PK - the fp still pins that.
  */
 export async function generateConnectionURI(
   cid: Uint8Array,
@@ -101,13 +90,13 @@ export async function generateConnectionURI(
 export interface ParsedURI {
   cid: Uint8Array;
   fp: Uint8Array;
-  relayUrl?: string;
+  relayUrl?: string | undefined;
 }
 
 /**
  * Parse a qrlconnect:// URI into (cid, fp, relayUrl?). Throws on malformed
  * blob or legacy PQP1/v1 URIs. The caller must still fetch the PK from the
- * relay and verify it against `fp` before trusting it — `parseConnectionURI`
+ * relay and verify it against `fp` before trusting it - `parseConnectionURI`
  * only does syntactic validation here.
  */
 // The PQP1 magic we recognise in legacy blobs to give a targeted error.
@@ -123,6 +112,7 @@ function startsWith(buf: Uint8Array, prefix: Uint8Array): boolean {
   return true;
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await -- public API stays async; parsing may grow async verification steps without a breaking change
 export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   if (typeof uri !== 'string' || uri.length === 0) {
     throw new Error('qrUri: empty URI');
@@ -144,7 +134,7 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
 
   if (params.has('channelId') || params.has('pubKey')) {
     throw new Error(
-      'qrUri: legacy v1 URI detected — this wallet and this dApp must both run protocol v2'
+      'qrUri: legacy v1 URI detected - this wallet and this dApp must both run protocol v2'
     );
   }
 
@@ -162,10 +152,10 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   }
 
   if (blob.length !== BLOB_LEN) {
-    // Distinguish the most likely footgun — a PQP1 URI encoded under the
-    // older 1208-byte layout — from random gibberish.
+    // Distinguish the most likely footgun - a PQP1 URI encoded under the
+    // older 1208-byte layout - from random gibberish.
     if (blob.length === 1208 && startsWith(blob, PQP1_MAGIC)) {
-      throw new Error('qrUri: legacy PQP1 URI detected — regenerate the QR with a v2.0+ dApp SDK');
+      throw new Error('qrUri: legacy PQP1 URI detected - regenerate the QR with a v2.0+ dApp SDK');
     }
     throw new Error(`qrUri: expected ${BLOB_LEN}-byte blob, got ${blob.length}`);
   }
@@ -176,8 +166,8 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
 
   const cid = blob.slice(4, 4 + CID_LEN);
   const fp = blob.slice(4 + CID_LEN, 4 + CID_LEN + FP_LEN);
-  const relayUrl = params.get('r') || undefined;
-  return { cid, fp, relayUrl };
+  const r = params.get('r');
+  return { cid, fp, relayUrl: r === null || r === '' ? undefined : r };
 }
 
 /** Convert 16 raw cid bytes to RFC 4122 UUID hex string. */
@@ -187,7 +177,7 @@ export function cidToString(cid: Uint8Array): string {
   }
   let hex = '';
   for (let i = 0; i < CID_LEN; i++) {
-    hex += cid[i].toString(16).padStart(2, '0');
+    hex += (cid[i] ?? 0).toString(16).padStart(2, '0');
   }
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
@@ -207,9 +197,5 @@ export function cidFromString(s: string): Uint8Array {
 
 /** Generate 16 random bytes for a fresh channel ID. */
 export function cidRandom(): Uint8Array {
-  const c = globalThis.crypto;
-  if (!c || typeof c.getRandomValues !== 'function') {
-    throw new Error('qrUri: crypto.getRandomValues is not available');
-  }
-  return c.getRandomValues(new Uint8Array(CID_LEN));
+  return randomBytes(CID_LEN);
 }

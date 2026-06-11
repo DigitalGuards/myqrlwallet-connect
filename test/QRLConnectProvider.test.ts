@@ -17,10 +17,18 @@ class MockConnectionManager extends EventEmitter {
     latestMockCM = this;
   }
 
-  getStatus() { return this.status; }
-  getAccounts() { return this.accounts; }
-  getChainId() { return this.chainId; }
-  getChannelId() { return this.channelId; }
+  getStatus() {
+    return this.status;
+  }
+  getAccounts() {
+    return this.accounts;
+  }
+  getChainId() {
+    return this.chainId;
+  }
+  getChannelId() {
+    return this.channelId;
+  }
   getConnectionURI = vi.fn().mockResolvedValue('qrlconnect://?channelId=mock');
   sendJsonRpc = vi.fn();
   reconnect = vi.fn().mockResolvedValue(false);
@@ -28,7 +36,7 @@ class MockConnectionManager extends EventEmitter {
 }
 
 vi.mock('../src/ConnectionManager.js', () => ({
-  ConnectionManager: vi.fn().mockImplementation((...args: unknown[]) => {
+  ConnectionManager: vi.fn().mockImplementation((..._args: unknown[]) => {
     return new MockConnectionManager();
   }),
 }));
@@ -99,9 +107,9 @@ describe('QRLConnectProvider', () => {
     });
 
     it('should throw for unsupported methods', async () => {
-      await expect(
-        provider.request({ method: 'invalid_method' })
-      ).rejects.toThrow('Unsupported method: invalid_method');
+      await expect(provider.request({ method: 'invalid_method' })).rejects.toThrow(
+        'Unsupported method: invalid_method'
+      );
     });
 
     it('should send JSON-RPC to wallet when connected', async () => {

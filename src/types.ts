@@ -17,12 +17,15 @@ export interface DAppMetadata {
 /**
  * Stored session for reconnection.
  *
- * v2 persists the derived AES-256 session key (not the ML-KEM secret key) —
+ * Persists the derived AES-256 session key (not the ML-KEM secret key);
  * the ML-KEM keypair is ephemeral and zeroized after the handshake.
  * Re-pair (generate a new QR) to rotate the session key.
+ *
+ * v3 checkpoints the AEAD counters on every seal/open. v2 records (sparse
+ * checkpoints, stale-counter nonce-reuse risk on restore) are dropped.
  */
 export interface DAppSession {
-  version: 2;
+  version: 3;
   channelId: string;
   keyExchange: PersistedSession;
   dappMetadata: DAppMetadata;
@@ -36,7 +39,7 @@ export interface DAppSession {
 export interface PendingRequest {
   id: string | number;
   method: string;
-  params?: unknown[];
+  params?: unknown[] | undefined;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timestamp: number;
@@ -46,7 +49,7 @@ export interface PendingRequest {
  * Key-exchange wire-message types.
  *
  * v2 note: only SYNACK (wallet→dApp) and ACK (dApp→wallet) are transmitted
- * over the relay. The SYN step is carried by the QR code itself — the dApp's
+ * over the relay. The SYN step is carried by the QR code itself - the dApp's
  * ML-KEM-768 encapsulation key is embedded in the URI, not sent on the wire.
  */
 export enum KeyExchangeMessageType {
@@ -99,7 +102,7 @@ export interface JsonRpcRequest {
   jsonrpc?: string;
   id?: string | number;
   method: string;
-  params?: unknown[];
+  params?: unknown[] | undefined;
 }
 
 /** JSON-RPC response */
@@ -114,7 +117,7 @@ export interface JsonRpcResponse {
  * EIP-6963 wallet identity advertised to dApps.
  *
  * `rdns` MUST be unique to this wallet and SHOULD be a reverse-DNS string
- * (per EIP-6963). Defaults work for most consumers — override only when
+ * (per EIP-6963). Defaults work for most consumers - override only when
  * embedding the SDK inside a different branded wallet.
  */
 export interface EIP6963ProviderInfoOverride {
@@ -165,7 +168,7 @@ export type QrlSignMessageParams = [string, string];
  * for the full encoder.
  */
 export interface QrlTypedDataPayload {
-  types: Record<string, ReadonlyArray<{ name: string; type: string }>>;
+  types: Record<string, readonly { name: string; type: string }[]>;
   primaryType: string;
   domain: Record<string, unknown>;
   message: Record<string, unknown>;

@@ -96,6 +96,13 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   private awaitingSynAck = false;
   private awaitingAck = false;
   private keysExchanged = false;
+  // The ACK we produced for the current handshake. A wallet that lost its
+  // transport right after sending SYNACK re-sends the identical SYNACK on
+  // rejoin; we answer with this cached ACK so the handshake converges
+  // instead of stalling (onSynAck ignores duplicates and would otherwise
+  // never reply). Cleared on reset; not persisted (a reloaded dApp has a
+  // completed session and the wallet is no longer awaiting an ACK).
+  private lastAck: AckMessage | null = null;
 
   constructor(isOriginator: boolean, restored?: Session) {
     super();
@@ -131,7 +138,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
    */
   async onSynAck(cid: Uint8Array, msg: SynAckMessage): Promise<AckMessage | null> {
     if (!this.isOriginator) {
-      warn('KeyExchange', 'Responder received SYNACK — ignoring');
+      warn('KeyExchange', 'Responder received SYNACK - ignoring');
       return null;
     }
     if (!this.awaitingSynAck || !this.keypair) {
@@ -181,11 +188,13 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     this.emit('keys_exchanged');
     this.emit('step_change', this.step);
 
-    return {
+    const ack: AckMessage = {
       type: KeyExchangeMessageType.ACK,
       c1: toBase64(c1),
       v: PROTOCOL_VERSION,
     };
+    this.lastAck = ack;
+    return ack;
   }
 
   /**
@@ -231,7 +240,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
    */
   async onAck(msg: AckMessage): Promise<void> {
     if (this.isOriginator) {
-      warn('KeyExchange', 'Originator received ACK — ignoring');
+      warn('KeyExchange', 'Originator received ACK - ignoring');
       return;
     }
     if (!this.awaitingAck) {
@@ -261,24 +270,26 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   /** Encrypt a string for the counterparty. Returns base64. */
   async encryptMessage(data: string): Promise<string> {
     if (!this.session) {
-      throw new Error('KeyExchange: cannot encrypt — session not established');
+      throw new Error('KeyExchange: cannot encrypt - session not established');
     }
+    // Reserve the sequence number SYNCHRONOUSLY, before the first await.
+    // Reading it as a seal() argument and incrementing after the await opens
+    // an interleaving window where two concurrent encrypts read the same seq
+    // and seal two plaintexts under the same AES-GCM nonce. With the sync
+    // reservation the worst concurrent case is out-of-order completion,
+    // which the receiver's contiguous-seq check drops (fail closed).
+    // ConnectionManager additionally serializes sends on an outbound queue
+    // so ordering is preserved end-to-end.
+    const seq = this.session.sendSeq++;
     const pt = textEncoder.encode(data);
-    const ct = await seal(
-      this.session.key,
-      this.session.sendDir,
-      this.session.sendSeq,
-      this.session.htx,
-      pt
-    );
-    this.session.sendSeq++;
+    const ct = await seal(this.session.key, this.session.sendDir, seq, this.session.htx, pt);
     return toBase64(ct);
   }
 
   /** Decrypt a base64 ciphertext from the counterparty. */
   async decryptMessage(b64: string): Promise<string> {
     if (!this.session) {
-      throw new Error('KeyExchange: cannot decrypt — session not established');
+      throw new Error('KeyExchange: cannot decrypt - session not established');
     }
     const ct = fromBase64(b64);
     const pt = await open(
@@ -306,12 +317,18 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     this.keysExchanged = false;
     this.awaitingSynAck = false;
     this.awaitingAck = false;
+    this.lastAck = null;
     this.step = KeyExchangeMessageType.SYN;
     if (emit) this.emit('step_change', this.step);
   }
 
   areKeysExchanged(): boolean {
     return this.keysExchanged;
+  }
+
+  /** The ACK produced for the current handshake, for duplicate-SYNACK replies. */
+  getLastAck(): AckMessage | null {
+    return this.lastAck;
   }
 
   getSession(): Session | null {

@@ -58,6 +58,49 @@ describe('KeyExchange v2', () => {
       expect(await dapp.decryptMessage(encResp)).toBe(resp);
     });
 
+    it('assigns distinct nonces to concurrent encrypts (no AES-GCM nonce reuse)', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
+
+      // Fire several encrypts WITHOUT awaiting between them. Before the
+      // synchronous seq reservation, all of these read the same sendSeq and
+      // sealed under the same nonce.
+      const plains = ['m1', 'm2', 'm3', 'm4'];
+      const cts = await Promise.all(plains.map((m) => dapp.encryptMessage(m)));
+
+      // All ciphertexts decrypt, in order, on the wallet side: each consumed
+      // a unique contiguous seq.
+      for (let i = 0; i < plains.length; i++) {
+        expect(await wallet.decryptMessage(cts[i]!)).toBe(plains[i]);
+      }
+      expect(dapp.getSession()!.sendSeq).toBe(1 + plains.length);
+    });
+
+    it('answers a retransmitted SYNACK with the cached ACK (lost-ACK recovery)', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+
+      // dApp completes its side; pretend the wallet never received this ACK
+      // (its socket flapped right after sending SYNACK).
+      const lostAck = await dapp.onSynAck(CID, synack);
+      expect(lostAck).not.toBeNull();
+      expect(wallet.areKeysExchanged()).toBe(false);
+
+      // Wallet retransmits the identical SYNACK on rejoin. The dApp ignores
+      // it as a duplicate but exposes the cached ACK for the manager to
+      // re-send.
+      const dup = await dapp.onSynAck(CID, synack);
+      expect(dup).toBeNull();
+      const cached = dapp.getLastAck();
+      expect(cached).toEqual(lostAck);
+
+      // The re-sent cached ACK finalizes the wallet side.
+      await wallet.onAck(cached!);
+      expect(wallet.areKeysExchanged()).toBe(true);
+    });
+
     it('ignores duplicate SYNACK after handshake', async () => {
       const dappKx = vi.fn();
       dapp.on('keys_exchanged', dappKx);

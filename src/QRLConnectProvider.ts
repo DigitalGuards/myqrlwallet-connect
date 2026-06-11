@@ -9,6 +9,7 @@ import { REQUEST_TIMEOUT_MS, RESTRICTED_METHODS, UNRESTRICTED_METHODS } from './
 import { log, warn } from './utils/logger.js';
 import { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
+import { randomUuid } from './crypto/primitives.js';
 import {
   type JsonRpcResponse,
   type PendingRequest,
@@ -16,8 +17,6 @@ import {
   type QRLConnectOptions,
   ConnectionStatus,
 } from './types.js';
-
-let requestCounter = 0;
 
 /**
  * Default EIP-6963 identity for the QRL Connect provider. The `rdns` is
@@ -33,27 +32,23 @@ export const QRL_CONNECT_PROVIDER_INFO = {
 const EIP6963_ANNOUNCE_EVENT = 'eip6963:announceProvider';
 const EIP6963_REQUEST_EVENT = 'eip6963:requestProvider';
 
-function generateUuid(): string {
-  if (typeof globalThis !== 'undefined' && globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
-  }
-  // RFC4122 v4 fallback
-  const r = (n: number) => Math.floor(Math.random() * n);
-  const hex = (n: number, len: number) => n.toString(16).padStart(len, '0');
-  return `${hex(r(0x100000000), 8)}-${hex(r(0x10000), 4)}-${hex(0x4000 | r(0x1000), 4)}-${hex(0x8000 | r(0x4000), 4)}-${hex(r(0x100000000), 8)}${hex(r(0x10000), 4)}`;
-}
-
 export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private connectionManager: ConnectionManager;
   private pendingRequests = new Map<string | number, PendingRequest>();
   private options: QRLConnectOptions;
-  private eip6963Detail: {
-    info: { uuid: string; name: string; icon: string; rdns: string };
+  private eip6963Detail: Readonly<{
+    info: Readonly<{ uuid: string; name: string; icon: string; rdns: string }>;
     provider: QRLConnectProvider;
-  } | null = null;
+  }> | null = null;
   private eip6963RequestListener: (() => void) | null = null;
   private resumeListener: (() => void) | null = null;
   private resumeDebounce: ReturnType<typeof setTimeout> | null = null;
+  // Random per-instance prefix keeps request ids unique across page loads.
+  // A bare counter restarts at 1 on reload, and the relay buffers messages
+  // for 5 minutes, so a stale buffered response could otherwise be matched
+  // to a fresh request that drew the same small id.
+  private readonly requestIdPrefix = randomUuid().slice(0, 8);
+  private requestCounter = 0;
   readonly isQRLConnect = true;
 
   constructor(options: QRLConnectOptions) {
@@ -75,7 +70,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
 
     // Auto-reconnect to existing session
     if (options.autoReconnect !== false) {
-      this.connectionManager.reconnect();
+      void this.connectionManager.reconnect();
     }
 
     // Recover the relay socket when the dApp tab returns to the foreground
@@ -99,13 +94,13 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     const overrides = this.options.providerInfo ?? {};
     this.eip6963Detail = Object.freeze({
       info: Object.freeze({
-        uuid: generateUuid(),
+        uuid: randomUuid(),
         name: overrides.name ?? QRL_CONNECT_PROVIDER_INFO.name,
         icon: overrides.icon ?? QRL_CONNECT_PROVIDER_INFO.icon,
         rdns: overrides.rdns ?? QRL_CONNECT_PROVIDER_INFO.rdns,
       }),
       provider: this,
-    }) as typeof this.eip6963Detail;
+    });
 
     const announce = () => {
       if (!this.eip6963Detail) return;
@@ -290,7 +285,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       throw new Error('Not connected to QRL Wallet');
     }
 
-    const id = ++requestCounter;
+    const id = `${this.requestIdPrefix}-${++this.requestCounter}`;
 
     return new Promise((resolve, reject) => {
       const pending: PendingRequest = {
@@ -390,7 +385,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   /**
    * Disconnect from wallet and clean up. Returns once the TERMINATE has
    * either been flushed to the relay or the 800ms best-effort window has
-   * elapsed — the wallet gets an instant disconnect instead of landing in
+   * elapsed - the wallet gets an instant disconnect instead of landing in
    * its stale-session grace period.
    */
   async disconnect(): Promise<void> {
