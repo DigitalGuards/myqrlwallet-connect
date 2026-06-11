@@ -5,6 +5,62 @@ All notable changes to `@qrlwallet/connect` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Maturity hardening release: hardened TypeScript, a fenced crypto boundary, and
+two protocol-adjacent robustness fixes. No wire-format changes; outputs are
+byte-identical (parity vectors and KATs unchanged).
+
+### Security
+
+- **AEAD counter checkpointing (nonce-reuse fix)**: the session's
+  `sendSeq`/`recvSeq` are now persisted before every encrypted send and after
+  every successful decrypt. Previously counters were only persisted at the
+  handshake and on `wallet_info`, so reloading a page mid-session could restore
+  a stale `sendSeq` and reuse an AES-256-GCM nonce under the same key. Stored
+  sessions bump to `version: 3`; v2 records are dropped (one-time forced
+  re-pair) because their counters cannot be trusted.
+- **Wire-input validation**: relay envelopes, SYNACK payloads, decrypted
+  JSON-RPC responses, `wallet_info` payloads, and stored localStorage sessions
+  are now validated with runtime guards instead of type assertions. Malformed
+  input is dropped with a warning.
+- **Request-id collision fix**: JSON-RPC request ids are now
+  `<8-hex-random>-<counter>` strings. A bare counter restarts at 1 on page
+  reload while the relay buffers messages for 5 minutes, so a stale buffered
+  response could be delivered to a fresh request with the same small id.
+- **All randomness through the CSPRNG boundary**: the `Math.random` UUID
+  fallback is gone; channel ids and EIP-6963 uuids come from
+  `crypto.getRandomValues` via `src/crypto/`.
+
+### Added
+
+- **Lost-ACK handshake recovery**: the dApp now answers a retransmitted
+  SYNACK (sent by the wallet when its socket flapped before the original
+  ACK arrived) with its cached ACK instead of ignoring it, so a transport
+  drop mid-handshake converges instead of stalling half-open. Pairs with
+  the wallet-side SYNACK retransmit (myqrlwallet-frontend PR #192).
+
+### Changed
+
+- **Crypto primitive boundary**: all cryptographic implementations (ML-KEM-768
+  via `@noble/post-quantum`, SHAKE256 via `@noble/hashes`, ML-DSA-87 verify via
+  `@theqrl/mldsa87`, AES-256-GCM / HKDF-SHA-256 / SHA-256 / CSPRNG via
+  WebCrypto) are accessed exclusively through `src/crypto/primitives.ts`. An
+  ESLint fence forbids crypto imports, `subtle`, `getRandomValues`,
+  `randomUUID`, and `Math.random` everywhere else in `src/`.
+- **Hardened TypeScript**: `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`, `noImplicitOverride`, `noImplicitReturns`,
+  `noFallthroughCasesInSwitch`, `noUnusedLocals/Parameters`, and
+  `isolatedModules` are now on. ESLint runs the type-checked strict + stylistic
+  presets with type assertions banned (`consistent-type-assertions: never`),
+  `no-explicit-any`/`no-non-null-assertion` at error, and `ts-ignore` comments
+  forbidden. Tests are linted with targeted relaxations.
+- `DAppSession.version` is now `3` (see Security above).
+
+### Removed
+
+- `uuid` dependency (channel ids now come from the crypto boundary).
+
 ## [3.0.0] - 2026-06-03
 
 Major release. Post-quantum signing surface, EIP-6963 wallet announcement, and a

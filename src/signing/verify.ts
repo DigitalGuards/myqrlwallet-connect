@@ -5,7 +5,7 @@
  * key and never derive an address; that's the wallet's job.
  */
 
-import * as mldsa from '@theqrl/mldsa87';
+import { mldsaVerify } from '../crypto/primitives.js';
 import { SCHEME_TAG_MSG, SCHEME_TAG_TYPED } from './ctx.js';
 import { computeMessageDigest } from './messageDigest.js';
 import { computeTypedDataDigest, type TypedDataPayload } from './typedData.js';
@@ -34,7 +34,7 @@ export function verifyMessage({
     const pk = bytesOrHex(publicKey);
     const msg = bytesOrHex(messageBytes);
     const digest = computeMessageDigest(msg);
-    return mldsa.cryptoSignVerify(sig, digest, pk, SCHEME_TAG_MSG);
+    return mldsaVerify(sig, digest, pk, SCHEME_TAG_MSG);
   } catch {
     return false;
   }
@@ -51,7 +51,7 @@ export function verifyTypedData({ signature, publicKey, payload }: VerifyTypedDa
     const sig = bytesOrHex(signature);
     const pk = bytesOrHex(publicKey);
     const digest = computeTypedDataDigest(payload);
-    return mldsa.cryptoSignVerify(sig, digest, pk, SCHEME_TAG_TYPED);
+    return mldsaVerify(sig, digest, pk, SCHEME_TAG_TYPED);
   } catch {
     return false;
   }
