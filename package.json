@@ -19,7 +19,8 @@
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "size": "size-limit",
-    "size:check": "size-limit --highlight-less"
+    "size:check": "size-limit --highlight-less",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "keywords": [
     "qrl",
