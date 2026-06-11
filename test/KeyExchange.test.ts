@@ -78,6 +78,29 @@ describe('KeyExchange v2', () => {
       expect(dapp.getSession()!.sendSeq).toBe(1 + plains.length);
     });
 
+    it('answers a retransmitted SYNACK with the cached ACK (lost-ACK recovery)', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+
+      // dApp completes its side; pretend the wallet never received this ACK
+      // (its socket flapped right after sending SYNACK).
+      const lostAck = await dapp.onSynAck(CID, synack);
+      expect(lostAck).not.toBeNull();
+      expect(wallet.areKeysExchanged()).toBe(false);
+
+      // Wallet retransmits the identical SYNACK on rejoin. The dApp ignores
+      // it as a duplicate but exposes the cached ACK for the manager to
+      // re-send.
+      const dup = await dapp.onSynAck(CID, synack);
+      expect(dup).toBeNull();
+      const cached = dapp.getLastAck();
+      expect(cached).toEqual(lostAck);
+
+      // The re-sent cached ACK finalizes the wallet side.
+      await wallet.onAck(cached!);
+      expect(wallet.areKeysExchanged()).toBe(true);
+    });
+
     it('ignores duplicate SYNACK after handshake', async () => {
       const dappKx = vi.fn();
       dapp.on('keys_exchanged', dappKx);

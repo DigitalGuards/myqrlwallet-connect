@@ -96,6 +96,13 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   private awaitingSynAck = false;
   private awaitingAck = false;
   private keysExchanged = false;
+  // The ACK we produced for the current handshake. A wallet that lost its
+  // transport right after sending SYNACK re-sends the identical SYNACK on
+  // rejoin; we answer with this cached ACK so the handshake converges
+  // instead of stalling (onSynAck ignores duplicates and would otherwise
+  // never reply). Cleared on reset; not persisted (a reloaded dApp has a
+  // completed session and the wallet is no longer awaiting an ACK).
+  private lastAck: AckMessage | null = null;
 
   constructor(isOriginator: boolean, restored?: Session) {
     super();
@@ -181,11 +188,13 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     this.emit('keys_exchanged');
     this.emit('step_change', this.step);
 
-    return {
+    const ack: AckMessage = {
       type: KeyExchangeMessageType.ACK,
       c1: toBase64(c1),
       v: PROTOCOL_VERSION,
     };
+    this.lastAck = ack;
+    return ack;
   }
 
   /**
@@ -308,12 +317,18 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     this.keysExchanged = false;
     this.awaitingSynAck = false;
     this.awaitingAck = false;
+    this.lastAck = null;
     this.step = KeyExchangeMessageType.SYN;
     if (emit) this.emit('step_change', this.step);
   }
 
   areKeysExchanged(): boolean {
     return this.keysExchanged;
+  }
+
+  /** The ACK produced for the current handshake, for duplicate-SYNACK replies. */
+  getLastAck(): AckMessage | null {
+    return this.lastAck;
   }
 
   getSession(): Session | null {
