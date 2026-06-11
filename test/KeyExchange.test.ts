@@ -58,6 +58,26 @@ describe('KeyExchange v2', () => {
       expect(await dapp.decryptMessage(encResp)).toBe(resp);
     });
 
+    it('assigns distinct nonces to concurrent encrypts (no AES-GCM nonce reuse)', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
+
+      // Fire several encrypts WITHOUT awaiting between them. Before the
+      // synchronous seq reservation, all of these read the same sendSeq and
+      // sealed under the same nonce.
+      const plains = ['m1', 'm2', 'm3', 'm4'];
+      const cts = await Promise.all(plains.map((m) => dapp.encryptMessage(m)));
+
+      // All ciphertexts decrypt, in order, on the wallet side: each consumed
+      // a unique contiguous seq.
+      for (let i = 0; i < plains.length; i++) {
+        expect(await wallet.decryptMessage(cts[i]!)).toBe(plains[i]);
+      }
+      expect(dapp.getSession()!.sendSeq).toBe(1 + plains.length);
+    });
+
     it('ignores duplicate SYNACK after handshake', async () => {
       const dappKx = vi.fn();
       dapp.on('keys_exchanged', dappKx);
