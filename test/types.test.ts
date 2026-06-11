@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  ConnectionStatus,
-  KeyExchangeMessageType,
-  MessageType,
-} from '../src/types.js';
+import { ConnectionStatus, KeyExchangeMessageType, MessageType } from '../src/types.js';
 
 describe('types/enums', () => {
   describe('ConnectionStatus', () => {

@@ -1,12 +1,16 @@
 /**
- * Connection Manager — orchestrates socket lifecycle, the post-quantum
+ * Connection Manager - orchestrates socket lifecycle, the post-quantum
  * handshake, encrypted message routing, and session persistence for the
  * dApp side of QRL Connect v2.
  */
 
 import EventEmitter from 'eventemitter3';
-import { v4 as uuidv4 } from 'uuid';
-import { KeyExchange, type AckMessage, type SynAckMessage } from './KeyExchange.js';
+import {
+  KeyExchange,
+  type AckMessage,
+  type PersistedSession,
+  type SynAckMessage,
+} from './KeyExchange.js';
 import { SocketClient } from './SocketClient.js';
 import {
   DEFAULT_RELAY_URL,
@@ -17,6 +21,7 @@ import {
 } from './config.js';
 import { cidFromString, generateConnectionURI } from './utils/qrUri.js';
 import { toBase64 } from './PQCrypto.js';
+import { randomUuid } from './crypto/primitives.js';
 import { log, warn, error as logError } from './utils/logger.js';
 import {
   type DAppMetadata,
@@ -30,6 +35,116 @@ import {
 } from './types.js';
 
 const DAPP_PARTICIPANT_CONFLICT_ERROR_MSG = 'dapp participant is already connected';
+
+// ── Wire-input validation ─────────────────────────────────────
+// Everything that arrives from the relay (or from localStorage) is untrusted
+// until proven shaped. No type assertions on wire input: narrow with runtime
+// guards and drop anything malformed.
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+function isRelayMessage(v: unknown): v is RelayMessage {
+  return (
+    isRecord(v) &&
+    typeof v.id === 'string' &&
+    (v.clientType === 'dapp' || v.clientType === 'wallet') &&
+    'message' in v &&
+    (typeof v.message === 'string' || (typeof v.message === 'object' && v.message !== null))
+  );
+}
+
+/** Wire `type` strings mapped back to the MessageType enum, no assertions. */
+const MESSAGE_TYPE_BY_VALUE: Record<string, MessageType | undefined> = Object.fromEntries(
+  Object.values(MessageType).map((m) => [m, m])
+);
+
+/** Validate a decrypted wire object into a JsonRpcResponse, or null if malformed. */
+function parseJsonRpcResponse(msg: Record<string, unknown>): JsonRpcResponse | null {
+  if (typeof msg.id !== 'string' && typeof msg.id !== 'number') return null;
+  const out: JsonRpcResponse = {
+    jsonrpc: typeof msg.jsonrpc === 'string' ? msg.jsonrpc : '2.0',
+    id: msg.id,
+  };
+  if ('result' in msg) out.result = msg.result;
+  if (msg.error !== undefined) {
+    if (!isRecord(msg.error) || typeof msg.error.message !== 'string') return null;
+    out.error = {
+      code: typeof msg.error.code === 'number' ? msg.error.code : -32000,
+      message: msg.error.message,
+      data: msg.error.data,
+    };
+  }
+  return out;
+}
+
+function parsePersistedKex(v: unknown): PersistedSession | null {
+  if (!isRecord(v)) return null;
+  const { cid, kAeadRaw, htx, sendDir, recvDir, sendSeq, recvSeq } = v;
+  if (
+    typeof cid !== 'string' ||
+    typeof kAeadRaw !== 'string' ||
+    typeof htx !== 'string' ||
+    typeof sendDir !== 'string' ||
+    typeof recvDir !== 'string' ||
+    typeof sendSeq !== 'number' ||
+    !Number.isInteger(sendSeq) ||
+    sendSeq < 0 ||
+    typeof recvSeq !== 'number' ||
+    !Number.isInteger(recvSeq) ||
+    recvSeq < 0
+  ) {
+    return null;
+  }
+  return { cid, kAeadRaw, htx, sendDir, recvDir, sendSeq, recvSeq };
+}
+
+function parseDAppMetadata(v: unknown): DAppMetadata | null {
+  if (!isRecord(v) || typeof v.name !== 'string' || typeof v.url !== 'string') return null;
+  const meta: DAppMetadata = { name: v.name, url: v.url };
+  if (typeof v.icon === 'string') meta.icon = v.icon;
+  if (typeof v.redirectUrl === 'string') meta.redirectUrl = v.redirectUrl;
+  return meta;
+}
+
+/**
+ * Validate raw localStorage JSON into a DAppSession, or null if malformed.
+ *
+ * Only version 3 is accepted. v2 sessions persisted the AEAD counters at
+ * sparse checkpoints (handshake + wallet_info), so a restored v2 session
+ * could resume with a stale sendSeq and reuse an AES-256-GCM nonce under the
+ * same key. v3 checkpoints the counters on every seal/open; older records
+ * fail closed into a fresh pairing.
+ */
+function parseStoredSession(raw: string): DAppSession | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(v) || v.version !== 3) return null;
+  if (typeof v.channelId !== 'string' || typeof v.chainId !== 'string') return null;
+  if (typeof v.createdAt !== 'number' || typeof v.lastActivity !== 'number') return null;
+  const keyExchange = parsePersistedKex(v.keyExchange);
+  const dappMetadata = parseDAppMetadata(v.dappMetadata);
+  if (!keyExchange || !dappMetadata || !isStringArray(v.connectedAccounts)) return null;
+  return {
+    version: 3,
+    channelId: v.channelId,
+    keyExchange,
+    dappMetadata,
+    connectedAccounts: v.connectedAccounts,
+    chainId: v.chainId,
+    createdAt: v.createdAt,
+    lastActivity: v.lastActivity,
+  };
+}
 // Best-effort cap: give the outbound TERMINATE up to this long to land on
 // the relay before we tear the socket down. Matches the wallet side.
 const TERMINATE_SEND_TIMEOUT_MS = 800;
@@ -64,15 +179,15 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   constructor(options: {
     dappMetadata: DAppMetadata;
-    relayUrl?: string;
-    chainId?: string;
-    storageKey?: string;
+    relayUrl?: string | undefined;
+    chainId?: string | undefined;
+    storageKey?: string | undefined;
   }) {
     super();
     this.dappMetadata = options.dappMetadata;
-    this.relayUrl = options.relayUrl || DEFAULT_RELAY_URL;
-    this.chainId = options.chainId || '0x0';
-    this.storageKey = options.storageKey || `${STORAGE_KEY_PREFIX}:session`;
+    this.relayUrl = options.relayUrl ?? DEFAULT_RELAY_URL;
+    this.chainId = options.chainId ?? '0x0';
+    this.storageKey = options.storageKey ?? `${STORAGE_KEY_PREFIX}:session`;
 
     const stored = this.readStoredSession();
     if (stored) {
@@ -83,7 +198,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       this.pendingRestore = stored;
       log('ConnectionManager', `Found persisted session for channel ${this.channelId}`);
     } else {
-      this.channelId = uuidv4();
+      this.channelId = randomUuid();
     }
 
     this.socketClient = new SocketClient(this.relayUrl, 'dapp');
@@ -226,12 +341,12 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     // Always rotate the channel id on fresh QR generation so that relay
     // buffers and participant lists from a prior pairing cannot leak in.
-    this.channelId = uuidv4();
+    this.channelId = randomUuid();
 
     // v2 protocol: upload the KEM public key to the relay before joining
     // so the relay can bind it to the channel and serve it back to the
     // wallet on its join_channel ack. The wallet verifies it against the
-    // fingerprint carried in the QR — the PK itself is no longer in the QR.
+    // fingerprint carried in the QR - the PK itself is no longer in the QR.
     this.socketClient.setPublicKey(toBase64(pk));
 
     this.socketClient.connect();
@@ -243,7 +358,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
           'ConnectionManager',
           'Channel already has an active dApp participant. Rotating to a fresh channel.'
         );
-        this.channelId = uuidv4();
+        this.channelId = randomUuid();
         return this.getConnectionURI(false);
       }
       this.setStatus(ConnectionStatus.DISCONNECTED);
@@ -315,7 +430,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
 
       for (const msg of bufferedMessages) {
-        this.enqueueRelayMessage(msg as RelayMessage);
+        this.enqueueRelayMessage(msg);
       }
       await this.messageQueue;
 
@@ -354,7 +469,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       // socket drop), re-opening is enough: its connect handler re-joins the
       // channel and drains the buffer. But armReconnectProbe()'s timeout tears
       // the socket down AND nulls the SocketClient channelId, so there the
-      // auto-rejoin can never fire — the socket would re-open but sit unjoined.
+      // auto-rejoin can never fire - the socket would re-open but sit unjoined.
       // Detect that case and re-join explicitly.
       if (this.socketClient.getChannelId()) {
         this.socketClient.connect();
@@ -429,7 +544,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       id: request.id,
       method: request.method,
       params: request.params,
-    }).catch((err) => {
+    }).catch((err: unknown) => {
       logError('ConnectionManager', 'Failed to send JSON-RPC:', err);
     });
     this.startUnresponsiveTimer();
@@ -454,8 +569,8 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     try {
       const raw = localStorage.getItem(this.storageKey);
       if (!raw) return false;
-      const session = JSON.parse(raw) as DAppSession;
-      if (session.version !== 2) return false;
+      const session = parseStoredSession(raw);
+      if (!session) return false;
       return Date.now() - session.createdAt <= SESSION_TTL_MS;
     } catch {
       return false;
@@ -471,7 +586,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    */
   private async flushTerminate(): Promise<void> {
     if (!this.keyExchange?.areKeysExchanged()) return;
-    const send = this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => {});
+    const send = this.sendEncrypted({ type: MessageType.TERMINATE }).catch(() => undefined);
     const timeout = new Promise<void>((resolve) => setTimeout(resolve, TERMINATE_SEND_TIMEOUT_MS));
     await Promise.race([send, timeout]);
   }
@@ -493,7 +608,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.clearSession();
     this.connectedAccounts = [];
     this.pendingRestore = null;
-    this.channelId = uuidv4();
+    this.channelId = randomUuid();
     this.keyExchange = null;
 
     this.socketClient = new SocketClient(this.relayUrl, 'dapp');
@@ -523,13 +638,21 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   // ── Internals ──────────────────────────────────────────────
 
-  private enqueueRelayMessage(data: RelayMessage): void {
+  private enqueueRelayMessage(data: unknown): void {
+    // Single validation funnel for both live socket messages and relay-buffered
+    // backlog: nothing past this point handles an unshaped envelope.
+    if (!isRelayMessage(data)) {
+      warn('ConnectionManager', 'Dropping malformed relay envelope');
+      return;
+    }
     // Chain with .catch so that a single failing handler (tag-fail,
     // malformed JSON) does not leave the queue in a rejected state and
     // silently starve every subsequent message on the channel.
     this.messageQueue = this.messageQueue
       .then(() => this.handleRelayMessage(data))
-      .catch((err) => logError('ConnectionManager', 'messageQueue handler error:', err));
+      .catch((err: unknown) => {
+        logError('ConnectionManager', 'messageQueue handler error:', err);
+      });
   }
 
   private async handleRelayMessage(data: RelayMessage): Promise<void> {
@@ -544,14 +667,25 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     const message = data.message;
 
-    if (typeof message === 'object' && message !== null) {
-      const msg = message as { type?: string };
-      if (msg.type === KeyExchangeMessageType.SYNACK) {
-        await this.handleSynAck(message as SynAckMessage);
+    if (isRecord(message)) {
+      if (message.type === KeyExchangeMessageType.SYNACK) {
+        if (typeof message.ct === 'string' && typeof message.c0 === 'string') {
+          await this.handleSynAck({
+            type: KeyExchangeMessageType.SYNACK,
+            ct: message.ct,
+            c0: message.c0,
+            v: typeof message.v === 'number' ? message.v : 0,
+          });
+        } else {
+          warn('ConnectionManager', 'Dropping malformed SYNACK');
+        }
         return;
       }
-      if (msg.type === KeyExchangeMessageType.SYN || msg.type === KeyExchangeMessageType.ACK) {
-        warn('ConnectionManager', `Unexpected ${msg.type} on dApp side — ignoring`);
+      if (
+        message.type === KeyExchangeMessageType.SYN ||
+        message.type === KeyExchangeMessageType.ACK
+      ) {
+        warn('ConnectionManager', `Unexpected ${message.type} on dApp side, ignoring`);
         return;
       }
     }
@@ -559,8 +693,16 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (typeof message === 'string' && this.keyExchange?.areKeysExchanged()) {
       try {
         const decrypted = await this.keyExchange.decryptMessage(message);
-        const parsed = JSON.parse(decrypted) as Record<string, unknown>;
-        this.handleDecryptedMessage(parsed);
+        // The AEAD counters advanced; checkpoint them before acting on the
+        // plaintext so a reload cannot restore a stale recvSeq and reopen a
+        // replay window for ciphertexts the relay has already delivered.
+        await this.persistSession();
+        const parsed: unknown = JSON.parse(decrypted);
+        if (isRecord(parsed)) {
+          this.handleDecryptedMessage(parsed);
+        } else {
+          warn('ConnectionManager', 'Dropping non-object decrypted payload');
+        }
       } catch (err) {
         logError('ConnectionManager', 'Failed to decrypt message:', err);
       }
@@ -588,16 +730,13 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private handleDecryptedMessage(msg: Record<string, unknown>): void {
     this.clearUnresponsiveTimer();
 
-    const type = msg.type as string;
+    const type = typeof msg.type === 'string' ? msg.type : '';
 
-    switch (type) {
+    switch (MESSAGE_TYPE_BY_VALUE[type]) {
       case MessageType.WALLET_INFO: {
-        const info = msg as unknown as {
-          accounts: string[];
-          chainId: string;
-        };
-        const nextAccounts = info.accounts || [];
-        const nextChainId = info.chainId || this.chainId;
+        const nextAccounts = isStringArray(msg.accounts) ? msg.accounts : [];
+        const nextChainId =
+          typeof msg.chainId === 'string' && msg.chainId ? msg.chainId : this.chainId;
         const accountsChanged = !this.areArraysEqual(this.connectedAccounts, nextAccounts);
         const chainChanged = this.chainId !== nextChainId;
 
@@ -614,7 +753,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
 
       case MessageType.JSONRPC: {
-        const response = msg as unknown as JsonRpcResponse;
+        const response = parseJsonRpcResponse(msg);
+        if (!response) {
+          warn('ConnectionManager', 'Dropping malformed JSON-RPC response');
+          break;
+        }
         this.emit('jsonrpc_response', response);
         break;
       }
@@ -639,7 +782,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         clientType: 'dapp',
         message,
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         logError('ConnectionManager', 'Failed to send plaintext:', err);
       });
   }
@@ -649,6 +792,12 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       throw new Error('sendEncrypted: not connected');
     }
     const encrypted = await this.keyExchange.encryptMessage(JSON.stringify(message));
+    // Checkpoint the advanced sendSeq BEFORE the ciphertext can reach the
+    // relay. If we crash in between, the stored counter is ahead (the wallet
+    // drops the gap and the session dies cleanly); persisting after the send
+    // could leave it behind, and a restored stale sendSeq would reuse an
+    // AES-256-GCM nonce under the same key.
+    await this.persistSession();
     await this.socketClient.sendMessage({
       id: this.channelId,
       clientType: 'dapp',
@@ -697,7 +846,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (!persistedKex) return;
 
     const session: DAppSession = {
-      version: 2,
+      version: 3,
       channelId: this.channelId,
       keyExchange: persistedKex,
       dappMetadata: this.dappMetadata,
@@ -719,18 +868,18 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     try {
       const raw = localStorage.getItem(this.storageKey);
       if (!raw) return null;
-      const session = JSON.parse(raw) as Partial<DAppSession>;
-      if (session.version !== 2) {
-        // v1 → clear to force a fresh pairing on v2.
-        log('ConnectionManager', 'Dropping legacy (pre-v2) session from storage');
+      const session = parseStoredSession(raw);
+      if (!session) {
+        // Legacy (pre-v3) or malformed record: clear to force a fresh pairing.
+        log('ConnectionManager', 'Dropping legacy or malformed session from storage');
         localStorage.removeItem(this.storageKey);
         return null;
       }
-      if (!session.createdAt || Date.now() - session.createdAt > SESSION_TTL_MS) {
+      if (Date.now() - session.createdAt > SESSION_TTL_MS) {
         localStorage.removeItem(this.storageKey);
         return null;
       }
-      return session as DAppSession;
+      return session;
     } catch {
       return null;
     }
