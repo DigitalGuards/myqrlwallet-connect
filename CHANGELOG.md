@@ -32,6 +32,14 @@ byte-identical (parity vectors and KATs unchanged).
   fallback is gone; channel ids and EIP-6963 uuids come from
   `crypto.getRandomValues` via `src/crypto/`.
 
+### Added
+
+- **Lost-ACK handshake recovery**: the dApp now answers a retransmitted
+  SYNACK (sent by the wallet when its socket flapped before the original
+  ACK arrived) with its cached ACK instead of ignoring it, so a transport
+  drop mid-handshake converges instead of stalling half-open. Pairs with
+  the wallet-side SYNACK retransmit (myqrlwallet-frontend PR #192).
+
 ### Changed
 
 - **Crypto primitive boundary**: all cryptographic implementations (ML-KEM-768

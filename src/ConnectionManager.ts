@@ -725,6 +725,16 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
     if (response) {
       this.sendPlaintext(response);
+      return;
+    }
+    // Duplicate SYNACK: the wallet re-sent it because it never saw our ACK
+    // (its socket flapped right after SYNACK). Re-send the cached ACK so the
+    // wallet can finalize; the bytes are deterministic and the wallet's
+    // onAck is idempotent.
+    const cachedAck = this.keyExchange.getLastAck();
+    if (this.keyExchange.areKeysExchanged() && cachedAck) {
+      log('ConnectionManager', 'Duplicate SYNACK after handshake; re-sending cached ACK');
+      this.sendPlaintext(cachedAck);
     }
   }
 
