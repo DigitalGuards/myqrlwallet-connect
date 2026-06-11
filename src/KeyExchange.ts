@@ -263,15 +263,17 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     if (!this.session) {
       throw new Error('KeyExchange: cannot encrypt - session not established');
     }
+    // Reserve the sequence number SYNCHRONOUSLY, before the first await.
+    // Reading it as a seal() argument and incrementing after the await opens
+    // an interleaving window where two concurrent encrypts read the same seq
+    // and seal two plaintexts under the same AES-GCM nonce. With the sync
+    // reservation the worst concurrent case is out-of-order completion,
+    // which the receiver's contiguous-seq check drops (fail closed).
+    // ConnectionManager additionally serializes sends on an outbound queue
+    // so ordering is preserved end-to-end.
+    const seq = this.session.sendSeq++;
     const pt = textEncoder.encode(data);
-    const ct = await seal(
-      this.session.key,
-      this.session.sendDir,
-      this.session.sendSeq,
-      this.session.htx,
-      pt
-    );
-    this.session.sendSeq++;
+    const ct = await seal(this.session.key, this.session.sendDir, seq, this.session.htx, pt);
     return toBase64(ct);
   }
 

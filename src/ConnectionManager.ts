@@ -175,6 +175,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private walletPresent = false;
   private pendingRestore: DAppSession | null = null;
   private messageQueue: Promise<void> = Promise.resolve();
+  private outboundQueue: Promise<void> = Promise.resolve();
   private static MAX_RECONNECT_FAILURES = 5;
 
   constructor(options: {
@@ -787,7 +788,26 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       });
   }
 
-  private async sendEncrypted(message: object): Promise<void> {
+  /**
+   * Serialize every encrypt+persist+send on a single outbound queue.
+   * Callers like sendJsonRpc() are fire-and-forget, so without the queue two
+   * rapid provider.request() calls would interleave inside encryptMessage()
+   * across its await and could complete out of order; the receiver's
+   * contiguous-seq check would then drop the late one. (Nonce reuse itself is
+   * already prevented by the synchronous seq reservation in KeyExchange.)
+   */
+  private sendEncrypted(message: object): Promise<void> {
+    const task = this.outboundQueue.then(() => this.sendEncryptedNow(message));
+    // Keep the chain alive after a failed send; the failure still propagates
+    // to this task's caller.
+    this.outboundQueue = task.then(
+      () => undefined,
+      () => undefined
+    );
+    return task;
+  }
+
+  private async sendEncryptedNow(message: object): Promise<void> {
     if (!this.keyExchange?.areKeysExchanged()) {
       throw new Error('sendEncrypted: not connected');
     }
