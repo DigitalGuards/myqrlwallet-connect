@@ -43,7 +43,7 @@ describe('PQCrypto', () => {
       expect(constantTimeEquals(ss, ssRecovered)).toBe(true);
     });
 
-    it('returns a pseudo-random ss (never throws) on tampered ct — implicit rejection', () => {
+    it('returns a pseudo-random ss (never throws) on tampered ct - implicit rejection', () => {
       // This is a critical regression guard. ml-kem decapsulate() MUST NOT
       // throw on tamper; detection happens at the AEAD tag.
       const { pk, sk } = kemKeygen();

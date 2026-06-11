@@ -1,4 +1,4 @@
-import { shake256 } from '@noble/hashes/sha3.js';
+import { shake256Digest } from '../crypto/primitives.js';
 import { SCHEME_TAG_MSG, DIGEST_LEN } from './ctx.js';
 import { concatBytes } from './bytes.js';
 
@@ -15,5 +15,5 @@ export function computeMessageDigest(messageBytes: Uint8Array): Uint8Array {
   if (!(messageBytes instanceof Uint8Array)) {
     throw new Error('messageBytes must be a Uint8Array');
   }
-  return shake256(concatBytes(SCHEME_TAG_MSG, messageBytes), { dkLen: DIGEST_LEN });
+  return shake256Digest(concatBytes(SCHEME_TAG_MSG, messageBytes), DIGEST_LEN);
 }

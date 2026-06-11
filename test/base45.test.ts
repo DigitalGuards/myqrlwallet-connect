@@ -8,7 +8,7 @@ describe('base45 (RFC 9285)', () => {
   });
 
   it('encodes "Hello!!" to "%69 VD92EX0"', () => {
-    // From RFC 9285 §4.4 — canonical test vector.
+    // From RFC 9285 §4.4 - canonical test vector.
     const enc = base45Encode(new TextEncoder().encode('Hello!!'));
     expect(enc).toBe('%69 VD92EX0');
   });
@@ -37,7 +37,7 @@ describe('base45 (RFC 9285)', () => {
 
   it('rejects non-ASCII characters (no silent decode to zero)', () => {
     // Regression for a bug where char codes ≥128 indexed past the 128-slot
-    // Int8Array, returned undefined, and `undefined < 0` evaluated false —
+    // Int8Array, returned undefined, and `undefined < 0` evaluated false -
     // letting hostile input bypass the "invalid character" throw and
     // decode to zero bytes.
     expect(() => base45Decode('BBÿ')).toThrow(/invalid character/);

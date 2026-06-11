@@ -2,12 +2,13 @@
  * EIP-712-shaped typed-data encoding for `qrl_signTypedData` v1.
  *
  * Byte-identical algorithm with the wallet's signing/typedData.ts; this
- * file is the SDK port (only the relative-import extensions differ). See
+ * file is the SDK port (only the import block differs: the SDK routes
+ * SHAKE256 through src/crypto/primitives.ts, its crypto boundary). See
  * the wallet copy for the spec-level comments; behavior must stay in
  * lock-step or the cross-repo parity test fails on next CI.
  */
 
-import { shake256 } from '@noble/hashes/sha3.js';
+import { shake256Digest } from '../crypto/primitives.js';
 import { SCHEME_TAG_TYPED, DIGEST_LEN } from './ctx.js';
 import { hexToBytes, concatBytes, concatBytesArr } from './bytes.js';
 
@@ -34,8 +35,12 @@ type AtomicKind =
   | { kind: 'address' | 'bool' | 'string' | 'bytes' }
   | { kind: 'uintN' | 'intN'; width: number }
   | { kind: 'bytesN'; width: number }
-  | { kind: 'array'; inner: FieldType; size?: number }
+  | { kind: 'array'; inner: FieldType; size?: number | undefined }
   | { kind: 'ref'; name: string };
+
+function isMessageObject(v: unknown): v is Message {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
 
 const ATOMIC_RE = /^(?:(address|bool|string|bytes)|(u?int)(\d+)|bytes(\d+)|(.+?)\[(\d*)\])$/;
 const MAX_TYPE_DEPTH = 12;
@@ -48,7 +53,9 @@ function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind 
   const m = ATOMIC_RE.exec(type);
   if (!m) throw new Error(`unknown type: ${type}`);
   const [, atomic, intKind, intWidthStr, bytesWidthStr, innerType, sizeStr] = m;
-  if (atomic) return { kind: atomic as 'address' | 'bool' | 'string' | 'bytes' };
+  if (atomic === 'address' || atomic === 'bool' || atomic === 'string' || atomic === 'bytes') {
+    return { kind: atomic };
+  }
   if (intKind) {
     const width = Number(intWidthStr);
     if (!Number.isInteger(width) || width < 8 || width > 256 || width % 8 !== 0) {
@@ -65,11 +72,14 @@ function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind 
   }
   if (innerType !== undefined) {
     parseFieldType(innerType, types, depth + 1);
-    const size = sizeStr ? Number(sizeStr) : undefined;
-    if (sizeStr && (!Number.isInteger(size) || (size as number) <= 0)) {
-      throw new Error(`invalid array size: ${type}`);
+    if (sizeStr) {
+      const size = Number(sizeStr);
+      if (!Number.isInteger(size) || size <= 0) {
+        throw new Error(`invalid array size: ${type}`);
+      }
+      return { kind: 'array', inner: innerType, size };
     }
-    return { kind: 'array', inner: innerType, size };
+    return { kind: 'array', inner: innerType };
   }
   throw new Error(`unhandled type: ${type}`);
 }
@@ -89,7 +99,9 @@ function collectDependencies(primary: string, types: TypeMap): Set<string> {
     }
     if (visited.has(name)) return;
     visited.add(name);
-    for (const f of types[name]) {
+    const def = types[name];
+    if (!def) throw new Error(`unknown type: ${name}`);
+    for (const f of def) {
       const base = baseTypeName(f.type);
       if (Object.prototype.hasOwnProperty.call(types, base)) {
         visit(base, [...path, name]);
@@ -105,7 +117,8 @@ function collectDependencies(primary: string, types: TypeMap): Set<string> {
 
 function validateTypeMap(types: TypeMap): void {
   for (const [name, def] of Object.entries(types)) {
-    if (!Array.isArray(def) || def.length === 0) {
+    const defUnknown: unknown = def;
+    if (!Array.isArray(defUnknown) || def.length === 0) {
       throw new Error(`empty or invalid struct: ${name}`);
     }
     const seen = new Set<string>();
@@ -130,6 +143,7 @@ export function encodeType(primary: string, types: TypeMap): string {
   return [primary, ...others]
     .map((name) => {
       const fields = types[name];
+      if (!fields) throw new Error(`unknown type: ${name}`);
       const inner = fields.map((f) => `${f.type} ${f.name}`).join(',');
       return `${name}(${inner})`;
     })
@@ -137,12 +151,12 @@ export function encodeType(primary: string, types: TypeMap): string {
 }
 
 export function typeHash(primary: string, types: TypeMap): Uint8Array {
-  return shake256(new TextEncoder().encode(encodeType(primary, types)), { dkLen: DIGEST_LEN });
+  return shake256Digest(new TextEncoder().encode(encodeType(primary, types)), DIGEST_LEN);
 }
 
 function parseQAddress(addr: string): Uint8Array {
   if (typeof addr !== 'string' || !/^Q[0-9a-fA-F]{40}$/.test(addr)) {
-    throw new Error(`invalid Q-address: ${String(addr)}`);
+    throw new Error(`invalid Q-address: ${addr}`);
   }
   return hexToBytes('0x' + addr.slice(1).toLowerCase());
 }
@@ -211,10 +225,10 @@ export function encodeField(type: FieldType, value: unknown, types: TypeMap): Ui
 
   switch (parsed.kind) {
     case 'ref':
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      if (!isMessageObject(value)) {
         throw new Error(`struct field expects object: ${type}`);
       }
-      return hashStruct(parsed.name, value as Message, types);
+      return hashStruct(parsed.name, value, types);
 
     case 'address':
       if (typeof value !== 'string') {
@@ -232,13 +246,13 @@ export function encodeField(type: FieldType, value: unknown, types: TypeMap): Ui
       if (typeof value !== 'string') {
         throw new Error(`string field expects string: ${typeof value}`);
       }
-      return shake256(new TextEncoder().encode(value), { dkLen: DIGEST_LEN });
+      return shake256Digest(new TextEncoder().encode(value), DIGEST_LEN);
 
     case 'bytes':
       if (typeof value !== 'string') {
         throw new Error(`bytes field expects 0x-hex string: ${typeof value}`);
       }
-      return shake256(hexToBytes(value), { dkLen: DIGEST_LEN });
+      return shake256Digest(hexToBytes(value), DIGEST_LEN);
 
     case 'uintN':
       return bigIntToSlot(parseIntValue(value, `uint${parsed.width}`), parsed.width, false);
@@ -265,7 +279,7 @@ export function encodeField(type: FieldType, value: unknown, types: TypeMap): Ui
         throw new Error(`fixed array ${type} requires length ${parsed.size}, got ${value.length}`);
       }
       const chunks = value.map((v) => encodeField(parsed.inner, v, types));
-      return shake256(concatBytesArr(chunks), { dkLen: DIGEST_LEN });
+      return shake256Digest(concatBytesArr(chunks), DIGEST_LEN);
     }
   }
 }
@@ -282,7 +296,7 @@ export function hashStruct(primary: string, data: Message, types: TypeMap): Uint
     if (!(f.name in data)) throw new Error(`missing field ${primary}.${f.name}`);
     parts.push(encodeField(f.type, data[f.name], types));
   }
-  return shake256(concatBytesArr(parts), { dkLen: DIGEST_LEN });
+  return shake256Digest(concatBytesArr(parts), DIGEST_LEN);
 }
 
 const RESERVED_DOMAIN_FIELDS: Record<string, string> = {
@@ -332,5 +346,5 @@ export function computeTypedDataDigest(payload: TypedDataPayload): Uint8Array {
   validatePayloadReachability(payload.primaryType, payload.types);
   const domainHash = hashStruct('QRLDomain', payload.domain, payload.types);
   const messageHash = hashStruct(payload.primaryType, payload.message, payload.types);
-  return shake256(concatBytes(SCHEME_TAG_TYPED, domainHash, messageHash), { dkLen: DIGEST_LEN });
+  return shake256Digest(concatBytes(SCHEME_TAG_TYPED, domainHash, messageHash), DIGEST_LEN);
 }

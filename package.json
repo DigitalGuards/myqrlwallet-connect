@@ -14,8 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/ --ext .ts",
-    "lint:fix": "eslint src/ --ext .ts --fix",
+    "lint": "eslint src/ test/ --ext .ts",
+    "lint:fix": "eslint src/ test/ --ext .ts --fix",
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "size": "size-limit",
@@ -43,8 +43,7 @@
     "@noble/post-quantum": "^0.5.4",
     "@theqrl/mldsa87": "^2.1.1",
     "eventemitter3": "^5.0.1",
-    "socket.io-client": "^4.8.1",
-    "uuid": "^11.1.0"
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@size-limit/file": "^11.0.0",

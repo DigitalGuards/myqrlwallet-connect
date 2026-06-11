@@ -131,7 +131,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
    */
   async onSynAck(cid: Uint8Array, msg: SynAckMessage): Promise<AckMessage | null> {
     if (!this.isOriginator) {
-      warn('KeyExchange', 'Responder received SYNACK — ignoring');
+      warn('KeyExchange', 'Responder received SYNACK - ignoring');
       return null;
     }
     if (!this.awaitingSynAck || !this.keypair) {
@@ -231,7 +231,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
    */
   async onAck(msg: AckMessage): Promise<void> {
     if (this.isOriginator) {
-      warn('KeyExchange', 'Originator received ACK — ignoring');
+      warn('KeyExchange', 'Originator received ACK - ignoring');
       return;
     }
     if (!this.awaitingAck) {
@@ -261,7 +261,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   /** Encrypt a string for the counterparty. Returns base64. */
   async encryptMessage(data: string): Promise<string> {
     if (!this.session) {
-      throw new Error('KeyExchange: cannot encrypt — session not established');
+      throw new Error('KeyExchange: cannot encrypt - session not established');
     }
     const pt = textEncoder.encode(data);
     const ct = await seal(
@@ -278,7 +278,7 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   /** Decrypt a base64 ciphertext from the counterparty. */
   async decryptMessage(b64: string): Promise<string> {
     if (!this.session) {
-      throw new Error('KeyExchange: cannot decrypt — session not established');
+      throw new Error('KeyExchange: cannot decrypt - session not established');
     }
     const ct = fromBase64(b64);
     const pt = await open(
