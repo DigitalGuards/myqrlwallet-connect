@@ -28,6 +28,9 @@ const walletList      = $('wallet-list');
 const btnNewConn      = $('btn-new-connection');
 const btnDisconnect   = $('btn-disconnect');
 const btnSwitchWallet = $('btn-switch-wallet');
+const desktopActions  = $('desktop-actions');
+const btnOpenDesktop  = $('btn-open-desktop');
+const btnCopyUri      = $('btn-copy-uri');
 const btnSend         = $('btn-send');
 const btnSign         = $('btn-sign');
 const btnSignTyped    = $('btn-sign-typed');
@@ -174,6 +177,7 @@ function showConnectedUI(accounts, providerInfo) {
   accountInfo.classList.remove('hidden');
   qrContainer.classList.add('hidden');
   uriDisplay.classList.add('hidden');
+  desktopActions.classList.add('hidden');
   hidePicker();
   btnDisconnect.classList.remove('hidden');
   btnSwitchWallet.classList.remove('hidden');
@@ -274,6 +278,11 @@ async function showQR(uri) {
   });
   uriDisplay.textContent = uri;
   uriDisplay.classList.remove('hidden');
+  // Desktop browsers: offer the qrlconnect:// protocol-handler deep link
+  // (opens the MyQRLWallet desktop app if installed) plus a copy button for
+  // the wallet's paste-code fallback. Mobile already auto-deep-links.
+  btnOpenDesktop.href = uri;
+  if (!qrl.isMobile()) desktopActions.classList.remove('hidden');
 }
 
 // ─── Mobile deep link helper ─────────────────────────────
@@ -402,7 +411,7 @@ async function connectViaExtension(detail) {
     setStatus('green', `Connected via ${walletName}`);
     showConnectedUI(accounts, detail.info);
 
-    // Wire EIP-1193 events once per provider — extension provider objects are
+    // Wire EIP-1193 events once per provider: extension provider objects are
     // long-lived singletons, so re-wiring on every connect would stack
     // duplicate handlers and produce duplicate log lines on each event.
     wireExtensionProviderEvents(detail);
@@ -469,6 +478,31 @@ btnDisconnect.addEventListener('click', async () => {
   log('Disconnected', 'info');
   updateStatus(ConnectionStatus.DISCONNECTED);
   showDisconnectedUI();
+});
+
+// ─── Desktop wallet actions (deep link + copy) ───────────
+// The anchor's href is the qrlconnect:// URI; the OS protocol handler opens
+// the MyQRLWallet desktop app (if installed), which stages the URI behind a
+// consent modal. The browser stays on this page (no navigation happens).
+btnOpenDesktop.addEventListener('click', () => {
+  log('[Desktop] Opening in QRL Wallet via qrlconnect:// protocol handler...', 'info');
+  log('[Desktop] Nothing happened? Install the desktop wallet, or copy the code and paste it under dApp Sessions.', 'info');
+});
+
+btnCopyUri.addEventListener('click', async () => {
+  const uri = btnOpenDesktop.getAttribute('href') || '';
+  if (!uri.startsWith('qrlconnect:')) return;
+  try {
+    await navigator.clipboard.writeText(uri);
+    const original = btnCopyUri.textContent;
+    btnCopyUri.textContent = 'Copied!';
+    setTimeout(() => {
+      btnCopyUri.textContent = original;
+    }, 1500);
+    log('[Desktop] Connection code copied. Paste it in the wallet under Settings > dApp Sessions.', 'success');
+  } catch (err) {
+    log(`[Desktop] Copy failed (${err.message}). Select the code text above and copy manually.`, 'error');
+  }
 });
 
 // ─── Send Transaction ────────────────────────────────────
