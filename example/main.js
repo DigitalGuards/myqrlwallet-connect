@@ -198,6 +198,12 @@ function showDisconnectedUI() {
   activeProvider = null;
   activeProviderInfo = null;
   accountInfo.classList.add('hidden');
+  // Disconnected must never display a live-looking connection surface: the
+  // QR, code text, and desktop deep-link/copy actions all point at a channel
+  // that no longer exists (showQR re-shows them when a fresh URI is ready).
+  qrContainer.classList.add('hidden');
+  uriDisplay.classList.add('hidden');
+  desktopActions.classList.add('hidden');
   btnDisconnect.classList.add('hidden');
   btnNewConn.classList.add('hidden');
   btnSwitchWallet.classList.add('hidden');
@@ -248,7 +254,11 @@ qrl.on('disconnect', async ({ code, message }) => {
     log(`QR ready. Scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
     updateStatus(ConnectionStatus.WAITING);
   } catch (err) {
-    log(`Failed to regenerate QR: ${err.message}`, 'error');
+    // The old channel is already torn down: hide the stale QR / deep-link /
+    // copy affordances so a dead URI cannot be scanned, opened, or copied.
+    showDisconnectedUI();
+    updateStatus(ConnectionStatus.DISCONNECTED);
+    log(`Failed to regenerate QR: ${err.message}. Click the wallet again to retry.`, 'error');
   }
 });
 
@@ -485,19 +495,23 @@ btnDisconnect.addEventListener('click', async () => {
 // the MyQRLWallet desktop app (if installed), which stages the URI behind a
 // consent modal. The browser stays on this page (no navigation happens).
 btnOpenDesktop.addEventListener('click', () => {
-  log('[Desktop] Opening in QRL Wallet via qrlconnect:// protocol handler...', 'info');
+  log('[Desktop] Opening in MyQRLWallet via qrlconnect:// protocol handler...', 'info');
   log('[Desktop] Nothing happened? Install the desktop wallet, or copy the code and paste it under dApp Sessions.', 'info');
 });
 
+// Static label + a single cleared timeout: capturing textContent after the
+// await races overlapping clicks and can stick the button on 'Copied!'.
+const COPY_URI_LABEL = 'Copy connection code';
+let copyUriResetTimer = null;
 btnCopyUri.addEventListener('click', async () => {
   const uri = btnOpenDesktop.getAttribute('href') || '';
   if (!uri.startsWith('qrlconnect:')) return;
   try {
     await navigator.clipboard.writeText(uri);
-    const original = btnCopyUri.textContent;
     btnCopyUri.textContent = 'Copied!';
-    setTimeout(() => {
-      btnCopyUri.textContent = original;
+    clearTimeout(copyUriResetTimer);
+    copyUriResetTimer = setTimeout(() => {
+      btnCopyUri.textContent = COPY_URI_LABEL;
     }, 1500);
     log('[Desktop] Connection code copied. Paste it in the wallet under Settings > dApp Sessions.', 'success');
   } catch (err) {

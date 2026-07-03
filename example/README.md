@@ -78,7 +78,7 @@ ZondScan's `ExplorerFrontend` has a `prebuild` script that clones this repo, run
 
 On a desktop browser the QR is joined by two actions aimed at the MyQRLWallet desktop wallet (Electron):
 
-1. **Open in QRL Wallet**: a `qrlconnect://` link. The installed desktop wallet registers the scheme with the OS (HKCU on Windows via NSIS, `CFBundleURLTypes` on macOS, `x-scheme-handler` on Linux), so clicking it launches or foregrounds the wallet, which stages the URI behind an explicit consent modal before any relay contact.
+1. **Open in MyQRLWallet**: a `qrlconnect://` link. The installed desktop wallet registers the scheme with the OS (HKCU on Windows via NSIS, `CFBundleURLTypes` on macOS, `x-scheme-handler` on Linux), so clicking it launches or foregrounds the wallet, which stages the URI behind an explicit consent modal before any relay contact.
 2. **Copy connection code**: copies the raw URI for the wallet's paste fallback (Settings > dApp Sessions > Connect a dApp). Use this when the protocol handler isn't registered, or when the dApp runs on a different machine than the wallet.
 
 The QR itself stays useful on desktop too: it's how a phone pairs with a dApp shown on a monitor.
