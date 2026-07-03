@@ -224,7 +224,7 @@
     </p>
     <ul>
       <li>The official <strong>QRL Web3 Wallet</strong> browser extension (<code>theqrl.org</code>)</li>
-      <li><strong>MyQRLWallet (mobile and desktop)</strong> via <code>qrlconnect://</code> - deep link on mobile; QR to scan with a phone, "Open in QRL Wallet", or copy the code into the desktop app - then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
+      <li><strong>MyQRLWallet (mobile and desktop)</strong> via <code>qrlconnect://</code> - deep link on mobile; QR to scan with a phone, "Open in MyQRLWallet", or copy the code into the desktop app - then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
       <li>Once connected, call <code>qrl_sendTransaction</code>, <code>qrl_signMessage</code>, <code>qrl_signTypedData</code>, and read-only RPC methods through whichever wallet was picked</li>
       <li>Watch every encrypted relay message in the event log below</li>
     </ul>
@@ -259,7 +259,7 @@
     <!-- Desktop-only: qrlconnect:// protocol-handler deep link into the
          MyQRLWallet desktop app, plus copy for its paste-code fallback. -->
     <div id="desktop-actions" class="btn-row hidden">
-      <a id="btn-open-desktop" class="btn-link" href="#">Open in QRL Wallet</a>
+      <a id="btn-open-desktop" class="btn-link" href="#">Open in MyQRLWallet</a>
       <button id="btn-copy-uri" class="outline">Copy connection code</button>
     </div>
 
