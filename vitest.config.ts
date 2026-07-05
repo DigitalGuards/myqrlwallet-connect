@@ -7,6 +7,9 @@ export default defineConfig({
     // Include co-located src tests (e.g. the signing cross-repo parity vectors
     // in src/signing/__tests__) so the digest-drift safety net actually runs.
     include: ['test/**/*.test.ts', 'src/**/__tests__/**/*.test.ts'],
+    // Silence [QRLConnect:*]-tagged console noise from deliberate
+    // failure-path tests (see test/setup.ts).
+    setupFiles: ['test/setup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
