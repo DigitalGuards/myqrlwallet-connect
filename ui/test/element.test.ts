@@ -72,10 +72,63 @@ describe('<qrl-pairing-modal>', () => {
 
   it('deep-links only qrlconnect: URIs', () => {
     const el = mount({ uri: PAIR_URI });
-    const open = shadow(el).querySelector('a.btn');
+    const open = shadow(el).querySelector('a.btn.desktop');
+    expect(open?.textContent).toContain('Open desktop app');
     expect(open?.getAttribute('href')).toBe(PAIR_URI);
     el.setAttribute('uri', 'javascript:alert(1)');
     expect(open?.getAttribute('href')).toBeNull();
+  });
+
+  describe('web wallet handoff link', () => {
+    const WEIRD_URI = 'qrlconnect://pair?cid=a%25b&blob=c+d&r=https://relay.example/?x=1&y=2';
+    const webLink = (el: QrlPairingModal) => shadow(el).querySelector('a.btn.web');
+
+    it('builds the default fragment link with the URI exactly once-encoded', () => {
+      const el = mount({ uri: WEIRD_URI });
+      const link = webLink(el);
+      expect(link?.getAttribute('href')).toBe(
+        `https://qrlwallet.com/dapp-sessions#qrlconnect=${encodeURIComponent(WEIRD_URI)}`
+      );
+      expect(link?.getAttribute('target')).toBe('_blank');
+      expect(link?.getAttribute('rel')).toBe('noreferrer');
+    });
+
+    it('honors a custom web-wallet-url and strips trailing slashes', () => {
+      const el = mount({ uri: PAIR_URI, 'web-wallet-url': 'https://dev.qrlwallet.com/' });
+      expect(webLink(el)?.getAttribute('href')).toBe(
+        `https://dev.qrlwallet.com/dapp-sessions#qrlconnect=${encodeURIComponent(PAIR_URI)}`
+      );
+    });
+
+    it('is hidden and href-less when opted out with an empty attribute', () => {
+      const el = mount({ uri: PAIR_URI, 'web-wallet-url': '' });
+      const link = webLink(el);
+      expect(link?.getAttribute('href')).toBeNull();
+      expect((link as HTMLElement).hidden).toBe(true);
+    });
+
+    it('is hidden for a non-pairing uri', () => {
+      const el = mount({ uri: 'javascript:alert(1)' });
+      const link = webLink(el);
+      expect(link?.getAttribute('href')).toBeNull();
+      expect((link as HTMLElement).hidden).toBe(true);
+    });
+
+    it('refuses a non-web base URL', () => {
+      const el = mount({ uri: PAIR_URI, 'web-wallet-url': 'javascript:alert(1)' });
+      const link = webLink(el);
+      expect(link?.getAttribute('href')).toBeNull();
+      expect((link as HTMLElement).hidden).toBe(true);
+    });
+
+    it('rotates the link when the uri attribute changes', () => {
+      const el = mount({ uri: PAIR_URI });
+      const next = 'qrlconnect://pair?cid=other&blob=xyz';
+      el.setAttribute('uri', next);
+      expect(webLink(el)?.getAttribute('href')).toBe(
+        `https://qrlwallet.com/dapp-sessions#qrlconnect=${encodeURIComponent(next)}`
+      );
+    });
   });
 
   it('shows the status line only when set', () => {

@@ -160,4 +160,13 @@ describe('showPairingModal', () => {
     provider.emit('connect', { chainId: '0x539' });
     await result;
   });
+
+  it('passes webWalletUrl through, including the empty-string opt-out', async () => {
+    const provider = new FakeProvider();
+    const result = showPairingModal(provider, { webWalletUrl: '' });
+    await flush();
+    expect(findModal()?.getAttribute('web-wallet-url')).toBe('');
+    provider.emit('connect', { chainId: '0x539' });
+    await result;
+  });
 });

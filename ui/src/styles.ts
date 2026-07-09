@@ -105,6 +105,12 @@ h2 {
 .btn:hover {
   border-color: var(--qrl-modal-accent);
 }
+.btn.wide {
+  grid-column: 1 / -1;
+}
+.btn[hidden] {
+  display: none;
+}
 .btn:focus-visible,
 .link:focus-visible {
   outline: 2px solid var(--qrl-modal-accent);
