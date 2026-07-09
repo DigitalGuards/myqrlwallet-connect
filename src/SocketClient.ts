@@ -11,6 +11,11 @@ import { RELAY_PATH } from './config.js';
 // the relay is unreachable (socket.io retries internally, but our
 // pendingJoin only resolves on `connect`).
 const PENDING_JOIN_TIMEOUT_MS = 20000;
+// Bounded window for awaiting a relay ack before the caller is allowed to
+// tear the socket down. socket.io buffers emits and disconnect() drops
+// anything unflushed, so a fire-and-forget close_channel would race the
+// teardown and the tombstone could never land. Mirrors the wallet side.
+const SEND_FLUSH_TIMEOUT_MS = 600;
 import { log, warn, error as logError } from './utils/logger.js';
 import type { RelayMessage } from './types.js';
 
@@ -302,6 +307,50 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
         }
       );
     });
+  }
+
+  /**
+   * Emit an event and resolve once the relay acks it, or after a bounded
+   * flush window. Lets a caller await transmission before tearing the
+   * socket down.
+   */
+  private flushEmit(event: string, payload: object): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this.socket?.connected) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const timer = setTimeout(done, SEND_FLUSH_TIMEOUT_MS);
+      this.socket.emit(event, payload, () => {
+        clearTimeout(timer);
+        done();
+      });
+    });
+  }
+
+  /**
+   * Explicitly terminate the channel on the relay (durable tombstone), as
+   * opposed to the transient leaveChannel(). Used when the session is dead
+   * in a way an encrypted TERMINATE cannot communicate (AEAD desync: the
+   * peer could not open it). Resolves once the close is flushed or the
+   * bounded window elapses, so the caller can safely disconnect afterwards.
+   */
+  closeChannel(): Promise<void> {
+    const channelId = this.channelId;
+    this.channelId = null;
+    if (this.pendingJoin) {
+      clearTimeout(this.pendingJoin.watchdog);
+      this.pendingJoin.reject(new Error('Channel closed before join completed'));
+      this.pendingJoin = null;
+    }
+    if (!this.socket?.connected || !channelId) return Promise.resolve();
+    return this.flushEmit('close_channel', { channelId });
   }
 
   /**

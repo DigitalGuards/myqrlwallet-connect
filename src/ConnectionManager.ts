@@ -184,7 +184,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private pendingRestore: DAppSession | null = null;
   private messageQueue: Promise<void> = Promise.resolve();
   private outboundQueue: Promise<void> = Promise.resolve();
+  private consecutiveDecryptFailures = 0;
   private static MAX_RECONNECT_FAILURES = 5;
+  // Nonces derive from the recv counter and there is no gap tolerance, so a
+  // genuinely desynced stream (peer advanced past us, e.g. the relay's
+  // buffer TTL dropped a ciphertext) fails EVERY subsequent open. Two in a
+  // row cannot happen on a healthy stream; requiring the second guards
+  // against a one-off injected junk ciphertext killing a live session.
+  private static MAX_DECRYPT_FAILURES = 2;
 
   constructor(options: {
     dappMetadata: DAppMetadata;
@@ -339,6 +346,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.clearReconnectProbe();
     this.pendingRestore = null;
     this.walletPresent = false;
+    this.consecutiveDecryptFailures = 0;
 
     if (this.keyExchange) {
       this.keyExchange.reset();
@@ -407,6 +415,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     this.setStatus(ConnectionStatus.RECONNECTING);
     this.walletPresent = false;
+    this.consecutiveDecryptFailures = 0;
 
     try {
       const session = await KeyExchange.sessionFromPersisted(this.pendingRestore.keyExchange);
@@ -554,6 +563,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.clearReconnectProbe();
     this.clearUnresponsiveTimer();
     this.walletPresent = false;
+    this.consecutiveDecryptFailures = 0;
     this.pendingRestore = null;
     // Null the key exchange too. Otherwise channelId + areKeysExchanged() stay
     // truthy and a later resume() (tab foreground / online) would try to
@@ -761,8 +771,23 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
 
     if (typeof message === 'string' && this.keyExchange?.areKeysExchanged()) {
+      // The failure counter is scoped STRICTLY to the AEAD open. JSON.parse
+      // errors or a throwing consumer listener reached via
+      // handleDecryptedMessage happen after recvSeq advanced and say nothing
+      // about stream health, so they must not count toward a teardown.
+      let decrypted: string;
       try {
-        const decrypted = await this.keyExchange.decryptMessage(message);
+        decrypted = await this.keyExchange.decryptMessage(message);
+      } catch (err) {
+        logError('ConnectionManager', 'Failed to decrypt message:', err);
+        this.consecutiveDecryptFailures++;
+        if (this.consecutiveDecryptFailures >= ConnectionManager.MAX_DECRYPT_FAILURES) {
+          await this.teardownDesyncedSession();
+        }
+        return;
+      }
+      this.consecutiveDecryptFailures = 0;
+      try {
         // The AEAD counters advanced; checkpoint them before acting on the
         // plaintext so a reload cannot restore a stale recvSeq and reopen a
         // replay window for ciphertexts the relay has already delivered.
@@ -774,9 +799,24 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
           warn('ConnectionManager', 'Dropping non-object decrypted payload');
         }
       } catch (err) {
-        logError('ConnectionManager', 'Failed to decrypt message:', err);
+        logError('ConnectionManager', 'Failed to handle decrypted message:', err);
       }
     }
+  }
+
+  /**
+   * The receive stream is cryptographically unrecoverable: the peer's send
+   * counter is ahead of our recv counter for good (relay buffer TTL/cap
+   * dropped a ciphertext), so every future message would fail its tag.
+   * An encrypted TERMINATE cannot communicate this (the desynced peer could
+   * not open it either); tombstone the channel on the relay instead so the
+   * wallet learns the pairing is dead even if it only re-joins later, then
+   * clear local state and surface the standard terminated teardown.
+   */
+  private async teardownDesyncedSession(): Promise<void> {
+    warn('ConnectionManager', 'AEAD stream desynced beyond recovery; terminating session');
+    await this.socketClient.closeChannel();
+    this.handleSessionTerminated();
   }
 
   private async handleSynAck(msg: SynAckMessage): Promise<void> {
