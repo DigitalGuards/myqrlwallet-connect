@@ -91,6 +91,8 @@ const qrl = new QRLConnect({
   relayUrl: 'https://qrlwallet.com',  // default relay
   chainId: '0x0',                      // QRL chain ID
   autoReconnect: true,                 // reconnect on page load (default: true)
+  walletRedirectOnRequest: true,       // mobile: deep-link the wallet app awake
+                                       // for approval requests (default: true)
   debug: false,                        // console logging
 });
 ```
@@ -108,6 +110,8 @@ The main class. Creates a connection manager and EIP-1193 provider.
 | `isMobile()` | Check if the user is on a mobile browser |
 | `getAppStoreUrl()` | Get the app store link for QRL Wallet |
 | `isConnected()` | Whether the wallet is connected |
+| `isPaired()` | Whether a pairing exists, even while the wallet app is backgrounded |
+| `isWalletPresent()` | Whether the wallet is currently live in the relay channel |
 | `getAccounts()` | Get connected accounts |
 | `getStatus()` | Current connection status |
 | `hasStoredSession()` | Check if a reconnectable session exists in local storage |
@@ -124,7 +128,7 @@ The main class. Creates a connection manager and EIP-1193 provider.
 | `accountsChanged` | `string[]` | Account list changed |
 | `chainChanged` | `string` | Chain switched |
 | `statusChanged` | `ConnectionStatus` | Intermediate lifecycle states (see values below) |
-| `connection_lost` | — | Emitted after 5 failed reconnection attempts |
+| `connection_lost` | (none) | Emitted after 5 failed reconnection attempts |
 
 #### `ConnectionStatus` values
 
@@ -132,7 +136,7 @@ The main class. Creates a connection manager and EIP-1193 provider.
 |-------|---------|
 | `disconnected` | No active connection |
 | `connecting` | Connecting to relay server |
-| `waiting` | QR displayed, waiting for wallet to scan |
+| `waiting` | Waiting for the wallet: a first scan, or (when `isPaired()`) a backgrounded wallet app to return |
 | `key_exchange` | Post-quantum key exchange in progress |
 | `connected` | Wallet connected, ready for requests |
 | `reconnecting` | Attempting to restore a previous session |
@@ -151,12 +155,19 @@ The main class. Creates a connection manager and EIP-1193 provider.
 
 Sessions persist in `localStorage` for 7 days. When a user returns to your dApp, the SDK can automatically reconnect without requiring a new QR scan.
 
+A paired session also survives the wallet app being backgrounded or closed. On the same device at most one of the two apps is ever foregrounded, so the wallet's socket being absent is the normal steady state of a mobile flow, not an error:
+
+- `request()` still works while the wallet is away: the relay buffers the encrypted request for up to 5 minutes and the wallet drains it when it re-joins.
+- On mobile browsers, an approval-needing request also fires a `qrlconnect://` deep link that brings the wallet app to the foreground (disable with `walletRedirectOnRequest: false`). `qrl_requestAccounts` never redirects: dApps call it on page load without a user gesture.
+- Use `isPaired()` to tell "wallet away, session intact" apart from "never paired" when `getStatus()` is not `connected`.
+
 Recommended lifecycle:
 
 - Use `hasStoredSession()` on page load to decide whether to show reconnect state/UI
 - Keep a single `QRLConnect` instance for the page lifetime
 - Use `newConnection()` when the user explicitly wants to pair a different wallet
 - Use `statusChanged` for UI state transitions instead of relying on internals
+- On a `disconnect` event, check `hasStoredSession()`: if a session is still stored the wallet is merely unreachable (revived by any request); only re-pair when it is gone
 
 ## How the relay works
 
@@ -204,7 +215,7 @@ node test-e2e.mjs
 
 The `example/` directory contains a Vite test dApp with QR code generation, transaction sending, message signing, and read-only RPC calls.
 
-> **Want to try it without any setup?** The same example is hosted live at [zondscan.com/dapp-example](https://zondscan.com/dapp-example) — it pairs with the production relay and MyQRLWallet mobile app out of the box.
+> **Want to try it without any setup?** The same example is hosted live at [zondscan.com/dapp-example](https://zondscan.com/dapp-example): it pairs with the production relay and MyQRLWallet mobile app out of the box.
 
 ```bash
 # 1. Build the SDK first (the example links to it locally)
