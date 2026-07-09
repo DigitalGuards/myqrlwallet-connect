@@ -262,7 +262,7 @@ describe('QRLConnectProvider', () => {
 
       await vi.waitFor(() =>
         { expect(platformMocks.attemptWalletRedirect).toHaveBeenCalledWith(
-          'qrlconnect://resume?cid=mock-channel'
+          'qrlconnect://?wake=mock-channel'
         ); }
       );
       await settleRequest(requestPromise);
