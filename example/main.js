@@ -246,6 +246,18 @@ qrl.on('disconnect', async ({ code, message }) => {
     return;
   }
 
+  // The SDK also surfaces DISCONNECTED when its reconnect probe gave up on
+  // an absent wallet (app closed or asleep). The session is still stored and
+  // any action revives it - the request is relay-buffered and, on mobile,
+  // deep-links the wallet app awake. Do NOT rotate to a fresh pairing here:
+  // that would orphan the wallet side's session. Only a wallet-initiated
+  // terminate (which clears the stored session) falls through to re-pair.
+  if (qrl.hasStoredSession()) {
+    setStatus('yellow', 'Wallet app offline - an action (or opening MyQRLWallet) resumes it');
+    log('Wallet unreachable right now; session kept. Sending a request reopens the app.', 'info');
+    return;
+  }
+
   // Wallet-initiated disconnect: auto-regenerate QR so user can reconnect.
   // Hide the picker - we know the user just had a relay session, so the QR
   // is the right thing to show, not a wallet picker on top of it.
@@ -284,6 +296,14 @@ qrl.on('chainChanged', (chainId) => {
 
 qrl.on('statusChanged', (status) => {
   if (activeProvider !== qrl) return;
+  // A paired session outlives the wallet app's socket: WAITING with session
+  // keys in hand means "wallet app backgrounded", not "waiting for a scan".
+  // Actions stay usable - the relay buffers the request and, on mobile, the
+  // SDK deep-links the wallet app awake.
+  if (status === ConnectionStatus.WAITING && qrl.isPaired()) {
+    setStatus('yellow', 'Wallet app in background - actions will reopen it');
+    return;
+  }
   updateStatus(status);
 });
 
@@ -818,10 +838,10 @@ log(`Platform: ${navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'}`
 //
 // hasStoredSession() is presence-only (a saved localStorage record within
 // its TTL), NOT proof the wallet is still reachable. The SDK's reconnect()
-// (fired in the QRLConnect constructor) bounds the wait: it reads the relay
-// participant roster, and if no wallet re-appears within its probe window it
-// surfaces a 'disconnect', which our handler above turns into a fresh QR.
-// So phrase this tentatively rather than asserting a reconnection.
+// (fired in the QRLConnect constructor) reads the relay roster; a wallet
+// that stays absent past the probe window surfaces a 'disconnect', which our
+// handler above keeps as a revivable "wallet offline" state rather than
+// forcing a fresh pairing.
 if (qrl.hasStoredSession()) {
   log('Found a saved session, checking if your wallet is still reachable...', 'info');
   activeProvider = qrl;
@@ -830,6 +850,14 @@ if (qrl.hasStoredSession()) {
     rdns: QRL_CONNECT_RDNS,
   };
   hidePicker();
+  // The stored session carries the paired accounts: show the connected
+  // surface right away so actions stay usable while the wallet app is
+  // asleep. A tapped action re-joins the channel, gets buffered by the
+  // relay, and on mobile deep-links the wallet app awake.
+  const cachedAccounts = qrl.getAccounts();
+  if (cachedAccounts.length > 0) {
+    showConnectedUI(cachedAccounts, activeProviderInfo);
+  }
   // Reflect the SDK's actual current status. reconnect() already ran in the
   // constructor (before our statusChanged listener was attached), so read it
   // directly instead of assuming RECONNECTING.

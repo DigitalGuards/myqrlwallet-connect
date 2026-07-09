@@ -7,7 +7,7 @@ import EventEmitter from 'eventemitter3';
 import { ConnectionManager } from './ConnectionManager.js';
 import { REQUEST_TIMEOUT_MS, RESTRICTED_METHODS, UNRESTRICTED_METHODS } from './config.js';
 import { log, warn } from './utils/logger.js';
-import { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
+import { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
 import { randomUuid } from './crypto/primitives.js';
 import {
@@ -232,6 +232,16 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       }
       this.pendingRequests.clear();
     });
+
+    this.connectionManager.on('session_terminated', () => {
+      // The wallet terminated the pairing (or a tombstone was observed on
+      // join): buffered/in-flight requests can never be answered. Fail them
+      // now rather than letting callers run out the 5-minute timeout.
+      for (const [, pending] of this.pendingRequests) {
+        pending.reject(new Error('Session terminated by wallet'));
+      }
+      this.pendingRequests.clear();
+    });
   }
 
   /**
@@ -280,9 +290,26 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       throw new Error(`Unsupported method: ${method}`);
     }
 
-    // Must be connected for all remote methods
+    // A paired session survives the wallet app being backgrounded or closed:
+    // its socket dies within seconds, but the relay buffers channel traffic
+    // for it and the wallet re-joins on foreground. So "not CONNECTED" is not
+    // a hard error while a session can be revived - it is the normal steady
+    // state of a same-device mobile flow, where at most one of the two apps
+    // is ever foregrounded.
     if (this.connectionManager.getStatus() !== ConnectionStatus.CONNECTED) {
-      throw new Error('Not connected to QRL Wallet');
+      // An already-authorized account read must not round-trip through a
+      // wallet that cannot answer until the user switches apps.
+      if (
+        method === 'qrl_requestAccounts' &&
+        this.connectionManager.isPaired() &&
+        this.connectionManager.getAccounts().length > 0
+      ) {
+        return this.connectionManager.getAccounts();
+      }
+      const joined = await this.connectionManager.ensureChannelJoined();
+      if (!joined) {
+        throw new Error('Not connected to QRL Wallet');
+      }
     }
 
     const id = `${this.requestIdPrefix}-${++this.requestCounter}`;
@@ -320,13 +347,64 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       };
 
       // Send to wallet
-      this.connectionManager.sendJsonRpc({
+      const sent = this.connectionManager.sendJsonRpc({
         jsonrpc: '2.0',
         id,
         method,
         params,
       });
+
+      // If the send never reaches the relay, fail fast instead of holding
+      // the caller for the full request timeout.
+      sent.catch((err: unknown) => {
+        const failed = this.pendingRequests.get(id);
+        if (!failed) return;
+        this.pendingRequests.delete(id);
+        failed.reject(err instanceof Error ? err : new Error(String(err)));
+      });
+
+      // Same-device wake: the wallet app cannot be foregrounded while the
+      // user is here in the browser, so an approval-needing call would
+      // otherwise sit in the relay buffer until they switch apps on their
+      // own. Navigate only after the relay acked the ciphertext -
+      // redirecting first races iOS freezing this page's JS mid-send.
+      if (this.shouldRedirectToWallet(method)) {
+        void sent.then(
+          () => attemptWalletRedirect(this.walletWakeUri()),
+          () => undefined
+        );
+      }
     });
+  }
+
+  /**
+   * Redirect only for calls the user must approve, on mobile, and only when
+   * the wallet is actually absent from the channel: right after pairing its
+   * socket lingers and a pointless app flash would be jarring.
+   *
+   * qrl_requestAccounts is excluded even though it is restricted: dApps call
+   * it on page load to restore a session, so it can run with no user gesture
+   * (an unsolicited "Open in MyQRLWallet?" sheet on load) and pairing UIs
+   * already own their own deep-link step.
+   */
+  private shouldRedirectToWallet(method: string): boolean {
+    return (
+      this.options.walletRedirectOnRequest !== false &&
+      RESTRICTED_METHODS.has(method) &&
+      method !== 'qrl_requestAccounts' &&
+      isMobileBrowser() &&
+      !this.connectionManager.isWalletPresent()
+    );
+  }
+
+  /**
+   * Wake URI for the wallet app. Carries no pairing payload: today's app
+   * foregrounds on any `qrlconnect:` URL and re-joins its sessions (draining
+   * the buffered request); the cid lets a future wallet jump straight to the
+   * right approval.
+   */
+  private walletWakeUri(): string {
+    return `qrlconnect://resume?cid=${encodeURIComponent(this.connectionManager.getChannelId())}`;
   }
 
   /**
@@ -362,6 +440,21 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    */
   hasStoredSession(): boolean {
     return this.connectionManager.hasStoredSession();
+  }
+
+  /**
+   * True while a pairing exists (keys exchanged), even when the wallet app
+   * is backgrounded and its socket is out of the channel. Combine with
+   * getStatus() to tell "wallet away, session intact" (paired + WAITING)
+   * apart from "waiting for a first scan" in pairing UIs.
+   */
+  isPaired(): boolean {
+    return this.connectionManager.isPaired();
+  }
+
+  /** True while the wallet is actually present in the relay channel. */
+  isWalletPresent(): boolean {
+    return this.connectionManager.isWalletPresent();
   }
 
   /**
