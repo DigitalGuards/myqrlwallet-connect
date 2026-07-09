@@ -70,7 +70,7 @@ export {
   FP_LEN,
   type ParsedURI,
 } from './utils/qrUri.js';
-export { isMobileBrowser, getAppStoreUrl } from './utils/platform.js';
+export { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 export {
   RESTRICTED_METHODS,
   UNRESTRICTED_METHODS,
