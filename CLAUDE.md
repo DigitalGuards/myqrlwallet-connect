@@ -139,10 +139,20 @@ Full request/response examples are documented in `docs/JSON-RPC-REFERENCE.md`.
 
 The transport layer is built on NIST-standardized post-quantum primitives, aligning QRL Connect's channel security with the same PQ guarantees the QRL network provides at the consensus layer:
 
-- **ML-KEM-768 (Kyber)** — FIPS 203 key encapsulation, via `@noble/post-quantum`
-- **HKDF-SHA-256** — derives per-direction AEAD keys from the shared secret, bound to the full handshake transcript (`LABEL || cid || pk || ct`)
-- **AES-256-GCM** — authenticated encryption of every JSON-RPC payload, via WebCrypto SubtleCrypto
+- **ML-KEM-768 (Kyber)**: FIPS 203 key encapsulation, via `@noble/post-quantum`
+- **HKDF-SHA-256**: derives per-direction AEAD keys from the shared secret, bound to the full handshake transcript (`LABEL || cid || pk || ct`)
+- **AES-256-GCM**: authenticated encryption of every JSON-RPC payload, via WebCrypto SubtleCrypto
 
 Authentication of the channel relies exclusively on the AES-GCM tag. ML-KEM's FIPS 203 implicit rejection (returning a pseudo-random secret on tampered ciphertext) is deliberately NOT used as an authentication signal.
 
 A future hardening step is adding **ML-DSA-87 (Dilithium)** signatures over the handshake transcript for explicit mutual authentication against active MITM. The QRL ecosystem already ships `@theqrl/mldsa87` for this.
+
+## Planned: @qrlwallet/connect-ui
+
+Shared pairing UI as a sibling package (decided 2026-07-09, not built yet). The pairing modal is currently hand-copied in three dApps (zondscan dApp example, QuantaPool, QuantaSwap); extract it once and migrate them.
+
+- Web component `<qrl-pairing-modal>` with shadow DOM and CSS custom-property theming (current dark look as default), plus a `showPairingModal(connector, opts)` one-liner helper. No framework dependency so React and vanilla dApps both work.
+- Consumes only the public SDK API (`getConnectionURI()`, `statusChanged`, `newConnection()`, `disconnect()`): purely presentational, adds no protocol surface.
+- Separate package (not a subpath export) so the `qrcode` dependency and DOM code stay out of the core package's dependency tree and audit surface.
+- Must carry the UX invariants the copies encode: QR render of the URI, `qrlconnect://` "Open in wallet" deep link, copy-code fallback for the desktop wallet, status line from `statusChanged`, New connection (teardown + rotate) and Cancel actions.
+- Extraction source: the newest copy, QuantaSwap `frontend/src/components/QrModal.tsx`. Own accessibility properly (focus trap, Escape-to-close, aria) when building.
