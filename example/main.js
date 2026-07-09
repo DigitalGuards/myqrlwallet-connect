@@ -80,7 +80,11 @@ function setStatus(color, label) {
 // The dApp listens for any wallet that announces itself via EIP-6963 - both
 // the official QRL browser extension (rdns: theqrl.org) and our own SDK
 // (rdns: com.qrlwallet.connect, announced when QRLConnect is constructed).
-const QRL_EXTENSION_RDNS = 'theqrl.org';
+// Injected QRL extensions: the upstream QRL Web3 Wallet and the
+// MyQRLWallet Extension fork (com.qrlwallet.extension). Both take the
+// extension tx shape; everything else EIP-1193-compatible is listed too
+// since this example doubles as a diagnostic harness.
+const QRL_EXTENSION_RDNS = new Set(['theqrl.org', 'com.qrlwallet.extension']);
 const QRL_CONNECT_RDNS   = QRL_CONNECT_PROVIDER_INFO.rdns;
 
 const discovered = new Map(); // uuid -> { info, provider }
@@ -562,7 +566,7 @@ btnSend.addEventListener('click', async () => {
     // type "0x2" (its legacy gasPrice branch fails web3 gas validation).
     // Shape device-verified on quantaswap.io, 2026-07-09.
     let txParams;
-    if (activeProviderInfo?.rdns === QRL_EXTENSION_RDNS) {
+    if (activeProviderInfo && QRL_EXTENSION_RDNS.has(activeProviderInfo.rdns)) {
       let gasLimit = 100000;
       try {
         const estimated = await activeProvider.request({
