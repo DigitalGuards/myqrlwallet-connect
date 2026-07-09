@@ -68,9 +68,12 @@ export class QrlPairingModal extends HTMLElement {
     this.titleEl = document.createElement('h2');
     this.titleEl.id = 'qrl-pairing-title';
 
+    // The web wallet cannot pair from a plain browser tab (no qrlconnect://
+    // ingress there), so the copy points at the apps that can: mobile scans,
+    // desktop deep-links or takes a pasted code.
     const sub = document.createElement('p');
     sub.className = 'sub';
-    sub.append('Scan with the mobile app, or use the wallet at ');
+    sub.append('Scan with the mobile app, or use the desktop wallet. Get it at ');
     this.walletLink = document.createElement('a');
     this.walletLink.target = '_blank';
     this.walletLink.rel = 'noreferrer';
@@ -199,7 +202,7 @@ export class QrlPairingModal extends HTMLElement {
 
   private syncWallet(): void {
     const name = this.getAttribute('wallet-name') ?? 'MyQRLWallet';
-    const url = this.getAttribute('wallet-url') ?? 'https://qrlwallet.com';
+    const url = this.getAttribute('wallet-url') ?? 'https://myqrlwallet.com';
     this.titleEl.textContent = `Pair ${name}`;
     this.walletLink.textContent = url.replace(/^https?:\/\//, '');
     if (isWebUrl(url)) this.walletLink.setAttribute('href', url);
