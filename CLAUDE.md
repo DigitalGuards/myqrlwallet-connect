@@ -109,6 +109,11 @@ qrlwallet-connect/
 │       ├── platform.ts         # Mobile detection
 │       └── logger.ts           # Debug logging
 ├── dist/                       # Built output (tsup)
+├── ui/                         # @qrlwallet/connect-ui sibling package (pairing modal)
+│   ├── src/element.ts          # <qrl-pairing-modal> web component (shadow DOM)
+│   ├── src/show.ts             # showPairingModal() helper + PairingProvider duck type
+│   ├── src/qr.ts               # Sole qrcode import site (SVG rendering)
+│   └── test/                   # vitest + jsdom suite, own gates (lint/typecheck/test/build)
 ├── example/                    # Vite test dApp (also hosted at zondscan.com/dapp-example)
 │   ├── index.html
 │   ├── main.js
@@ -147,12 +152,12 @@ Authentication of the channel relies exclusively on the AES-GCM tag. ML-KEM's FI
 
 A future hardening step is adding **ML-DSA-87 (Dilithium)** signatures over the handshake transcript for explicit mutual authentication against active MITM. The QRL ecosystem already ships `@theqrl/mldsa87` for this.
 
-## Planned: @qrlwallet/connect-ui
+## @qrlwallet/connect-ui (`ui/`)
 
-Shared pairing UI as a sibling package (decided 2026-07-09, not built yet). The pairing modal is currently hand-copied in three dApps (zondscan dApp example, QuantaPool, QuantaSwap); extract it once and migrate them.
+Shared pairing UI as a sibling package (built 2026-07-09, extracted from QuantaSwap's `QrModal.tsx`; the same modal was hand-copied in zondscan's dApp example, QuantaPool and QuantaSwap, and those should migrate to it).
 
-- Web component `<qrl-pairing-modal>` with shadow DOM and CSS custom-property theming (current dark look as default), plus a `showPairingModal(connector, opts)` one-liner helper. No framework dependency so React and vanilla dApps both work.
-- Consumes only the public SDK API (`getConnectionURI()`, `statusChanged`, `newConnection()`, `disconnect()`): purely presentational, adds no protocol surface.
-- Separate package (not a subpath export) so the `qrcode` dependency and DOM code stay out of the core package's dependency tree and audit surface.
-- Must carry the UX invariants the copies encode: QR render of the URI, `qrlconnect://` "Open in wallet" deep link, copy-code fallback for the desktop wallet, status line from `statusChanged`, New connection (teardown + rotate) and Cancel actions.
-- Extraction source: the newest copy, QuantaSwap `frontend/src/components/QrModal.tsx`. Own accessibility properly (focus trap, Escape-to-close, aria) when building.
+- Web component `<qrl-pairing-modal>` with shadow DOM and CSS custom-property theming (`--qrl-modal-*`, dark MyQRLWallet look by default), plus the `showPairingModal(provider, opts)` one-liner that resolves `'connected' | 'cancelled' | 'redirected'`. No framework dependency.
+- Consumes only the public SDK API via the duck-typed `PairingProvider` interface (`getConnectionURI`, `newConnection`, `isMobile`, `connect`/`statusChanged` events); a compile-time test in `ui/test/show.test.ts` pins `QRLConnectProvider` compatibility. Purely presentational, no protocol surface, and its eslint config bans crypto imports outright.
+- Separate package (not a subpath export) so the `qrcode` dependency and DOM code stay out of the core package's dependency tree and audit surface. `@qrlwallet/connect` is an optional peer dep only.
+- Carries the UX invariants the copies encoded: QR render (SVG, no canvas), `qrlconnect://` "Open in wallet" deep link (scheme-checked), copy-code fallback for the desktop wallet, status line, New connection (rotate in place) and Cancel; plus dialog a11y (focus trap, Escape, focus restore, aria-live status).
+- Gates run from `ui/`: `npm run lint && npm run typecheck && npm test && npm run build` (same hardened eslint profile as the SDK, vitest + jsdom). Not yet published to npm.
