@@ -232,6 +232,16 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       }
       this.pendingRequests.clear();
     });
+
+    this.connectionManager.on('session_terminated', () => {
+      // The wallet terminated the pairing (or a tombstone was observed on
+      // join): buffered/in-flight requests can never be answered. Fail them
+      // now rather than letting callers run out the 5-minute timeout.
+      for (const [, pending] of this.pendingRequests) {
+        pending.reject(new Error('Session terminated by wallet'));
+      }
+      this.pendingRequests.clear();
+    });
   }
 
   /**
@@ -371,11 +381,17 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    * Redirect only for calls the user must approve, on mobile, and only when
    * the wallet is actually absent from the channel: right after pairing its
    * socket lingers and a pointless app flash would be jarring.
+   *
+   * qrl_requestAccounts is excluded even though it is restricted: dApps call
+   * it on page load to restore a session, so it can run with no user gesture
+   * (an unsolicited "Open in MyQRLWallet?" sheet on load) and pairing UIs
+   * already own their own deep-link step.
    */
   private shouldRedirectToWallet(method: string): boolean {
     return (
       this.options.walletRedirectOnRequest !== false &&
       RESTRICTED_METHODS.has(method) &&
+      method !== 'qrl_requestAccounts' &&
       isMobileBrowser() &&
       !this.connectionManager.isWalletPresent()
     );

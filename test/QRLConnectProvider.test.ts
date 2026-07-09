@@ -283,6 +283,22 @@ describe('QRLConnectProvider', () => {
       expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
     });
 
+    it('should not redirect for qrl_requestAccounts even when otherwise eligible', async () => {
+      // An empty account cache falls through the cached-accounts early
+      // return and sends, but the redirect must still not fire: dApps call
+      // qrl_requestAccounts on page load with no user gesture.
+      mockCM.accounts = [];
+
+      const requestPromise = provider.request({ method: 'qrl_requestAccounts' });
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalled();
+      });
+      expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
+
+      mockCM.emit('wallet_info', { accounts: ['Q1234'], chainId: '0x0' });
+      await expect(requestPromise).resolves.toEqual(['Q1234']);
+    });
+
     it('should not redirect when walletRedirectOnRequest is false', async () => {
       const optOutProvider = new QRLConnectProvider({
         ...defaultOptions,
@@ -355,6 +371,18 @@ describe('QRLConnectProvider', () => {
 
       await expect(promise1).rejects.toThrow('Connection to QRL Wallet lost');
       await expect(promise2).rejects.toThrow('Connection to QRL Wallet lost');
+    });
+  });
+
+  describe('session_terminated', () => {
+    it('should reject all pending requests when the session is terminated', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+
+      const promise = provider.request({ method: 'qrl_blockNumber' });
+
+      mockCM.emit('session_terminated');
+
+      await expect(promise).rejects.toThrow('Session terminated by wallet');
     });
   });
 

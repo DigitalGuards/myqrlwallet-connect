@@ -158,7 +158,7 @@ Sessions persist in `localStorage` for 7 days. When a user returns to your dApp,
 A paired session also survives the wallet app being backgrounded or closed. On the same device at most one of the two apps is ever foregrounded, so the wallet's socket being absent is the normal steady state of a mobile flow, not an error:
 
 - `request()` still works while the wallet is away: the relay buffers the encrypted request for up to 5 minutes and the wallet drains it when it re-joins.
-- On mobile browsers, an approval-needing request also fires a `qrlconnect://` deep link that brings the wallet app to the foreground (disable with `walletRedirectOnRequest: false`).
+- On mobile browsers, an approval-needing request also fires a `qrlconnect://` deep link that brings the wallet app to the foreground (disable with `walletRedirectOnRequest: false`). `qrl_requestAccounts` never redirects: dApps call it on page load without a user gesture.
 - Use `isPaired()` to tell "wallet away, session intact" apart from "never paired" when `getStatus()` is not `connected`.
 
 Recommended lifecycle:
