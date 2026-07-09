@@ -10,9 +10,12 @@
 
 import { createServer } from 'http';
 import { io as ioClient } from 'socket.io-client';
-import { createRelayServer } from '../myqrlwallet-backend/src/relay/relayServer.js';
+// The backend is TypeScript now: the relay must be imported from its built
+// output (run `npm run build` in ../myqrlwallet-backend if dist/ is missing).
+import { createRelayServer } from '../myqrlwallet-backend/dist/relay/relayServer.js';
 import {
   QRLConnect,
+  ConnectionStatus,
   KeyExchange,
   parseConnectionURI,
   computeFingerprint,
@@ -394,9 +397,85 @@ async function run() {
     }
     console.log('    dApp verifyTypedData() returned true');
 
+    console.log('14. Wallet: leaving the relay channel (app backgrounded/closed)');
+    const sawWalletLeave = new Promise((resolve) => {
+      const onStatus = (status) => {
+        if (status === ConnectionStatus.WAITING) {
+          dapp.off('statusChanged', onStatus);
+          resolve();
+        }
+      };
+      dapp.on('statusChanged', onStatus);
+    });
+    walletSocket.emit('leave_channel', { channelId: channelIdStr });
+    await sawWalletLeave;
+    if (!dapp.isPaired()) {
+      throw new Error('dApp lost its pairing when the wallet merely left the channel');
+    }
+    if (dapp.isWalletPresent()) {
+      throw new Error('dApp still reports the wallet present after it left');
+    }
+    console.log('    dApp: WAITING with session intact (paired, wallet absent)');
+
+    console.log('15. dApp: qrl_sendTransaction while the wallet is ABSENT (relay must buffer)');
+    const offlineTxPromise = dapp.request({
+      method: 'qrl_sendTransaction',
+      params: [
+        {
+          from: WALLET_ADDRESS,
+          to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+          value: '0x01',
+        },
+      ],
+    });
+    for (let i = 0; i < 60; i++) {
+      if (io.channelManager.getStats().totalBufferedMessages >= 1) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (io.channelManager.getStats().totalBufferedMessages < 1) {
+      throw new Error('request was not buffered by the relay while the wallet was absent');
+    }
+    console.log('    Relay buffered the encrypted request for the absent wallet');
+
+    console.log('16. Wallet: re-joining channel → buffered request drains from the join ack');
+    const rejoinAck = await joinChannel(walletSocket, channelIdStr, 'wallet');
+    const bufferedEnvelopes = (rejoinAck.bufferedMessages ?? []).filter(
+      (m) => typeof m?.message === 'string'
+    );
+    if (bufferedEnvelopes.length !== 1) {
+      throw new Error(`expected 1 buffered ciphertext in join ack, got ${bufferedEnvelopes.length}`);
+    }
+    const offlineRpcMsg = JSON.parse(
+      await walletKex.decryptMessage(bufferedEnvelopes[0].message)
+    );
+    if (offlineRpcMsg.method !== 'qrl_sendTransaction') {
+      throw new Error(`buffered request has wrong method: ${offlineRpcMsg.method}`);
+    }
+    await sendMessage(
+      walletSocket,
+      channelIdStr,
+      'wallet',
+      await walletKex.encryptMessage(
+        JSON.stringify({
+          type: MessageType.JSONRPC,
+          jsonrpc: '2.0',
+          id: offlineRpcMsg.id,
+          result: TEST_TX_HASH,
+        })
+      )
+    );
+    const offlineTxResult = await offlineTxPromise;
+    if (offlineTxResult !== TEST_TX_HASH) {
+      throw new Error(`offline-buffered request resolved wrong result: ${offlineTxResult}`);
+    }
+    if (!dapp.isWalletPresent()) {
+      throw new Error('dApp did not mark the wallet present again after its re-join');
+    }
+    console.log('    dApp resolved the request that was buffered while the wallet was away');
+
     const stats = io.channelManager.getStats();
     console.log(
-      `14. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
+      `17. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
     );
 
     console.log('\n✅ E2E v2 SUCCESS');
@@ -410,6 +489,7 @@ async function run() {
     console.log('   - qrl_sendTransaction request/response round-trip');
     console.log('   - qrl_signMessage round-trip with local verifyMessage');
     console.log('   - qrl_signTypedData round-trip with local verifyTypedData');
+    console.log('   - offline-wallet request buffered by relay + resolved on re-join');
   } catch (err) {
     console.error('\n❌ E2E TEST FAILED:', err.message);
     console.error(err.stack);
@@ -420,8 +500,10 @@ async function run() {
       dapp?.disconnect();
     } catch {}
     walletSocket?.disconnect();
-    io?.channelManager?.destroy();
-    io?.close();
+    // createRelayServer returns { io, channelManager, destroy } since the
+    // backend's TS migration; destroy() also tears down the channelManager.
+    io?.destroy();
+    io?.io?.close();
     httpServer?.close();
     setTimeout(() => process.exit(0), 200);
   }
