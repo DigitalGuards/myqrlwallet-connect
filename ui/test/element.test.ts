@@ -38,7 +38,9 @@ describe('<qrl-pairing-modal>', () => {
   it('renders the default wallet branding', () => {
     const el = mount({ uri: PAIR_URI });
     expect(shadowText(el, 'h2')).toBe('Pair MyQRLWallet');
-    expect(shadow(el).querySelector('.sub a')?.getAttribute('href')).toBe('https://qrlwallet.com');
+    expect(shadow(el).querySelector('.sub a')?.getAttribute('href')).toBe(
+      'https://myqrlwallet.com'
+    );
   });
 
   it('honors wallet-name and wallet-url attributes', () => {
