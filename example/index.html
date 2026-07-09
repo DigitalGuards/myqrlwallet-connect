@@ -256,10 +256,14 @@
 
     <div id="uri-display" class="uri-box hidden"></div>
 
-    <!-- Desktop-only: qrlconnect:// protocol-handler deep link into the
-         MyQRLWallet desktop app, plus copy for its paste-code fallback. -->
+    <!-- Desktop-browser actions: https fragment handoff into the web wallet
+         (always works, no install), qrlconnect:// protocol-handler deep link
+         into the desktop app, plus copy for the paste-code fallback. A page
+         cannot detect whether the protocol handler is installed, so every
+         path is offered explicitly. -->
     <div id="desktop-actions" class="btn-row hidden">
-      <a id="btn-open-desktop" class="btn-link" href="#">Open in MyQRLWallet</a>
+      <a id="btn-open-web" class="btn-link" href="#" target="_blank" rel="noopener noreferrer">Open web wallet</a>
+      <a id="btn-open-desktop" class="btn-link" href="#">Open desktop app</a>
       <button id="btn-copy-uri" class="outline">Copy connection code</button>
     </div>
 

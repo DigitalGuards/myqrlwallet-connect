@@ -13,6 +13,9 @@ import QRCode from 'qrcode';
 // Local dev override: set VITE_RELAY_URL before `vite` (e.g. via
 // start-test-env.sh) to point at your local backend relay instead of prod.
 const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'https://qrlwallet.com';
+// Web wallet for the fragment-link pairing handoff (VITE_WEB_WALLET_URL
+// override for the dev stack).
+const WEB_WALLET_URL = (import.meta.env.VITE_WEB_WALLET_URL || 'https://qrlwallet.com').replace(/\/+$/, '');
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -30,6 +33,7 @@ const btnNewConn      = $('btn-new-connection');
 const btnDisconnect   = $('btn-disconnect');
 const btnSwitchWallet = $('btn-switch-wallet');
 const desktopActions  = $('desktop-actions');
+const btnOpenWeb      = $('btn-open-web');
 const btnOpenDesktop  = $('btn-open-desktop');
 const btnCopyUri      = $('btn-copy-uri');
 const btnSend         = $('btn-send');
@@ -293,9 +297,12 @@ async function showQR(uri) {
   });
   uriDisplay.textContent = uri;
   uriDisplay.classList.remove('hidden');
-  // Desktop browsers: offer the qrlconnect:// protocol-handler deep link
+  // Desktop browsers: offer the web-wallet fragment handoff (the URI travels
+  // in the URL fragment, so it never reaches a server; the wallet scrubs it
+  // and asks for consent), the qrlconnect:// protocol-handler deep link
   // (opens the MyQRLWallet desktop app if installed) plus a copy button for
   // the wallet's paste-code fallback. Mobile already auto-deep-links.
+  btnOpenWeb.href = `${WEB_WALLET_URL}/dapp-sessions#qrlconnect=${encodeURIComponent(uri)}`;
   btnOpenDesktop.href = uri;
   if (!qrl.isMobile()) desktopActions.classList.remove('hidden');
 }
@@ -521,7 +528,18 @@ btnDisconnect.addEventListener('click', async () => {
 // consent modal. The browser stays on this page (no navigation happens).
 btnOpenDesktop.addEventListener('click', () => {
   log('[Desktop] Opening in MyQRLWallet via qrlconnect:// protocol handler...', 'info');
-  log('[Desktop] Nothing happened? Install the desktop wallet, or copy the code and paste it under dApp Sessions.', 'info');
+  log('[Desktop] Nothing happened? Install the desktop wallet, use the web wallet button, or copy the code and paste it under dApp Sessions.', 'info');
+});
+
+btnOpenWeb.addEventListener('click', (e) => {
+  // Defensive: the row is hidden until displayQR fills the href, but a
+  // stale '#' href must never open a blank self-tab.
+  const href = btnOpenWeb.getAttribute('href') || '';
+  if (href === '#' || href === '') {
+    e.preventDefault();
+    return;
+  }
+  log('[Web] Opening the web wallet with the pairing code in the URL fragment. Approve the connection there.', 'info');
 });
 
 // Static label + a single cleared timeout: capturing textContent after the
