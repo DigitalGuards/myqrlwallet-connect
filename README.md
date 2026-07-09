@@ -18,10 +18,12 @@ All communication is end-to-end encrypted with ML-KEM-768 (FIPS 203) key encapsu
 npm install @qrlwallet/connect
 ```
 
+Want a ready-made pairing dialog (QR code, deep link, copy-code fallback) instead of building your own? Add the framework-free [`@qrlwallet/connect-ui`](ui/) web component.
+
 ## Quick start
 
 ```typescript
-import { QRLConnect } from '@qrlwallet/connect';
+import { QRLConnect, attemptWalletRedirect, getAppStoreUrl } from '@qrlwallet/connect';
 
 const qrl = new QRLConnect({
   dappMetadata: {
@@ -34,9 +36,16 @@ const qrl = new QRLConnect({
 const uri = await qrl.getConnectionURI();
 
 // Desktop: render as QR code (use any QR library)
-// Mobile: redirect to open the wallet app
+// Mobile: try to open the wallet app, with a fallback for when it is
+// not installed (a bare `window.location.href = uri` fails at the
+// unknown protocol: silently on Android, blocking alert on iOS)
 if (qrl.isMobile()) {
-  window.location.href = uri;
+  const opened = await attemptWalletRedirect(uri);
+  if (!opened) {
+    // Wallet app not installed (or the user dismissed the chooser):
+    // show your QR / copy-code pairing UI plus an install link.
+    console.log('Get MyQRLWallet:', getAppStoreUrl());
+  }
 } else {
   // render uri as QR code
 }

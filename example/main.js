@@ -5,6 +5,7 @@ import {
   verifyMessage,
   verifyTypedData,
   bytesToHex,
+  getAppStoreUrl,
 } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
@@ -12,6 +13,9 @@ import QRCode from 'qrcode';
 // Local dev override: set VITE_RELAY_URL before `vite` (e.g. via
 // start-test-env.sh) to point at your local backend relay instead of prod.
 const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'https://qrlwallet.com';
+// Web wallet for the fragment-link pairing handoff (VITE_WEB_WALLET_URL
+// override for the dev stack).
+const WEB_WALLET_URL = (import.meta.env.VITE_WEB_WALLET_URL || 'https://qrlwallet.com').replace(/\/+$/, '');
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -29,6 +33,7 @@ const btnNewConn      = $('btn-new-connection');
 const btnDisconnect   = $('btn-disconnect');
 const btnSwitchWallet = $('btn-switch-wallet');
 const desktopActions  = $('desktop-actions');
+const btnOpenWeb      = $('btn-open-web');
 const btnOpenDesktop  = $('btn-open-desktop');
 const btnCopyUri      = $('btn-copy-uri');
 const btnSend         = $('btn-send');
@@ -80,7 +85,11 @@ function setStatus(color, label) {
 // The dApp listens for any wallet that announces itself via EIP-6963 - both
 // the official QRL browser extension (rdns: theqrl.org) and our own SDK
 // (rdns: com.qrlwallet.connect, announced when QRLConnect is constructed).
-const QRL_EXTENSION_RDNS = 'theqrl.org';
+// Injected QRL extensions: the upstream QRL Web3 Wallet and the
+// MyQRLWallet Extension fork (com.qrlwallet.extension). Both take the
+// extension tx shape; everything else EIP-1193-compatible is listed too
+// since this example doubles as a diagnostic harness.
+const QRL_EXTENSION_RDNS = new Set(['theqrl.org', 'com.qrlwallet.extension']);
 const QRL_CONNECT_RDNS   = QRL_CONNECT_PROVIDER_INFO.rdns;
 
 const discovered = new Map(); // uuid -> { info, provider }
@@ -288,52 +297,71 @@ async function showQR(uri) {
   });
   uriDisplay.textContent = uri;
   uriDisplay.classList.remove('hidden');
-  // Desktop browsers: offer the qrlconnect:// protocol-handler deep link
+  // Desktop browsers: offer the web-wallet fragment handoff (the URI travels
+  // in the URL fragment, so it never reaches a server; the wallet scrubs it
+  // and asks for consent), the qrlconnect:// protocol-handler deep link
   // (opens the MyQRLWallet desktop app if installed) plus a copy button for
   // the wallet's paste-code fallback. Mobile already auto-deep-links.
+  btnOpenWeb.href = `${WEB_WALLET_URL}/dapp-sessions#qrlconnect=${encodeURIComponent(uri)}`;
   btnOpenDesktop.href = uri;
   if (!qrl.isMobile()) desktopActions.classList.remove('hidden');
 }
 
 // ─── Mobile deep link helper ─────────────────────────────
+//
+// Resolves true when something handled the qrlconnect:// navigation (the
+// page went hidden, so the wallet app opened) and false when the page is
+// still visible after the timeout: app not installed (silent failure on
+// Android, blocking alert on iOS) or the user dismissed the OS chooser.
+// Callers must treat false as "show fallback pairing UI", not as proof
+// the app is absent. Mirrors attemptWalletRedirect in the SDK.
+const APP_STORE_URL = getAppStoreUrl();
+
 function tryOpenMobileDeepLink(uri, sourceLabel) {
-  if (!qrl.isMobile()) return false;
+  if (!qrl.isMobile()) return Promise.resolve(false);
 
   log(`[Mobile] Deep link attempt (${sourceLabel})`, 'info');
   log(`[Mobile] URI: ${uri}`, 'info');
 
-  let settled = false;
-  const cleanup = () => {
-    document.removeEventListener('visibilitychange', onVisibilityChange);
-    window.removeEventListener('pagehide', onPageHide);
-  };
-  const onVisibilityChange = () => {
-    if (document.visibilityState === 'hidden' && !settled) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = (opened) => {
+      if (settled) return;
       settled = true;
-      log('[Mobile] Page hidden after deep link attempt (wallet likely opened)', 'success');
-      cleanup();
-    }
-  };
-  const onPageHide = () => {
-    if (!settled) {
-      settled = true;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      clearTimeout(timer);
+      resolve(opened);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        log('[Mobile] Page hidden after deep link attempt (wallet opened)', 'success');
+        finish(true);
+      }
+    };
+    const onPageHide = () => {
       log('[Mobile] Page backgrounded after deep link attempt', 'success');
-      cleanup();
-    }
-  };
-  document.addEventListener('visibilitychange', onVisibilityChange);
-  window.addEventListener('pagehide', onPageHide);
+      finish(true);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
 
-  setTimeout(() => {
-    if (!settled && document.visibilityState === 'visible') {
-      settled = true;
-      log('[Mobile] Deep link may have been blocked (still on dApp page)', 'error');
-      cleanup();
-    }
-  }, 1500);
+    timer = setTimeout(() => {
+      log(`[Mobile] Nothing handled the deep link. Wallet app not installed? Get MyQRLWallet: ${APP_STORE_URL}`, 'error');
+      finish(false);
+    }, 1800);
 
-  window.location.href = uri;
-  return true;
+    window.location.href = uri;
+  });
+}
+
+// Fallback pairing UI for a failed mobile deep link: the copy-code actions
+// (normally desktop-only) plus the connection URI, so the user can install
+// the app or pair via the wallet at qrlwallet.com with the copied code.
+async function showMobileFallback(uri) {
+  await showQR(uri);
+  desktopActions.classList.remove('hidden');
 }
 
 // Track which extension providers we've already wired EIP-1193 listeners to,
@@ -378,8 +406,10 @@ async function connectViaRelay(detail) {
   try {
     const uri = await qrl.getConnectionURI();
     log(`Connection URI generated (channel: ${qrl.getChannelId()})`, 'info');
-    const openedMobile = tryOpenMobileDeepLink(uri, 'connect');
-    if (!openedMobile) {
+    if (qrl.isMobile()) {
+      const opened = await tryOpenMobileDeepLink(uri, 'connect');
+      if (!opened) await showMobileFallback(uri);
+    } else {
       await showQR(uri);
     }
     updateStatus(ConnectionStatus.WAITING);
@@ -465,8 +495,10 @@ btnNewConn.addEventListener('click', async () => {
     btnSign.disabled = true;
     btnSignTyped.disabled = true;
     btnRpc.disabled = true;
-    const openedMobile = tryOpenMobileDeepLink(uri, 'newConnection');
-    if (!openedMobile) {
+    if (qrl.isMobile()) {
+      const opened = await tryOpenMobileDeepLink(uri, 'newConnection');
+      if (!opened) await showMobileFallback(uri);
+    } else {
       await showQR(uri);
     }
     btnNewConn.textContent = 'New Connection';
@@ -496,7 +528,18 @@ btnDisconnect.addEventListener('click', async () => {
 // consent modal. The browser stays on this page (no navigation happens).
 btnOpenDesktop.addEventListener('click', () => {
   log('[Desktop] Opening in MyQRLWallet via qrlconnect:// protocol handler...', 'info');
-  log('[Desktop] Nothing happened? Install the desktop wallet, or copy the code and paste it under dApp Sessions.', 'info');
+  log('[Desktop] Nothing happened? Install the desktop wallet, use the web wallet button, or copy the code and paste it under dApp Sessions.', 'info');
+});
+
+btnOpenWeb.addEventListener('click', (e) => {
+  // Defensive: the row is hidden until displayQR fills the href, but a
+  // stale '#' href must never open a blank self-tab.
+  const href = btnOpenWeb.getAttribute('href') || '';
+  if (href === '#' || href === '') {
+    e.preventDefault();
+    return;
+  }
+  log('[Web] Opening the web wallet with the pairing code in the URL fragment. Approve the connection there.', 'info');
 });
 
 // Static label + a single cleared timeout: capturing textContent after the
@@ -525,9 +568,9 @@ btnSend.addEventListener('click', async () => {
   const qrlAmount = $('tx-value').value.trim();
 
   if (!to) { log('Enter a recipient address', 'error'); return; }
-  if (!qrlAmount || isNaN(Number(qrlAmount))) { log('Enter a valid amount', 'error'); return; }
+  if (!qrlAmount || isNaN(Number(qrlAmount)) || Number(qrlAmount) < 0) { log('Enter a valid non-negative amount', 'error'); return; }
 
-  const weiValue = '0x' + (BigInt(Math.floor(Number(qrlAmount) * 1e18))).toString(16);
+  const weiValue = BigInt(Math.floor(Number(qrlAmount) * 1e18));
 
   btnSend.disabled = true;
   btnSend.textContent = 'Waiting for approval...';
@@ -535,13 +578,43 @@ btnSend.addEventListener('click', async () => {
   log(`Sending ${qrlAmount} QRL to ${to}...`, 'info');
 
   try {
-    const txHash = await activeProvider.request({
-      method: 'qrl_sendTransaction',
-      params: [{
+    // The two transports need different tx shapes. The relay wallet
+    // estimates gas itself, so it gets the minimal hex shape. The extension
+    // feeds the dApp's fields straight into web3 signTransaction: it needs
+    // a numeric gas limit under both keys, a decimal-string value, and
+    // type "0x2" (its legacy gasPrice branch fails web3 gas validation).
+    // Shape device-verified on quantaswap.io, 2026-07-09.
+    let txParams;
+    if (QRL_EXTENSION_RDNS.has(activeProviderInfo?.rdns)) {
+      let gasLimit = 100000;
+      try {
+        const estimated = await activeProvider.request({
+          method: 'qrl_estimateGas',
+          params: [{ from: connectedAccount, to, value: '0x' + weiValue.toString(16) }],
+        });
+        gasLimit = Number((BigInt(estimated) * 130n) / 100n);
+      } catch {
+        // estimation is best-effort; the fallback covers native transfers
+      }
+      txParams = {
         from: connectedAccount,
         to,
-        value: weiValue,
-      }],
+        value: weiValue.toString(),
+        gas: gasLimit,
+        gasLimit,
+        type: '0x2',
+      };
+    } else {
+      txParams = {
+        from: connectedAccount,
+        to,
+        value: '0x' + weiValue.toString(16),
+      };
+    }
+
+    const txHash = await activeProvider.request({
+      method: 'qrl_sendTransaction',
+      params: [txParams],
     });
 
     log(`Transaction confirmed: ${txHash}`, 'success');
