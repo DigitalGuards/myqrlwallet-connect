@@ -4,9 +4,14 @@
 // in @qrlwallet/connect (usually wired up via showPairingModal()).
 //
 // UX invariants carried over from the hand-copied dApp modals:
-// QR render of the URI, qrlconnect:// "Open in wallet" deep link, copy-code
-// fallback for the desktop wallet, live status line, New connection and
-// Cancel actions.
+// QR render of the URI, "Open web wallet" fragment-link handoff,
+// qrlconnect:// "Open desktop app" deep link, copy-code fallback, live
+// status line, New connection and Cancel actions.
+//
+// A web page cannot detect whether the qrlconnect:// handler (desktop app)
+// is installed, and a scheme click without a handler silently no-ops, so
+// the modal offers every path explicitly and the user picks. The wallet
+// side tells them apart by ingress channel.
 
 import { qrSvg } from './qr.js';
 import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_REFRESH, modalStyles } from './styles.js';
@@ -28,7 +33,7 @@ function makeIcon(svg: string): HTMLSpanElement {
 
 export class QrlPairingModal extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['uri', 'status', 'wallet-name', 'wallet-url'];
+    return ['uri', 'status', 'wallet-name', 'wallet-url', 'web-wallet-url'];
   }
 
   private readonly shadow: ShadowRoot;
@@ -37,6 +42,7 @@ export class QrlPairingModal extends HTMLElement {
   private readonly walletLink: HTMLAnchorElement;
   private readonly qrBox: HTMLDivElement;
   private readonly statusEl: HTMLParagraphElement;
+  private readonly webLink: HTMLAnchorElement;
   private readonly openLink: HTMLAnchorElement;
   private readonly copyLabel: HTMLSpanElement;
 
@@ -68,12 +74,9 @@ export class QrlPairingModal extends HTMLElement {
     this.titleEl = document.createElement('h2');
     this.titleEl.id = 'qrl-pairing-title';
 
-    // The web wallet cannot pair from a plain browser tab (no qrlconnect://
-    // ingress there), so the copy points at the apps that can: mobile scans,
-    // desktop deep-links or takes a pasted code.
     const sub = document.createElement('p');
     sub.className = 'sub';
-    sub.append('Scan with the mobile app, or use the desktop wallet. Get it at ');
+    sub.append('Scan with the mobile app, or open the web wallet. Get the apps at ');
     this.walletLink = document.createElement('a');
     this.walletLink.target = '_blank';
     this.walletLink.rel = 'noreferrer';
@@ -90,10 +93,18 @@ export class QrlPairingModal extends HTMLElement {
     const actions = document.createElement('div');
     actions.className = 'actions';
 
+    // Full-width on top: the only zero-install path that always works.
+    this.webLink = document.createElement('a');
+    this.webLink.className = 'btn wide web';
+    this.webLink.target = '_blank';
+    this.webLink.rel = 'noreferrer';
+    this.webLink.title = 'Opens the web wallet in a new tab to approve this connection';
+    this.webLink.append(makeIcon(ICON_EXTERNAL_LINK), 'Open web wallet');
+
     this.openLink = document.createElement('a');
-    this.openLink.className = 'btn';
+    this.openLink.className = 'btn desktop';
     this.openLink.title = 'Opens the MyQRLWallet desktop app if installed';
-    this.openLink.append(makeIcon(ICON_EXTERNAL_LINK), 'Open in wallet');
+    this.openLink.append(makeIcon(ICON_EXTERNAL_LINK), 'Open desktop app');
 
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
@@ -105,12 +116,12 @@ export class QrlPairingModal extends HTMLElement {
       this.copyUri();
     });
 
-    actions.append(this.openLink, copyBtn);
+    actions.append(this.webLink, this.openLink, copyBtn);
 
     const hint = document.createElement('p');
     hint.className = 'hint';
     hint.textContent =
-      'Desktop wallet without the protocol handler? Copy the code and paste it under dApp Sessions in the wallet.';
+      'No protocol handler? Copy the code and paste it under dApp Sessions in the desktop or web wallet.';
 
     const links = document.createElement('div');
     links.className = 'links';
@@ -156,6 +167,7 @@ export class QrlPairingModal extends HTMLElement {
     switch (name) {
       case 'uri':
         this.syncUri();
+        this.syncWebWalletLink();
         break;
       case 'status':
         this.syncStatus();
@@ -163,6 +175,9 @@ export class QrlPairingModal extends HTMLElement {
       case 'wallet-name':
       case 'wallet-url':
         this.syncWallet();
+        break;
+      case 'web-wallet-url':
+        this.syncWebWalletLink();
         break;
       default:
         break;
@@ -198,6 +213,7 @@ export class QrlPairingModal extends HTMLElement {
     this.syncWallet();
     this.syncStatus();
     this.syncUri();
+    this.syncWebWalletLink();
   }
 
   private syncWallet(): void {
@@ -221,6 +237,30 @@ export class QrlPairingModal extends HTMLElement {
     if (uri === this.lastQrUri) return;
     this.lastQrUri = uri;
     this.renderQr(uri);
+  }
+
+  /**
+   * The web-wallet handoff: an https link carrying the pairing URI in the
+   * URL fragment (never sent to servers; the wallet scrubs and stages it
+   * behind its consent modal). Attribute absent = default web wallet;
+   * attribute set but empty = feature disabled. Hidden links carry no href,
+   * which also keeps them out of the focus trap.
+   */
+  private syncWebWalletLink(): void {
+    const attr = this.getAttribute('web-wallet-url');
+    const base = attr ?? 'https://qrlwallet.com';
+    const uri = this.getAttribute('uri');
+    const enabled = base !== '' && isWebUrl(base) && uri !== null && isPairingUri(uri);
+    if (!enabled) {
+      this.webLink.removeAttribute('href');
+      this.webLink.hidden = true;
+      return;
+    }
+    this.webLink.hidden = false;
+    this.webLink.setAttribute(
+      'href',
+      `${base.replace(/\/+$/, '')}/dapp-sessions#qrlconnect=${encodeURIComponent(uri)}`
+    );
   }
 
   private renderQr(uri: string | null): void {
