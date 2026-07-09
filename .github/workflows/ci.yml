@@ -44,3 +44,46 @@ jobs:
 
       - name: Bundle size check
         run: npm run size
+
+  ui:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Build the SDK (ui type-checks against its dist)
+        run: npm ci && npm run build
+
+      - name: Install ui dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Lint
+        run: npm run lint
+        working-directory: ui
+
+      - name: Format check
+        run: npm run format:check
+        working-directory: ui
+
+      - name: Type check
+        run: npm run typecheck
+        working-directory: ui
+
+      - name: Run tests
+        run: npm test
+        working-directory: ui
+
+      - name: Build
+        run: npm run build
+        working-directory: ui
