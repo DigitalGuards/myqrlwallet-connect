@@ -18,6 +18,8 @@ All communication is end-to-end encrypted with ML-KEM-768 (FIPS 203) key encapsu
 npm install @qrlwallet/connect
 ```
 
+Want a ready-made pairing dialog (QR code, deep link, copy-code fallback) instead of building your own? Add the framework-free [`@qrlwallet/connect-ui`](ui/) web component.
+
 ## Quick start
 
 ```typescript
