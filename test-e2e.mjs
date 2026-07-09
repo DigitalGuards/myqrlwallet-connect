@@ -473,9 +473,44 @@ async function run() {
     }
     console.log('    dApp resolved the request that was buffered while the wallet was away');
 
+    console.log('17. Desync teardown: wallet skips a seq (simulated relay buffer drop)');
+    // Burn one wallet sendSeq without delivering the ciphertext: exactly what
+    // a relay buffer TTL/cap drop looks like to the dApp. Every subsequent
+    // ciphertext must fail its tag; two in a row must tombstone the channel.
+    await walletKex.encryptMessage(JSON.stringify({ type: MessageType.PING }));
+    const sawTerminalDisconnect = new Promise((resolve) => {
+      dapp.on('disconnect', resolve);
+    });
+    await sendMessage(
+      walletSocket,
+      channelIdStr,
+      'wallet',
+      await walletKex.encryptMessage(JSON.stringify({ type: MessageType.PING }))
+    );
+    await sendMessage(
+      walletSocket,
+      channelIdStr,
+      'wallet',
+      await walletKex.encryptMessage(JSON.stringify({ type: MessageType.PING }))
+    );
+    await sawTerminalDisconnect;
+    if (dapp.isPaired()) {
+      throw new Error('dApp still paired after an unrecoverable AEAD desync');
+    }
+    console.log('    dApp tore the session down after 2 consecutive tag failures');
+
+    // The teardown must have tombstoned the channel so the wallet learns the
+    // pairing is dead on its next (re)join, without any decipherable message.
+    walletSocket.emit('leave_channel', { channelId: channelIdStr });
+    const tombstoneAck = await joinChannel(walletSocket, channelIdStr, 'wallet');
+    if (tombstoneAck.terminated !== true) {
+      throw new Error('relay did not report the desynced channel as terminated');
+    }
+    console.log('    Relay reports terminated: true to the re-joining wallet');
+
     const stats = io.channelManager.getStats();
     console.log(
-      `17. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
+      `18. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
     );
 
     console.log('\n✅ E2E v2 SUCCESS');

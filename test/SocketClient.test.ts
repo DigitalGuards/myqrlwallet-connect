@@ -350,4 +350,59 @@ describe('SocketClient', () => {
       expect(client.getChannelId()).toBeNull();
     });
   });
+
+  describe('closeChannel', () => {
+    async function joinChan(id: string): Promise<void> {
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, ack?: (r: unknown) => void) => {
+          if (event === 'join_channel' && ack) ack({ success: true });
+        }
+      );
+      client.connect();
+      mockSocket.connected = true;
+      await client.joinChannel(id);
+      mockSocket.emit.mockReset();
+    }
+
+    it('should emit close_channel with an explicit channelId and resolve on ack', async () => {
+      await joinChan('chan-close-1');
+      mockSocket.emit.mockImplementation(
+        (_event: string, _payload: unknown, ack?: (r: unknown) => void) => {
+          if (ack) ack({ success: true });
+        }
+      );
+
+      await client.closeChannel();
+
+      expect(mockSocket.emit).toHaveBeenCalledWith(
+        'close_channel',
+        { channelId: 'chan-close-1' },
+        expect.any(Function)
+      );
+      expect(client.getChannelId()).toBeNull();
+    });
+
+    it('should resolve after the bounded flush window when the relay never acks', async () => {
+      await joinChan('chan-close-2');
+      vi.useFakeTimers();
+      try {
+        mockSocket.emit.mockImplementation(() => undefined); // no ack
+        const closed = client.closeChannel();
+        await vi.advanceTimersByTimeAsync(700);
+        await expect(closed).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should resolve immediately without emitting when disconnected or unjoined', async () => {
+      // never connected / no channel
+      await expect(client.closeChannel()).resolves.toBeUndefined();
+      expect(mockSocket.emit).not.toHaveBeenCalledWith(
+        'close_channel',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+  });
 });
