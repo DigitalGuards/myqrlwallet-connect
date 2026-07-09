@@ -15,7 +15,7 @@ import QRCode from 'qrcode';
 const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'https://qrlwallet.com';
 // Web wallet for the fragment-link pairing handoff (VITE_WEB_WALLET_URL
 // override for the dev stack).
-const WEB_WALLET_URL = import.meta.env.VITE_WEB_WALLET_URL || 'https://qrlwallet.com';
+const WEB_WALLET_URL = (import.meta.env.VITE_WEB_WALLET_URL || 'https://qrlwallet.com').replace(/\/+$/, '');
 
 // ─── DOM refs ────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -531,7 +531,14 @@ btnOpenDesktop.addEventListener('click', () => {
   log('[Desktop] Nothing happened? Install the desktop wallet, use the web wallet button, or copy the code and paste it under dApp Sessions.', 'info');
 });
 
-btnOpenWeb.addEventListener('click', () => {
+btnOpenWeb.addEventListener('click', (e) => {
+  // Defensive: the row is hidden until displayQR fills the href, but a
+  // stale '#' href must never open a blank self-tab.
+  const href = btnOpenWeb.getAttribute('href') || '';
+  if (href === '#' || href === '') {
+    e.preventDefault();
+    return;
+  }
   log('[Web] Opening the web wallet with the pairing code in the URL fragment. Approve the connection there.', 'info');
 });
 
