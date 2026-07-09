@@ -171,6 +171,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private storageKey: string;
   private unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectProbeTimer: ReturnType<typeof setTimeout> | null = null;
+  private restoreInFlight: Promise<boolean> | null = null;
   private failedReconnects = 0;
   private walletPresent = false;
   private pendingRestore: DAppSession | null = null;
@@ -382,6 +383,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * Returns false if there is nothing to restore.
    */
   async reconnect(): Promise<boolean> {
+    // Single-flight: the constructor's auto-reconnect and an early request()
+    // revival (ensureChannelJoined) can overlap. Hydrating KeyExchange twice
+    // from the same pendingRestore snapshot would resurrect the counters the
+    // first hydration has since advanced past.
+    if (this.restoreInFlight) return this.restoreInFlight;
+    const task = this.reconnectNow().finally(() => {
+      this.restoreInFlight = null;
+    });
+    this.restoreInFlight = task;
+    return task;
+  }
+
+  private async reconnectNow(): Promise<boolean> {
     if (!this.pendingRestore) return false;
 
     this.setStatus(ConnectionStatus.RECONNECTING);
@@ -483,6 +497,45 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   /**
+   * Make sure the socket is open and joined to the paired session's channel
+   * so an outbound request can be routed - or relay-buffered if the wallet is
+   * currently absent (its socket dies within seconds of the app
+   * backgrounding; the relay holds channel traffic for it). Revives the
+   * socket after a probe-timeout teardown and hydrates a cold stored
+   * session. Returns false when there is no session to revive (never paired,
+   * explicit disconnect, or the channel was tombstoned).
+   */
+  async ensureChannelJoined(): Promise<boolean> {
+    if (this.keyExchange?.areKeysExchanged()) {
+      if (this.socketClient.isConnected() && this.socketClient.getChannelId()) {
+        return true;
+      }
+      this.setStatus(ConnectionStatus.RECONNECTING);
+      this.walletPresent = false;
+      return this.joinAndSettle();
+    }
+    if (this.pendingRestore) {
+      return this.reconnect();
+    }
+    return false;
+  }
+
+  /**
+   * True while a pairing exists (handshake complete, session keys in
+   * memory), even when the wallet's socket is momentarily out of the
+   * channel. Survives the reconnect-probe teardown; false after an explicit
+   * disconnect or a relay tombstone.
+   */
+  isPaired(): boolean {
+    return this.keyExchange?.areKeysExchanged() ?? false;
+  }
+
+  /** True while the relay roster last showed the wallet in the channel. */
+  isWalletPresent(): boolean {
+    return this.walletPresent;
+  }
+
+  /**
    * A session was terminated for good (wallet sent a relay 'close', or the
    * join ack reported a tombstone). Clear local state and surface
    * DISCONNECTED so the consumer drops to a fresh-pairing UI.
@@ -533,22 +586,28 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   /**
-   * Send a JSON-RPC request to the wallet (async, fire-and-forget).
+   * Send a JSON-RPC request to the wallet. Returns the outbound send promise
+   * (settled on the relay's ack) so callers that must sequence on delivery -
+   * e.g. the provider's wallet-wake redirect, which cannot navigate away
+   * before the ciphertext reaches the relay - can await it. Callers may also
+   * ignore it: failures are logged here either way.
    */
-  sendJsonRpc(request: JsonRpcRequest): void {
+  sendJsonRpc(request: JsonRpcRequest): Promise<void> {
     if (!this.keyExchange?.areKeysExchanged()) {
       throw new Error('Not connected: key exchange not complete');
     }
-    this.sendEncrypted({
+    const sent = this.sendEncrypted({
       type: MessageType.JSONRPC,
       jsonrpc: '2.0',
       id: request.id,
       method: request.method,
       params: request.params,
-    }).catch((err: unknown) => {
+    });
+    sent.catch((err: unknown) => {
       logError('ConnectionManager', 'Failed to send JSON-RPC:', err);
     });
     this.startUnresponsiveTimer();
+    return sent;
   }
 
   getStatus(): ConnectionStatus {

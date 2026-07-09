@@ -195,4 +195,14 @@ export interface QRLConnectOptions {
   announceProvider?: boolean;
   /** Override the EIP-6963 announce metadata (name / icon / rdns). */
   providerInfo?: EIP6963ProviderInfoOverride;
+  /**
+   * On mobile browsers, deep-link (`qrlconnect://resume`) to foreground the
+   * wallet app when a restricted request is made while the wallet is absent
+   * from the relay channel. A backgrounded wallet app loses its socket
+   * within seconds; the relay buffers the request, and without the redirect
+   * it would sit there until the user remembers to switch apps on their
+   * own. Defaults to true. Set false when the dApp runs its own
+   * "open wallet" UX.
+   */
+  walletRedirectOnRequest?: boolean;
 }
