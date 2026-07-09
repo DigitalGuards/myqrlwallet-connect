@@ -296,44 +296,60 @@ async function showQR(uri) {
 }
 
 // ─── Mobile deep link helper ─────────────────────────────
+//
+// Resolves true when something handled the qrlconnect:// navigation (the
+// page went hidden, so the wallet app opened) and false when the page is
+// still visible after the timeout: app not installed (silent failure on
+// Android, blocking alert on iOS) or the user dismissed the OS chooser.
+// Callers must treat false as "show fallback pairing UI", not as proof
+// the app is absent. Mirrors attemptWalletRedirect in the SDK.
+const APP_STORE_URL = /android/i.test(navigator.userAgent)
+  ? 'https://play.google.com/store/apps/details?id=com.chiefdg.myqrlwallet'
+  : 'https://apps.apple.com/app/myqrlwallet/id6742219498';
+
 function tryOpenMobileDeepLink(uri, sourceLabel) {
-  if (!qrl.isMobile()) return false;
+  if (!qrl.isMobile()) return Promise.resolve(false);
 
   log(`[Mobile] Deep link attempt (${sourceLabel})`, 'info');
   log(`[Mobile] URI: ${uri}`, 'info');
 
-  let settled = false;
-  const cleanup = () => {
-    document.removeEventListener('visibilitychange', onVisibilityChange);
-    window.removeEventListener('pagehide', onPageHide);
-  };
-  const onVisibilityChange = () => {
-    if (document.visibilityState === 'hidden' && !settled) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (opened) => {
+      if (settled) return;
       settled = true;
-      log('[Mobile] Page hidden after deep link attempt (wallet likely opened)', 'success');
-      cleanup();
-    }
-  };
-  const onPageHide = () => {
-    if (!settled) {
-      settled = true;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      resolve(opened);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        log('[Mobile] Page hidden after deep link attempt (wallet opened)', 'success');
+        finish(true);
+      }
+    };
+    const onPageHide = () => {
       log('[Mobile] Page backgrounded after deep link attempt', 'success');
-      cleanup();
-    }
-  };
-  document.addEventListener('visibilitychange', onVisibilityChange);
-  window.addEventListener('pagehide', onPageHide);
+      finish(true);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
 
-  setTimeout(() => {
-    if (!settled && document.visibilityState === 'visible') {
-      settled = true;
-      log('[Mobile] Deep link may have been blocked (still on dApp page)', 'error');
-      cleanup();
-    }
-  }, 1500);
+    setTimeout(() => {
+      log(`[Mobile] Nothing handled the deep link. Wallet app not installed? Get MyQRLWallet: ${APP_STORE_URL}`, 'error');
+      finish(false);
+    }, 1800);
 
-  window.location.href = uri;
-  return true;
+    window.location.href = uri;
+  });
+}
+
+// Fallback pairing UI for a failed mobile deep link: the copy-code actions
+// (normally desktop-only) plus the connection URI, so the user can install
+// the app or pair via the wallet at qrlwallet.com with the copied code.
+async function showMobileFallback(uri) {
+  await showQR(uri);
+  desktopActions.classList.remove('hidden');
 }
 
 // Track which extension providers we've already wired EIP-1193 listeners to,
@@ -378,8 +394,10 @@ async function connectViaRelay(detail) {
   try {
     const uri = await qrl.getConnectionURI();
     log(`Connection URI generated (channel: ${qrl.getChannelId()})`, 'info');
-    const openedMobile = tryOpenMobileDeepLink(uri, 'connect');
-    if (!openedMobile) {
+    if (qrl.isMobile()) {
+      const opened = await tryOpenMobileDeepLink(uri, 'connect');
+      if (!opened) await showMobileFallback(uri);
+    } else {
       await showQR(uri);
     }
     updateStatus(ConnectionStatus.WAITING);
@@ -465,8 +483,10 @@ btnNewConn.addEventListener('click', async () => {
     btnSign.disabled = true;
     btnSignTyped.disabled = true;
     btnRpc.disabled = true;
-    const openedMobile = tryOpenMobileDeepLink(uri, 'newConnection');
-    if (!openedMobile) {
+    if (qrl.isMobile()) {
+      const opened = await tryOpenMobileDeepLink(uri, 'newConnection');
+      if (!opened) await showMobileFallback(uri);
+    } else {
       await showQR(uri);
     }
     btnNewConn.textContent = 'New Connection';
