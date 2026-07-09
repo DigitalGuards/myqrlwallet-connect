@@ -156,6 +156,13 @@ interface ConnectionManagerEvents {
   jsonrpc_response: (response: JsonRpcResponse) => void;
   wallet_info: (info: { accounts: string[]; chainId: string }) => void;
   connection_lost: () => void;
+  /**
+   * The session is dead for good (wallet TERMINATE, relay 'close', or a
+   * tombstone observed on join). Distinct from a transient DISCONNECTED:
+   * in-flight requests can never be answered and must be failed promptly
+   * instead of running out the full request timeout.
+   */
+  session_terminated: () => void;
   error: (error: Error) => void;
 }
 
@@ -541,6 +548,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * DISCONNECTED so the consumer drops to a fresh-pairing UI.
    */
   private handleSessionTerminated(): void {
+    // Fail in-flight requests before the status flip so consumers observing
+    // 'disconnect' never see them still pending.
+    this.emit('session_terminated');
     this.clearReconnectProbe();
     this.clearUnresponsiveTimer();
     this.walletPresent = false;
@@ -834,6 +844,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
       case MessageType.TERMINATE: {
         log('ConnectionManager', 'Received terminate from wallet');
+        this.emit('session_terminated');
         // fire-and-forget here: we received the wallet's TERMINATE, we
         // don't need to round-trip another one back at them.
         void this.disconnect();
