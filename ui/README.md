@@ -42,7 +42,7 @@ if (result === 'connected') {
 |---|---|---|
 | `fresh` | `false` | Start from `newConnection()` instead of the stored session URI |
 | `walletName` | `"MyQRLWallet"` | Dialog title branding |
-| `walletUrl` | `https://qrlwallet.com` | Web wallet link under the title |
+| `walletUrl` | `https://myqrlwallet.com` | Get-the-wallet link under the title (mobile + desktop downloads; the web wallet cannot pair from a plain browser tab) |
 | `container` | `document.body` | Mount point for the modal element |
 | `mobileRedirect` | `true` | On mobile browsers navigate straight to the `qrlconnect://` deep link instead of showing a QR |
 
