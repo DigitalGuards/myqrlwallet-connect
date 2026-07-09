@@ -398,13 +398,20 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   }
 
   /**
-   * Wake URI for the wallet app. Carries no pairing payload: today's app
+   * Wake URI for the wallet app. Carries no pairing payload: the app
    * foregrounds on any `qrlconnect:` URL and re-joins its sessions (draining
    * the buffered request); the cid lets a future wallet jump straight to the
    * right approval.
+   *
+   * MUST stay query-only (no host/path). The mobile app routes deep links
+   * with expo-router, which maps anything after the scheme to an in-app
+   * route: `qrlconnect://resume?...` lands on the "+not-found" screen and
+   * unmounts the WebView, so the wake achieves nothing. The hostless form
+   * routes to the WebView tab exactly like the pairing URIs
+   * (`qrlconnect://?q=...`), which is the whole point of the wake.
    */
   private walletWakeUri(): string {
-    return `qrlconnect://resume?cid=${encodeURIComponent(this.connectionManager.getChannelId())}`;
+    return `qrlconnect://?wake=${encodeURIComponent(this.connectionManager.getChannelId())}`;
   }
 
   /**
