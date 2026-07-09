@@ -15,8 +15,8 @@ export const QRL_PAIRING_MODAL_TAG = 'qrl-pairing-modal';
 
 const COPY_FEEDBACK_MS = 1500;
 
-/** Only ever deep-link to the wallet's own scheme. */
-const isPairingUri = (uri: string): boolean => uri.startsWith('qrlconnect:');
+/** Only ever deep-link or redirect to the wallet's own scheme. */
+export const isPairingUri = (uri: string): boolean => uri.startsWith('qrlconnect:');
 const isWebUrl = (url: string): boolean => url.startsWith('https://') || url.startsWith('http://');
 
 function makeIcon(svg: string): HTMLSpanElement {
@@ -180,6 +180,11 @@ export class QrlPairingModal extends HTMLElement {
     this.copyTimer = null;
     if (this.restoreFocus?.isConnected) this.restoreFocus.focus();
     this.restoreFocus = null;
+    // Removal is dismissal: if the element leaves the DOM for any reason
+    // (route change, parent unmount), tell wiring like showPairingModal()
+    // so pending promises settle and provider listeners are released.
+    // Listeners attached directly to the element still receive this.
+    this.fire('qrl-cancel');
   }
 
   private fire(name: 'qrl-cancel' | 'qrl-new-connection'): void {

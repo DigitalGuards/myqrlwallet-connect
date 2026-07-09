@@ -118,6 +118,26 @@ describe('showPairingModal', () => {
     await result;
   });
 
+  it('resolves cancelled when the modal is removed from the DOM externally', async () => {
+    const provider = new FakeProvider();
+    const result = showPairingModal(provider);
+    await flush();
+    const modal = findModal();
+    if (!(modal instanceof HTMLElement)) throw new Error('modal not mounted');
+    modal.remove();
+    await expect(result).resolves.toBe('cancelled');
+    expect(provider.listenerCount('connect')).toBe(0);
+    expect(provider.listenerCount('statusChanged')).toBe(0);
+  });
+
+  it('refuses the mobile redirect for a non-qrlconnect URI', async () => {
+    const provider = new FakeProvider();
+    provider.uri = 'javascript:alert(1)';
+    provider.mobile = true;
+    await expect(showPairingModal(provider)).rejects.toThrow('qrlconnect: scheme');
+    expect(findModal()).toBeNull();
+  });
+
   it('shows the modal on mobile when mobileRedirect is disabled', async () => {
     const provider = new FakeProvider();
     provider.mobile = true;

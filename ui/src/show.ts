@@ -3,7 +3,7 @@
 // newConnection, isMobile, connect/statusChanged events), so this package
 // adds no protocol surface.
 
-import { defineQrlPairingModal, QrlPairingModal } from './element.js';
+import { defineQrlPairingModal, isPairingUri, QrlPairingModal } from './element.js';
 
 /**
  * Structural subset of QRLConnectProvider that the modal needs. Kept
@@ -55,6 +55,11 @@ export async function showPairingModal(
     options.fresh === true ? await provider.newConnection() : await provider.getConnectionURI();
 
   if ((options.mobileRedirect ?? true) && provider.isMobile()) {
+    // Never navigate to anything but the wallet's own scheme; a URI this
+    // malformed means the provider is broken, so fail loudly.
+    if (!isPairingUri(uri)) {
+      throw new Error('refusing to redirect: pairing URI does not use the qrlconnect: scheme');
+    }
     window.location.href = uri;
     return 'redirected';
   }
