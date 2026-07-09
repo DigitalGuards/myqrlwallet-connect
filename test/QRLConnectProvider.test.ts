@@ -2,6 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'eventemitter3';
 import { ConnectionStatus } from '../src/types.js';
 
+// Mock the platform helpers so the wallet-wake redirect can be asserted
+// without a browser environment (and without actually navigating anywhere).
+const platformMocks = vi.hoisted(() => ({
+  isMobileBrowser: vi.fn((): boolean => false),
+  attemptWalletRedirect: vi.fn((): Promise<boolean> => Promise.resolve(true)),
+}));
+
+vi.mock('../src/utils/platform.js', () => ({
+  isMobileBrowser: platformMocks.isMobileBrowser,
+  attemptWalletRedirect: platformMocks.attemptWalletRedirect,
+  getAppStoreUrl: vi.fn(() => 'https://example.invalid/store'),
+}));
+
 // Track all mock instances
 let latestMockCM: MockConnectionManager;
 
@@ -10,6 +23,8 @@ class MockConnectionManager extends EventEmitter {
   accounts: string[] = [];
   chainId = '0x0';
   channelId = 'mock-channel';
+  paired = false;
+  walletPresent = false;
 
   constructor() {
     super();
@@ -29,8 +44,16 @@ class MockConnectionManager extends EventEmitter {
   getChannelId() {
     return this.channelId;
   }
+  isPaired() {
+    return this.paired;
+  }
+  isWalletPresent() {
+    return this.walletPresent;
+  }
   getConnectionURI = vi.fn().mockResolvedValue('qrlconnect://?channelId=mock');
-  sendJsonRpc = vi.fn();
+  sendJsonRpc = vi.fn().mockResolvedValue(undefined);
+  ensureChannelJoined = vi.fn().mockResolvedValue(false);
+  hasStoredSession = vi.fn().mockReturnValue(false);
   reconnect = vi.fn().mockResolvedValue(false);
   disconnect = vi.fn();
 }
@@ -156,6 +179,131 @@ describe('QRLConnectProvider', () => {
       });
 
       await expect(requestPromise).rejects.toThrow('User rejected');
+    });
+  });
+
+  describe('request - wallet away (buffered + revive)', () => {
+    it('should send while WAITING when a paired session exists', async () => {
+      mockCM.status = ConnectionStatus.WAITING;
+      mockCM.paired = true;
+      mockCM.ensureChannelJoined.mockResolvedValue(true);
+
+      const requestPromise = provider.request({ method: 'qrl_blockNumber' });
+      await vi.waitFor(() => { expect(mockCM.sendJsonRpc).toHaveBeenCalled(); });
+      expect(mockCM.ensureChannelJoined).toHaveBeenCalledOnce();
+
+      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: sentRequest.id,
+        result: '0x10',
+      });
+      await expect(requestPromise).resolves.toBe('0x10');
+    });
+
+    it('should throw when there is no session to revive', async () => {
+      mockCM.status = ConnectionStatus.DISCONNECTED;
+      mockCM.ensureChannelJoined.mockResolvedValue(false);
+
+      await expect(provider.request({ method: 'qrl_blockNumber' })).rejects.toThrow(
+        'Not connected to QRL Wallet'
+      );
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+    });
+
+    it('should answer qrl_requestAccounts from the paired cache without a round-trip', async () => {
+      mockCM.status = ConnectionStatus.WAITING;
+      mockCM.paired = true;
+      mockCM.accounts = ['Q1234'];
+
+      await expect(provider.request({ method: 'qrl_requestAccounts' })).resolves.toEqual([
+        'Q1234',
+      ]);
+      expect(mockCM.ensureChannelJoined).not.toHaveBeenCalled();
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+    });
+
+    it('should reject fast when the send cannot reach the relay', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.sendJsonRpc.mockReturnValue(Promise.reject(new Error('Socket not connected')));
+
+      await expect(provider.request({ method: 'qrl_blockNumber' })).rejects.toThrow(
+        'Socket not connected'
+      );
+    });
+  });
+
+  describe('request - wallet wake redirect', () => {
+    beforeEach(() => {
+      platformMocks.isMobileBrowser.mockReturnValue(true);
+      mockCM.status = ConnectionStatus.WAITING;
+      mockCM.paired = true;
+      mockCM.walletPresent = false;
+      mockCM.ensureChannelJoined.mockResolvedValue(true);
+    });
+
+    afterEach(() => {
+      platformMocks.isMobileBrowser.mockReturnValue(false);
+    });
+
+    /** Resolve the in-flight request so no pending timers leak across tests. */
+    async function settleRequest(requestPromise: Promise<unknown>): Promise<void> {
+      await vi.waitFor(() => { expect(mockCM.sendJsonRpc).toHaveBeenCalled(); });
+      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: null });
+      await requestPromise;
+    }
+
+    it('should deep-link the wallet awake for restricted methods when it is absent', async () => {
+      const requestPromise = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1234', value: '0x0' }],
+      });
+
+      await vi.waitFor(() =>
+        { expect(platformMocks.attemptWalletRedirect).toHaveBeenCalledWith(
+          'qrlconnect://resume?cid=mock-channel'
+        ); }
+      );
+      await settleRequest(requestPromise);
+    });
+
+    it('should not redirect for unrestricted methods', async () => {
+      await settleRequest(provider.request({ method: 'qrl_blockNumber' }));
+      expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
+    });
+
+    it('should not redirect while the wallet is present in the channel', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.walletPresent = true;
+
+      await settleRequest(
+        provider.request({ method: 'qrl_sendTransaction', params: [{ to: 'Q1', value: '0x0' }] })
+      );
+      expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
+    });
+
+    it('should not redirect when walletRedirectOnRequest is false', async () => {
+      const optOutProvider = new QRLConnectProvider({
+        ...defaultOptions,
+        walletRedirectOnRequest: false,
+      });
+      const optOutCM = latestMockCM;
+      optOutCM.status = ConnectionStatus.WAITING;
+      optOutCM.paired = true;
+      optOutCM.ensureChannelJoined.mockResolvedValue(true);
+
+      const requestPromise = optOutProvider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1234', value: '0x0' }],
+      });
+      await vi.waitFor(() => { expect(optOutCM.sendJsonRpc).toHaveBeenCalled(); });
+      const sentRequest = optOutCM.sendJsonRpc.mock.calls[0][0];
+      optOutCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: null });
+      await requestPromise;
+
+      expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
+      await optOutProvider.disconnect();
     });
   });
 
