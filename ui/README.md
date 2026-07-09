@@ -68,7 +68,7 @@ Attributes: `uri`, `status`, `wallet-name`, `wallet-url`, `web-wallet-url` (abse
 
 ### The web-wallet handoff link
 
-"Open web wallet" opens `<web-wallet-url>/dapp-sessions#qrlconnect=<encodeURIComponent(uri)>` in a new tab; the wallet reads the fragment, scrubs it from the address bar, and asks the user to approve. The URI travels in the URL fragment so it never reaches any server. If you build this link yourself, the `encodeURIComponent` step is mandatory: an un-encoded URI truncates at its first `&` or `#`. Requires a wallet deployment that reads the fragment; older deployments land on the sessions page and ignore it.
+"Open web wallet" opens `<web-wallet-url>/dapp-sessions#qrlconnect=<encodeURIComponent(uri)>` in a new tab; the wallet reads the fragment, scrubs it from the address bar, and asks the user to approve. The URI travels in the URL fragment so it never reaches any server. If you build this link yourself, the `encodeURIComponent` step is mandatory: an un-encoded URI truncates at its first `&` or `#`. Requires a wallet deployment that reads the fragment; older deployments ignore it entirely (no pairing starts, and the URI lingers in the address bar), which is why the wallet ingress ships first.
 
 ## Theming
 
