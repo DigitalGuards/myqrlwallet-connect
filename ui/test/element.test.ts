@@ -106,6 +106,14 @@ describe('<qrl-pairing-modal>', () => {
     expect(cancelled).toHaveBeenCalledTimes(2);
   });
 
+  it('dispatches qrl-cancel when removed from the DOM', () => {
+    const el = mount({ uri: PAIR_URI });
+    const cancelled = vi.fn();
+    el.addEventListener('qrl-cancel', cancelled);
+    el.remove();
+    expect(cancelled).toHaveBeenCalledTimes(1);
+  });
+
   it('dispatches qrl-new-connection from the New connection action', () => {
     const el = mount({ uri: PAIR_URI });
     const rotated = vi.fn();
