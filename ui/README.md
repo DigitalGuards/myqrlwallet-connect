@@ -42,7 +42,8 @@ if (result === 'connected') {
 |---|---|---|
 | `fresh` | `false` | Start from `newConnection()` instead of the stored session URI |
 | `walletName` | `"MyQRLWallet"` | Dialog title branding |
-| `walletUrl` | `https://myqrlwallet.com` | Get-the-wallet link under the title (mobile + desktop downloads; the web wallet cannot pair from a plain browser tab) |
+| `walletUrl` | `https://myqrlwallet.com` | Get-the-wallet link under the title (app downloads; intentionally a different host than `webWalletUrl`) |
+| `webWalletUrl` | `https://qrlwallet.com` | Base URL for the "Open web wallet" action; pass `''` to hide it |
 | `container` | `document.body` | Mount point for the modal element |
 | `mobileRedirect` | `true` | On mobile browsers navigate straight to the `qrlconnect://` deep link instead of showing a QR |
 
@@ -63,7 +64,11 @@ defineQrlPairingModal();
 ></qrl-pairing-modal>
 ```
 
-Attributes: `uri`, `status`, `wallet-name`, `wallet-url`. Events (bubbling, composed): `qrl-new-connection` when the user asks for a fresh pairing, `qrl-cancel` when the dialog is dismissed (Cancel action, Escape, or backdrop click). The element renders nothing outside its own box: mount and remove it to show and hide.
+Attributes: `uri`, `status`, `wallet-name`, `wallet-url`, `web-wallet-url` (absent = default web wallet, empty string = hide the action). Events (bubbling, composed): `qrl-new-connection` when the user asks for a fresh pairing, `qrl-cancel` when the dialog is dismissed (Cancel action, Escape, or backdrop click). The element renders nothing outside its own box: mount and remove it to show and hide.
+
+### The web-wallet handoff link
+
+"Open web wallet" opens `<web-wallet-url>/dapp-sessions#qrlconnect=<encodeURIComponent(uri)>` in a new tab; the wallet reads the fragment, scrubs it from the address bar, and asks the user to approve. The URI travels in the URL fragment so it never reaches any server. If you build this link yourself, the `encodeURIComponent` step is mandatory: an un-encoded URI truncates at its first `&` or `#`. Requires a wallet deployment that reads the fragment; older deployments land on the sessions page and ignore it.
 
 ## Theming
 

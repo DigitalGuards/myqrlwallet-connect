@@ -31,6 +31,12 @@ export interface ShowPairingOptions {
   walletName?: string;
   /** Get-the-wallet link under the title. Default https://myqrlwallet.com. */
   walletUrl?: string;
+  /**
+   * Base URL for the "Open web wallet" handoff (the pairing URI travels in
+   * the URL fragment). Default https://qrlwallet.com; pass '' to hide the
+   * web-wallet action.
+   */
+  webWalletUrl?: string;
   /** Where to mount the modal. Default document.body. */
   container?: HTMLElement;
   /**
@@ -69,6 +75,9 @@ export async function showPairingModal(
   modal.setAttribute('uri', uri);
   if (options.walletName !== undefined) modal.setAttribute('wallet-name', options.walletName);
   if (options.walletUrl !== undefined) modal.setAttribute('wallet-url', options.walletUrl);
+  if (options.webWalletUrl !== undefined) {
+    modal.setAttribute('web-wallet-url', options.webWalletUrl);
+  }
   const container = options.container ?? document.body;
 
   return new Promise<PairingResult>((resolve) => {
