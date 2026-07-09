@@ -5,6 +5,7 @@ import {
   verifyMessage,
   verifyTypedData,
   bytesToHex,
+  getAppStoreUrl,
 } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
 
@@ -307,9 +308,7 @@ async function showQR(uri) {
 // Android, blocking alert on iOS) or the user dismissed the OS chooser.
 // Callers must treat false as "show fallback pairing UI", not as proof
 // the app is absent. Mirrors attemptWalletRedirect in the SDK.
-const APP_STORE_URL = /android/i.test(navigator.userAgent)
-  ? 'https://play.google.com/store/apps/details?id=com.chiefdg.myqrlwallet'
-  : 'https://apps.apple.com/app/myqrlwallet/id6742219498';
+const APP_STORE_URL = getAppStoreUrl();
 
 function tryOpenMobileDeepLink(uri, sourceLabel) {
   if (!qrl.isMobile()) return Promise.resolve(false);
@@ -319,11 +318,13 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
 
   return new Promise((resolve) => {
     let settled = false;
+    let timer;
     const finish = (opened) => {
       if (settled) return;
       settled = true;
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
+      clearTimeout(timer);
       resolve(opened);
     };
     const onVisibilityChange = () => {
@@ -339,7 +340,7 @@ function tryOpenMobileDeepLink(uri, sourceLabel) {
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', onPageHide);
 
-    setTimeout(() => {
+    timer = setTimeout(() => {
       log(`[Mobile] Nothing handled the deep link. Wallet app not installed? Get MyQRLWallet: ${APP_STORE_URL}`, 'error');
       finish(false);
     }, 1800);
@@ -549,7 +550,7 @@ btnSend.addEventListener('click', async () => {
   const qrlAmount = $('tx-value').value.trim();
 
   if (!to) { log('Enter a recipient address', 'error'); return; }
-  if (!qrlAmount || isNaN(Number(qrlAmount))) { log('Enter a valid amount', 'error'); return; }
+  if (!qrlAmount || isNaN(Number(qrlAmount)) || Number(qrlAmount) < 0) { log('Enter a valid non-negative amount', 'error'); return; }
 
   const weiValue = BigInt(Math.floor(Number(qrlAmount) * 1e18));
 
@@ -566,7 +567,7 @@ btnSend.addEventListener('click', async () => {
     // type "0x2" (its legacy gasPrice branch fails web3 gas validation).
     // Shape device-verified on quantaswap.io, 2026-07-09.
     let txParams;
-    if (activeProviderInfo && QRL_EXTENSION_RDNS.has(activeProviderInfo.rdns)) {
+    if (QRL_EXTENSION_RDNS.has(activeProviderInfo?.rdns)) {
       let gasLimit = 100000;
       try {
         const estimated = await activeProvider.request({

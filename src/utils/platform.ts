@@ -38,8 +38,15 @@ export function attemptWalletRedirect(uri: string, timeoutMs = 1800): Promise<bo
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return Promise.resolve(false);
   }
+  // Defense in depth: this helper exists for qrlconnect:// deep links only.
+  // Anything else (javascript:, data:, ...) resolves false without
+  // navigating, even though callers normally pass SDK-generated URIs.
+  if (!uri.trim().toLowerCase().startsWith('qrlconnect:')) {
+    return Promise.resolve(false);
+  }
   return new Promise((resolve) => {
     let settled = false;
+    let timer: number | undefined;
     const finish = (opened: boolean): void => {
       if (settled) return;
       settled = true;
@@ -56,9 +63,15 @@ export function attemptWalletRedirect(uri: string, timeoutMs = 1800): Promise<bo
     };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pagehide', onHide);
-    const timer = window.setTimeout(() => {
+    timer = window.setTimeout(() => {
       finish(false);
     }, timeoutMs);
-    window.location.href = uri;
+    try {
+      window.location.href = uri;
+    } catch {
+      // Navigation can throw synchronously (sandboxing, policy); settle
+      // instead of leaking the listeners and timer.
+      finish(false);
+    }
   });
 }
