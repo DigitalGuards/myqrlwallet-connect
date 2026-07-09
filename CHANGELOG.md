@@ -5,6 +5,16 @@ All notable changes to `@qrlwallet/connect` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-07-09
+
+### Added
+
+- **`attemptWalletRedirect(uri, timeoutMs?)`**: attempts a `qrlconnect://`
+  deep link and resolves `true` once the page hides (something handled it)
+  or `false` after the timeout. Heuristic by design: treat `false` as "show
+  fallback pairing UI", never as proof the app is absent. Only the
+  `qrlconnect:` scheme navigates; anything else resolves `false`.
+
 ## [3.1.0] - 2026-06-11
 
 Maturity hardening release: hardened TypeScript, a fenced crypto boundary, and
