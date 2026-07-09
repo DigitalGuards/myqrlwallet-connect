@@ -527,7 +527,7 @@ btnSend.addEventListener('click', async () => {
   if (!to) { log('Enter a recipient address', 'error'); return; }
   if (!qrlAmount || isNaN(Number(qrlAmount))) { log('Enter a valid amount', 'error'); return; }
 
-  const weiValue = '0x' + (BigInt(Math.floor(Number(qrlAmount) * 1e18))).toString(16);
+  const weiValue = BigInt(Math.floor(Number(qrlAmount) * 1e18));
 
   btnSend.disabled = true;
   btnSend.textContent = 'Waiting for approval...';
@@ -535,13 +535,43 @@ btnSend.addEventListener('click', async () => {
   log(`Sending ${qrlAmount} QRL to ${to}...`, 'info');
 
   try {
-    const txHash = await activeProvider.request({
-      method: 'qrl_sendTransaction',
-      params: [{
+    // The two transports need different tx shapes. The relay wallet
+    // estimates gas itself, so it gets the minimal hex shape. The extension
+    // feeds the dApp's fields straight into web3 signTransaction: it needs
+    // a numeric gas limit under both keys, a decimal-string value, and
+    // type "0x2" (its legacy gasPrice branch fails web3 gas validation).
+    // Shape device-verified on quantaswap.io, 2026-07-09.
+    let txParams;
+    if (activeProviderInfo?.rdns === QRL_EXTENSION_RDNS) {
+      let gasLimit = 100000;
+      try {
+        const estimated = await activeProvider.request({
+          method: 'qrl_estimateGas',
+          params: [{ from: connectedAccount, to, value: '0x' + weiValue.toString(16) }],
+        });
+        gasLimit = Number((BigInt(estimated) * 130n) / 100n);
+      } catch {
+        // estimation is best-effort; the fallback covers native transfers
+      }
+      txParams = {
         from: connectedAccount,
         to,
-        value: weiValue,
-      }],
+        value: weiValue.toString(),
+        gas: gasLimit,
+        gasLimit,
+        type: '0x2',
+      };
+    } else {
+      txParams = {
+        from: connectedAccount,
+        to,
+        value: '0x' + weiValue.toString(16),
+      };
+    }
+
+    const txHash = await activeProvider.request({
+      method: 'qrl_sendTransaction',
+      params: [txParams],
     });
 
     log(`Transaction confirmed: ${txHash}`, 'success');
