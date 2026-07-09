@@ -29,7 +29,7 @@ export interface ShowPairingOptions {
   fresh?: boolean;
   /** Shown in the dialog title. Default "MyQRLWallet". */
   walletName?: string;
-  /** Web wallet link under the title. Default https://qrlwallet.com. */
+  /** Get-the-wallet link under the title. Default https://myqrlwallet.com. */
   walletUrl?: string;
   /** Where to mount the modal. Default document.body. */
   container?: HTMLElement;
