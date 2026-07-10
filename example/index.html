@@ -166,6 +166,7 @@
       padding: 0.5rem 0;
     }
     .picker-hint { color: #9ca3af; font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .subtle { color: #9ca3af; font-size: 0.85rem; margin-bottom: 0.75rem; }
     .active-wallet { color: #9ca3af; font-size: 0.8rem; margin-top: 0.25rem; }
     input, select {
       width: 100%;
@@ -217,23 +218,16 @@
 
   <div class="intro">
     <p>
-      <strong>QRL Connect</strong> is a self-hosted, end-to-end encrypted protocol that lets any QRL dApp connect to the MyQRLWallet mobile and desktop apps. It fills the same role as WalletConnect, but is built for the Quantum Resistant Ledger: it handles <code>Q</code>-addresses natively and can migrate to post-quantum cryptography on our own timeline. The dApp ships an EIP-1193 provider; the wallet handles all signing and approval UI. A stateless relay server just shuttles ciphertext between them, so it never sees your keys or plaintext.
+      <strong>QRL Connect</strong> fills WalletConnect's role for the Quantum Resistant Ledger: a self-hosted relay with post-quantum encryption (ML-KEM-768) and native <code>Q</code>-addresses. The dApp gets a standard EIP-1193 provider; the wallet keeps all keys and approvals; the relay sees only ciphertext.
     </p>
     <p>
-      <strong>This page demonstrates the full flow end-to-end</strong>, so you can try the protocol without writing any code. The picker below uses <strong>EIP-6963</strong> wallet discovery, so any QRL wallet that announces itself shows up automatically - including:
+      Pick a wallet below (EIP-6963 discovery finds the QRL browser extension and MyQRLWallet automatically), then send a transaction, sign post-quantum messages, and watch the encrypted traffic in the event log.
     </p>
-    <ul>
-      <li>The official <strong>QRL Web3 Wallet</strong> browser extension (<code>theqrl.org</code>)</li>
-      <li><strong>MyQRLWallet (mobile and desktop)</strong> via <code>qrlconnect://</code> - deep link on mobile; QR to scan with a phone, "Open in MyQRLWallet", or copy the code into the desktop app - then the 3-step ML-KEM-768 handshake (SYN, SYNACK, ACK)</li>
-      <li>Once connected, call <code>qrl_sendTransaction</code>, <code>qrl_signMessage</code>, <code>qrl_signTypedData</code>, and read-only RPC methods through whichever wallet was picked</li>
-      <li>Watch every encrypted relay message in the event log below</li>
-    </ul>
     <p>
-      Get the SDK on npm: <code>npm install @qrlwallet/connect</code> &nbsp;&middot;&nbsp;
-      Source and docs:
-      <a href="https://github.com/DigitalGuards/myqrlwallet-connect" target="_blank" rel="noopener">github.com/DigitalGuards/myqrlwallet-connect</a>
-      &nbsp;&middot;&nbsp; Get the wallet:
-      <a href="https://qrlwallet.com" target="_blank" rel="noopener">qrlwallet.com</a>
+      <code>npm install @qrlwallet/connect</code> &nbsp;&middot;&nbsp;
+      <a href="https://github.com/DigitalGuards/myqrlwallet-connect" target="_blank" rel="noopener">Source and docs</a>
+      &nbsp;&middot;&nbsp;
+      <a href="https://qrlwallet.com" target="_blank" rel="noopener">Get the wallet</a>
     </p>
   </div>
 
@@ -246,7 +240,7 @@
     </div>
 
     <div id="wallet-picker">
-      <div class="picker-hint">Pick a wallet - both the QRL browser extension and MyQRLWallet (mobile and desktop) are detected automatically via EIP-6963.</div>
+      <div class="picker-hint">Detected wallets:</div>
       <div class="wallet-list" id="wallet-list"></div>
     </div>
 
@@ -281,7 +275,7 @@
   </div>
 
   <!-- Send Transaction Card -->
-  <div class="card" id="tx-card" class="hidden">
+  <div class="card" id="tx-card">
     <h2>2. Send Transaction</h2>
     <label>To Address</label>
     <input type="text" id="tx-to" placeholder="Q..." />
@@ -296,11 +290,7 @@
   <!-- Sign Message Card -->
   <div class="card" id="sign-card">
     <h2>3. Sign (Post-Quantum)</h2>
-    <p class="subtle">
-      Both methods use ML-DSA-87 (NIST FIPS 204) over a SHAKE256 digest.
-      The wallet returns <code>{ signature, publicKey, signer, digest, schemeVersion }</code>
-      and the dApp re-verifies it locally below.
-    </p>
+    <p class="subtle">ML-DSA-87 over a SHAKE256 digest; every signature is re-verified locally.</p>
 
     <label>Opaque-bytes message (qrl_signMessage)</label>
     <input type="text" id="sign-message" placeholder="Hello from QRL Connect!" value="Hello from QRL Connect!" />
