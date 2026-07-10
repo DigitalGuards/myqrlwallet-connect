@@ -307,6 +307,35 @@ qrl.on('statusChanged', (status) => {
   updateStatus(status);
 });
 
+// A same-device return redirect reloads this page, destroying the awaiting
+// promise; the SDK persists in-flight ids and replays the wallet's answer
+// here so the result is not lost.
+qrl.on('late_response', ({ method, result, error }) => {
+  if (activeProvider !== qrl) return;
+  const boxes = {
+    qrl_sendTransaction: txResult,
+    qrl_signMessage: signResult,
+    qrl_signTypedData: signTypedResult,
+  };
+  const box = boxes[method];
+  if (error) {
+    log(`[after reload] ${method} failed: ${error.message}`, 'error');
+    if (box) {
+      box.textContent = `Error: ${error.message}`;
+      box.classList.remove('hidden');
+    }
+    return;
+  }
+  log(`[after reload] ${method} completed while this page was reloading`, 'success');
+  if (!box) return;
+  box.style.whiteSpace = 'pre-wrap';
+  box.textContent =
+    typeof result === 'string'
+      ? `tx: ${result} (completed after page reload)`
+      : `${JSON.stringify(result, null, 2)}\n(completed after page reload)`;
+  box.classList.remove('hidden');
+});
+
 // ─── QR rendering helper ─────────────────────────────────
 async function showQR(uri) {
   qrContainer.classList.remove('hidden');

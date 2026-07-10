@@ -5,7 +5,12 @@
 
 import EventEmitter from 'eventemitter3';
 import { ConnectionManager } from './ConnectionManager.js';
-import { REQUEST_TIMEOUT_MS, RESTRICTED_METHODS, UNRESTRICTED_METHODS } from './config.js';
+import {
+  REQUEST_TIMEOUT_MS,
+  RESTRICTED_METHODS,
+  STORAGE_KEY_PREFIX,
+  UNRESTRICTED_METHODS,
+} from './config.js';
 import { log, warn } from './utils/logger.js';
 import { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
@@ -32,6 +37,25 @@ export const QRL_CONNECT_PROVIDER_INFO = {
 const EIP6963_ANNOUNCE_EVENT = 'eip6963:announceProvider';
 const EIP6963_REQUEST_EVENT = 'eip6963:requestProvider';
 
+/** Persisted record of a restricted request awaiting a wallet response. */
+interface InflightRecord {
+  id: string | number;
+  method: string;
+  ts: number;
+}
+
+function isRecordObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function parseInflightRecord(v: unknown): InflightRecord | null {
+  if (!isRecordObj(v)) return null;
+  const { id, method, ts } = v;
+  if (typeof id !== 'string' && typeof id !== 'number') return null;
+  if (typeof method !== 'string' || typeof ts !== 'number') return null;
+  return { id, method, ts };
+}
+
 export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private connectionManager: ConnectionManager;
   private pendingRequests = new Map<string | number, PendingRequest>();
@@ -43,6 +67,13 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private eip6963RequestListener: (() => void) | null = null;
   private resumeListener: (() => void) | null = null;
   private resumeDebounce: ReturnType<typeof setTimeout> | null = null;
+  // In-flight restricted requests persisted across page loads. A same-device
+  // approval bounces the user back via a URL open, which RELOADS the dApp
+  // page: the fresh context has no pendingRequests entry, so the response
+  // (relay-buffered or live) would be silently dropped. Orphans from the
+  // previous page are re-emitted as 'late_response' events instead.
+  private inflightKey: string;
+  private orphanedRequests = new Map<string | number, { method: string }>();
   // Random per-instance prefix keeps request ids unique across page loads.
   // A bare counter restarts at 1 on reload, and the relay buffers messages
   // for 5 minutes, so a stale buffered response could otherwise be matched
@@ -54,6 +85,10 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   constructor(options: QRLConnectOptions) {
     super();
     this.options = options;
+    this.inflightKey = `${options.storageKey ?? `${STORAGE_KEY_PREFIX}:session`}:inflight`;
+    for (const rec of this.readInflight()) {
+      this.orphanedRequests.set(rec.id, { method: rec.method });
+    }
 
     if (options.debug) {
       setDebug(true);
@@ -197,6 +232,19 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     this.connectionManager.on('jsonrpc_response', (response: JsonRpcResponse) => {
       const pending = this.pendingRequests.get(response.id);
       if (!pending) {
+        const orphan = this.orphanedRequests.get(response.id);
+        if (orphan) {
+          // Completed after the page reloaded (same-device return redirect):
+          // the original await is gone, so surface it as an event instead of
+          // dropping the wallet's answer on the floor.
+          this.settleInflight(response.id);
+          this.emit('late_response', {
+            id: response.id,
+            method: orphan.method,
+            ...(response.error ? { error: response.error } : { result: response.result }),
+          });
+          return;
+        }
         warn('Provider', `No pending request for id ${response.id}`);
         return;
       }
@@ -241,6 +289,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
         pending.reject(new Error('Session terminated by wallet'));
       }
       this.pendingRequests.clear();
+      this.clearAllInflight();
     });
   }
 
@@ -334,17 +383,25 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
         }
       }, REQUEST_TIMEOUT_MS);
 
-      // Wrap resolve/reject to clear timeout
+      // Wrap resolve/reject to clear timeout + the persisted in-flight record
       const originalResolve = pending.resolve;
       const originalReject = pending.reject;
       pending.resolve = (result) => {
         clearTimeout(timeout);
+        this.settleInflight(id);
         originalResolve(result);
       };
       pending.reject = (error) => {
         clearTimeout(timeout);
+        this.settleInflight(id);
         originalReject(error);
       };
+
+      // Persist approval-bound requests so a same-device return redirect
+      // (which reloads this page) cannot orphan the wallet's answer.
+      if (RESTRICTED_METHODS.has(method)) {
+        this.persistInflight(id, method);
+      }
 
       // Send to wallet
       const sent = this.connectionManager.sendJsonRpc({
@@ -395,6 +452,59 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       isMobileBrowser() &&
       !this.connectionManager.isWalletPresent()
     );
+  }
+
+  // ── In-flight persistence (survive the return-redirect reload) ──────
+
+  private readInflight(): InflightRecord[] {
+    if (typeof localStorage === 'undefined') return [];
+    try {
+      const raw = localStorage.getItem(this.inflightKey);
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const now = Date.now();
+      const records: InflightRecord[] = [];
+      for (const v of parsed) {
+        const rec = parseInflightRecord(v);
+        // Expire with the request timeout: past it the wallet's answer would
+        // have been rejected on the original page too.
+        if (rec && now - rec.ts <= REQUEST_TIMEOUT_MS) records.push(rec);
+      }
+      return records;
+    } catch {
+      return [];
+    }
+  }
+
+  private writeInflight(records: InflightRecord[]): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      if (records.length === 0) {
+        localStorage.removeItem(this.inflightKey);
+      } else {
+        localStorage.setItem(this.inflightKey, JSON.stringify(records));
+      }
+    } catch {
+      // Best effort: without storage the reload just loses the response,
+      // which is the pre-existing behavior.
+    }
+  }
+
+  private persistInflight(id: string | number, method: string): void {
+    const records = this.readInflight().filter((r) => r.id !== id);
+    records.push({ id, method, ts: Date.now() });
+    this.writeInflight(records);
+  }
+
+  private settleInflight(id: string | number): void {
+    this.orphanedRequests.delete(id);
+    this.writeInflight(this.readInflight().filter((r) => r.id !== id));
+  }
+
+  private clearAllInflight(): void {
+    this.orphanedRequests.clear();
+    this.writeInflight([]);
   }
 
   /**
@@ -475,6 +585,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       pending.reject(new Error('Connection reset'));
     }
     this.pendingRequests.clear();
+    this.clearAllInflight();
 
     // Await so the outbound TERMINATE has time to land on the relay
     // before we rotate the socket. Wallet side sees instant disconnect.
@@ -494,6 +605,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       pending.reject(new Error('Disconnected'));
     }
     this.pendingRequests.clear();
+    this.clearAllInflight();
     this.teardownResumeListeners();
     await this.connectionManager.disconnect();
   }
