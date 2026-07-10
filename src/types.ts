@@ -87,6 +87,19 @@ export enum ConnectionStatus {
   RECONNECTING = 'reconnecting',
 }
 
+/**
+ * A response for a request issued by a PREVIOUS page load. Same-device
+ * approvals bounce back via a URL open, which reloads the dApp page and
+ * destroys the awaiting promise; the SDK persists in-flight restricted
+ * request ids and surfaces their eventual responses through this event.
+ */
+export interface LateResponse {
+  id: string | number;
+  method: string;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
+
 /** EIP-1193 provider events */
 export interface ProviderEvents {
   connect: (info: { chainId: string }) => void;
@@ -95,6 +108,7 @@ export interface ProviderEvents {
   accountsChanged: (accounts: string[]) => void;
   message: (message: { type: string; data: unknown }) => void;
   statusChanged: (status: ConnectionStatus) => void;
+  late_response: (payload: LateResponse) => void;
 }
 
 /** JSON-RPC request */

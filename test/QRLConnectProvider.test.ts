@@ -189,7 +189,9 @@ describe('QRLConnectProvider', () => {
       mockCM.ensureChannelJoined.mockResolvedValue(true);
 
       const requestPromise = provider.request({ method: 'qrl_blockNumber' });
-      await vi.waitFor(() => { expect(mockCM.sendJsonRpc).toHaveBeenCalled(); });
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalled();
+      });
       expect(mockCM.ensureChannelJoined).toHaveBeenCalledOnce();
 
       const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
@@ -216,9 +218,7 @@ describe('QRLConnectProvider', () => {
       mockCM.paired = true;
       mockCM.accounts = ['Q1234'];
 
-      await expect(provider.request({ method: 'qrl_requestAccounts' })).resolves.toEqual([
-        'Q1234',
-      ]);
+      await expect(provider.request({ method: 'qrl_requestAccounts' })).resolves.toEqual(['Q1234']);
       expect(mockCM.ensureChannelJoined).not.toHaveBeenCalled();
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
@@ -248,7 +248,9 @@ describe('QRLConnectProvider', () => {
 
     /** Resolve the in-flight request so no pending timers leak across tests. */
     async function settleRequest(requestPromise: Promise<unknown>): Promise<void> {
-      await vi.waitFor(() => { expect(mockCM.sendJsonRpc).toHaveBeenCalled(); });
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalled();
+      });
       const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: null });
       await requestPromise;
@@ -260,11 +262,11 @@ describe('QRLConnectProvider', () => {
         params: [{ to: 'Q1234', value: '0x0' }],
       });
 
-      await vi.waitFor(() =>
-        { expect(platformMocks.attemptWalletRedirect).toHaveBeenCalledWith(
+      await vi.waitFor(() => {
+        expect(platformMocks.attemptWalletRedirect).toHaveBeenCalledWith(
           'qrlconnect://?wake=mock-channel'
-        ); }
-      );
+        );
+      });
       await settleRequest(requestPromise);
     });
 
@@ -313,13 +315,90 @@ describe('QRLConnectProvider', () => {
         method: 'qrl_sendTransaction',
         params: [{ to: 'Q1234', value: '0x0' }],
       });
-      await vi.waitFor(() => { expect(optOutCM.sendJsonRpc).toHaveBeenCalled(); });
+      await vi.waitFor(() => {
+        expect(optOutCM.sendJsonRpc).toHaveBeenCalled();
+      });
       const sentRequest = optOutCM.sendJsonRpc.mock.calls[0][0];
       optOutCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: null });
       await requestPromise;
 
       expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
       await optOutProvider.disconnect();
+    });
+  });
+
+  describe('late responses after a page reload', () => {
+    const INFLIGHT_KEY = '@qrlwallet/connect:session:inflight';
+    let store: Map<string, string>;
+
+    beforeEach(() => {
+      store = new Map();
+      vi.stubGlobal('localStorage', {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          store.set(k, v);
+        },
+        removeItem: (k: string) => {
+          store.delete(k);
+        },
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('persists restricted in-flight ids and emits late_response on a reloaded provider', async () => {
+      const firstProvider = new QRLConnectProvider(defaultOptions);
+      const firstCM = latestMockCM;
+      firstCM.status = ConnectionStatus.CONNECTED;
+      const requestPromise = firstProvider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1', value: '0x0' }],
+      });
+      const sentRequest = firstCM.sendJsonRpc.mock.calls[0][0];
+      expect(store.has(INFLIGHT_KEY)).toBe(true);
+
+      // "Reload": a fresh provider over the same storage, no pending map.
+      const reloaded = new QRLConnectProvider(defaultOptions);
+      const reloadedCM = latestMockCM;
+      const late = vi.fn();
+      reloaded.on('late_response', late);
+
+      reloadedCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: sentRequest.id,
+        result: '0xhash',
+      });
+
+      expect(late).toHaveBeenCalledWith({
+        id: sentRequest.id,
+        method: 'qrl_sendTransaction',
+        result: '0xhash',
+      });
+      // Consumed: storage cleared, no double emission on a further response.
+      expect(store.has(INFLIGHT_KEY)).toBe(false);
+
+      await reloaded.disconnect();
+      await firstProvider.disconnect();
+      await expect(requestPromise).rejects.toThrow('Disconnected');
+    });
+
+    it('clears the persisted record when the original request settles normally', async () => {
+      const p = new QRLConnectProvider(defaultOptions);
+      const cm = latestMockCM;
+      cm.status = ConnectionStatus.CONNECTED;
+      const requestPromise = p.request({
+        method: 'qrl_signMessage',
+        params: ['Q1', '0x00'],
+      });
+      const sentRequest = cm.sendJsonRpc.mock.calls[0][0];
+      expect(store.has(INFLIGHT_KEY)).toBe(true);
+
+      cm.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: { ok: true } });
+      await requestPromise;
+      expect(store.has(INFLIGHT_KEY)).toBe(false);
+      await p.disconnect();
     });
   });
 
