@@ -4,59 +4,131 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>QRL Connect Test dApp</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
   <style>
+    /* Quantum Observatory tokens, kept in sync with zondscan's globals.css */
+    :root {
+      --bg: #0b0d13;
+      --bg-2: #12151d;
+      --bg-3: #0e1118;
+      --surface: rgba(255, 255, 255, 0.03);
+      --surface-2: rgba(255, 255, 255, 0.055);
+      --border: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(255, 255, 255, 0.16);
+      --accent: #ffa729;
+      --accent-hover: #ffbc57;
+      --quantum: #2ee6c8;
+      --text: #e9ecf2;
+      --text-2: #9aa3b2;
+      --muted: #79839b;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --error: #f87171;
+      --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+      --mono: 'IBM Plex Mono', ui-monospace, monospace;
+      --display: 'Chakra Petch', var(--sans);
+      --shadow-card: inset 0 1px 0 0 rgba(255, 255, 255, 0.04), 0 12px 32px -16px rgba(0, 0, 0, 0.5);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #1a1a1a;
-      color: #e0e0e0;
+      font-family: var(--sans);
+      background-color: var(--bg);
+      background-image: linear-gradient(180deg, #0c0e15 0%, #0b0d13 40%, #0a0c11 100%);
+      background-attachment: fixed;
+      color: var(--text-2);
       min-height: 100vh;
       padding: 2rem;
+      -webkit-font-smoothing: antialiased;
     }
-    h1 { color: #ffa729; margin-bottom: 0.25rem; }
-    .subtitle { color: #9ca3af; margin-bottom: 1.25rem; font-size: 0.9rem; }
+    /* Atmosphere: amber glow answering a quantum-teal one, like the explorer */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse 70% 45% at 12% -8%, rgba(255, 167, 41, 0.075), transparent 62%),
+        radial-gradient(ellipse 55% 40% at 92% 112%, rgba(46, 230, 200, 0.055), transparent 62%),
+        radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+      background-size: auto, auto, 26px 26px;
+      mask-image: linear-gradient(180deg, black, black 60%, rgba(0,0,0,0.4));
+      -webkit-mask-image: linear-gradient(180deg, black, black 60%, rgba(0,0,0,0.4));
+    }
+    ::selection { background: rgba(255, 167, 41, 0.28); color: #fff; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--display);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    h1 .accent { color: var(--accent); }
+    .subtitle { color: var(--text-2); margin-bottom: 1.5rem; font-size: 0.9rem; }
     .intro {
       max-width: 720px;
       margin-bottom: 2rem;
-      background: linear-gradient(to bottom right, #2d2d2d, #1f1f1f);
-      border: 1px solid #2d2d2d;
-      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
+      border: 1px solid var(--border);
+      border-radius: 16px;
       padding: 1.25rem 1.5rem;
-      color: #d1d5db;
+      color: var(--text-2);
       font-size: 0.92rem;
       line-height: 1.55;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-card);
     }
     .intro p { margin-bottom: 0.75rem; }
     .intro p:last-child { margin-bottom: 0; }
-    .intro strong { color: #e0e0e0; }
+    .intro strong { color: var(--text); }
     .intro code {
-      background: #1a1a1a;
-      border: 1px solid #2d2d2d;
+      background: rgba(14, 17, 24, 0.8);
+      border: 1px solid var(--border);
       border-radius: 4px;
       padding: 0.05rem 0.35rem;
+      font-family: var(--mono);
       font-size: 0.85rem;
-      color: #ffa729;
+      color: var(--accent);
     }
-    .intro a { color: #ffa729; text-decoration: none; }
-    .intro a:hover { text-decoration: underline; }
+    .intro a { color: var(--accent); text-decoration: none; transition: color 0.15s; }
+    .intro a:hover { color: var(--accent-hover); text-decoration: underline; }
     .intro ul { margin: 0.25rem 0 0 1.25rem; }
     .intro li { margin-bottom: 0.25rem; }
     .card {
-      background: linear-gradient(to bottom right, #2d2d2d, #1f1f1f);
-      border: 1px solid #2d2d2d;
-      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
+      border: 1px solid var(--border);
+      border-radius: 16px;
       padding: 1.5rem;
       margin-bottom: 1.5rem;
       max-width: 480px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-card);
+      transition: border-color 0.3s;
     }
-    .card h2 { color: #ffa729; font-size: 1.1rem; margin-bottom: 1rem; }
+    .card:hover { border-color: var(--border-hover); }
+    .card h2 {
+      font-family: var(--display);
+      font-weight: 600;
+      color: var(--text);
+      font-size: 1.05rem;
+      margin-bottom: 1rem;
+    }
     .status-row {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       margin-bottom: 0.75rem;
+      color: var(--text);
     }
     .dot {
       width: 10px;
@@ -64,12 +136,23 @@
       border-radius: 50%;
       flex-shrink: 0;
     }
-    .dot.red { background: #ef4444; }
-    .dot.yellow { background: #eab308; }
-    .dot.green { background: #22c55e; }
+    .dot.red { background: var(--error); }
+    .dot.yellow { background: var(--warning); }
+    .dot.green {
+      background: var(--quantum);
+      box-shadow: 0 0 10px rgba(46, 230, 200, 0.5);
+      animation: pulse-dot 2.4s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(46, 230, 200, 0.45); }
+      50% { box-shadow: 0 0 0 5px rgba(46, 230, 200, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .dot.green { animation: none; }
+    }
     #qr-container {
       background: #fff;
-      border-radius: 8px;
+      border-radius: 12px;
       padding: 1rem;
       display: inline-block;
       margin: 1rem 0;
@@ -77,54 +160,57 @@
     #qr-container canvas { display: block; }
     #qr-container.hidden { display: none; }
     .uri-box {
-      background: #1a1a1a;
-      border: 1px solid #2d2d2d;
-      border-radius: 6px;
+      background: rgba(14, 17, 24, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 0.75rem;
-      font-family: monospace;
+      font-family: var(--mono);
       font-size: 0.75rem;
       word-break: break-all;
-      color: #9ca3af;
+      color: var(--text-2);
       margin: 0.75rem 0;
       max-height: 80px;
       overflow-y: auto;
     }
     button {
-      background: #ffa729;
-      color: #1a1a1a;
-      border: none;
-      border-radius: 8px;
+      font-family: var(--sans);
+      background: var(--accent);
+      color: var(--bg);
+      border: 1px solid var(--accent);
+      border-radius: 10px;
       padding: 0.7rem 1.5rem;
       font-size: 0.95rem;
       font-weight: 600;
       cursor: pointer;
-      transition: opacity 0.15s, background 0.15s;
+      transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, opacity 0.2s;
     }
-    button:hover { background: #ffb85c; }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button:hover { background: var(--accent-hover); border-color: var(--accent-hover); box-shadow: 0 0 28px -6px rgba(255, 167, 41, 0.4); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
     button.outline {
       background: transparent;
-      border: 1px solid #ffa729;
-      color: #ffa729;
+      border: 1px solid var(--border);
+      color: var(--text);
     }
-    button.outline:hover { background: rgba(255, 167, 41, 0.1); }
+    button.outline:hover { background: var(--surface-2); border-color: rgba(255, 167, 41, 0.5); box-shadow: none; }
     button.danger {
-      background: #ef4444;
-      color: #fff;
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.25);
+      color: var(--error);
     }
-    button.danger:hover { background: #f87171; }
+    button.danger:hover { background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.45); box-shadow: none; }
     a.btn-link {
-      background: #ffa729;
-      color: #1a1a1a;
-      border-radius: 8px;
+      font-family: var(--sans);
+      background: var(--accent);
+      color: var(--bg);
+      border-radius: 10px;
       padding: 0.7rem 1.5rem;
       font-size: 0.95rem;
       font-weight: 600;
       text-decoration: none;
       display: inline-block;
-      transition: background 0.15s;
+      transition: background 0.2s, box-shadow 0.2s;
     }
-    a.btn-link:hover { background: #ffb85c; }
+    a.btn-link:hover { background: var(--accent-hover); box-shadow: 0 0 28px -6px rgba(255, 167, 41, 0.4); }
     .btn-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
     .wallet-list {
       display: flex;
@@ -137,19 +223,19 @@
       align-items: center;
       gap: 0.75rem;
       width: 100%;
-      background: #1a1a1a;
-      border: 1px solid #2d2d2d;
-      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
       padding: 0.6rem 0.75rem;
-      color: #e0e0e0;
+      color: var(--text);
       font-size: 0.9rem;
       cursor: pointer;
       text-align: left;
-      transition: border-color 0.15s, background 0.15s;
+      transition: border-color 0.2s, background 0.2s;
     }
     .wallet-row:hover {
-      border-color: #ffa729;
-      background: #232323;
+      border-color: rgba(255, 167, 41, 0.5);
+      background: var(--surface-2);
     }
     .wallet-icon {
       width: 28px;
@@ -158,63 +244,71 @@
       flex-shrink: 0;
       background: #000;
     }
-    .wallet-name { flex: 1; font-weight: 600; color: #e0e0e0; }
-    .wallet-rdns { font-family: monospace; font-size: 0.7rem; color: #9ca3af; }
+    .wallet-name { flex: 1; font-weight: 600; color: var(--text); }
+    .wallet-rdns { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); }
     .wallet-empty {
-      color: #9ca3af;
+      color: var(--text-2);
       font-size: 0.85rem;
       padding: 0.5rem 0;
     }
-    .picker-hint { color: #9ca3af; font-size: 0.85rem; margin-bottom: 0.5rem; }
-    .subtle { color: #9ca3af; font-size: 0.85rem; margin-bottom: 0.75rem; }
-    .active-wallet { color: #9ca3af; font-size: 0.8rem; margin-top: 0.25rem; }
-    input, select {
+    .picker-hint { color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 0.5rem; }
+    .subtle { color: var(--text-2); font-size: 0.85rem; margin-bottom: 0.75rem; }
+    .active-wallet { color: var(--muted); font-size: 0.8rem; margin-top: 0.25rem; }
+    input, select, textarea {
       width: 100%;
-      background: #1a1a1a;
-      border: 1px solid #2d2d2d;
-      border-radius: 6px;
-      color: #e0e0e0;
+      background: rgba(14, 17, 24, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
       padding: 0.6rem 0.75rem;
+      font-family: var(--sans);
       font-size: 0.9rem;
       margin-bottom: 0.75rem;
+      transition: border-color 0.2s;
     }
-    input:focus, select:focus { outline: none; border-color: #ffa729; }
-    label { display: block; font-size: 0.8rem; color: #9ca3af; margin-bottom: 0.25rem; }
-    .info { font-family: monospace; font-size: 0.85rem; color: #ffa729; word-break: break-all; }
+    input::placeholder, textarea::placeholder { color: var(--muted); }
+    input:hover, select:hover, textarea:hover { border-color: var(--border-hover); }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    label { display: block; font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.35rem; }
+    .info { font-family: var(--mono); font-size: 0.85rem; color: var(--accent); word-break: break-all; }
     .log-area {
-      background: #1a1a1a;
-      border: 1px solid #2d2d2d;
-      border-radius: 6px;
+      background: rgba(14, 17, 24, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 0.75rem;
-      font-family: monospace;
+      font-family: var(--mono);
       font-size: 0.75rem;
       max-height: 200px;
       overflow-y: auto;
-      color: #9ca3af;
+      color: var(--text-2);
       line-height: 1.6;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
     }
-    .log-area .log-entry { border-bottom: 1px solid #2d2d2d; padding: 2px 0; }
+    .log-area .log-entry { border-bottom: 1px solid var(--border); padding: 2px 0; }
     .log-area .log-entry:last-child { border-bottom: none; }
-    .log-entry.error { color: #ef4444; }
-    .log-entry.success { color: #22c55e; }
-    .log-entry.info { color: #ffa729; }
+    .log-entry.error { color: var(--error); }
+    .log-entry.success { color: var(--success); }
+    .log-entry.info { color: var(--accent); }
     .result-box {
-      background: #1a1a1a;
-      border: 1px solid #22c55e;
-      border-radius: 6px;
+      background: rgba(52, 211, 153, 0.08);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      border-radius: 8px;
       padding: 0.75rem;
       margin-top: 0.75rem;
-      font-family: monospace;
+      font-family: var(--mono);
       font-size: 0.8rem;
       word-break: break-all;
+      color: var(--text);
     }
     .hidden { display: none !important; }
   </style>
 </head>
 <body>
 
-  <h1>QRL Connect Test dApp</h1>
-  <p class="subtitle">Live demo of <code>@qrlwallet/connect</code>. Pair a dApp with MyQRLWallet over an end-to-end encrypted channel.</p>
+  <p class="eyebrow">MyQRLWallet Ecosystem · Live Demo</p>
+  <h1>QRL <span class="accent">Connect</span> Test dApp</h1>
+  <p class="subtitle">Live demo of <code style="font-family: var(--mono); color: var(--accent);">@qrlwallet/connect</code>. Pair a dApp with MyQRLWallet over an end-to-end encrypted channel.</p>
 
   <div class="intro">
     <p>
@@ -227,7 +321,7 @@
       <code>npm install @qrlwallet/connect</code> &nbsp;&middot;&nbsp;
       <a href="https://github.com/DigitalGuards/myqrlwallet-connect" target="_blank" rel="noopener">Source and docs</a>
       &nbsp;&middot;&nbsp;
-      <a href="https://qrlwallet.com" target="_blank" rel="noopener">Get the wallet</a>
+      <a href="https://myqrlwallet.com" target="_blank" rel="noopener">Get the wallet</a>
     </p>
   </div>
 
@@ -240,7 +334,7 @@
     </div>
 
     <div id="wallet-picker">
-      <div class="picker-hint">Detected wallets:</div>
+      <div class="picker-hint">Detected wallets</div>
       <div class="wallet-list" id="wallet-list"></div>
     </div>
 
@@ -304,7 +398,7 @@
       id="sign-typed-payload"
       rows="14"
       spellcheck="false"
-      style="font-family: monospace; font-size: 0.85rem; width: 100%; resize: vertical;"
+      style="font-family: var(--mono); font-size: 0.85rem; width: 100%; resize: vertical;"
     ></textarea>
     <div class="btn-row">
       <button id="btn-sign-typed" disabled>Sign Typed Data</button>
