@@ -3,3 +3,5 @@ dist/
 *.tsbuildinfo
 .env
 metamask-sdk/
+# Local operating notes; never tracked (private infrastructure detail)
+CLAUDE.md
