@@ -1,20 +1,65 @@
 /**
  * Stateless verifiers for the two PQ signing schemes. The SDK exposes these
  * so a dApp can re-verify the rich response object returned by the wallet
- * without round-tripping back through the relay. They never touch a secret
- * key and never derive an address; that's the wallet's job.
+ * without round-tripping back through the relay. The lower-level
+ * verifyMessageSignature / verifyTypedDataSignature prove only that a
+ * supplied public key made the signature. Authorization decisions should use
+ * the ForSigner variants, which also bind that key to the expected
+ * current-format address.
  */
 
-import { mldsaVerify } from '../crypto/primitives.js';
+import { mldsaVerify, shake256Digest } from '../crypto/primitives.js';
+import { isCurrentQrlAddress } from '../config.js';
 import { SCHEME_TAG_MSG, SCHEME_TAG_TYPED } from './ctx.js';
 import { computeMessageDigest } from './messageDigest.js';
 import { computeTypedDataDigest, type TypedDataPayload } from './typedData.js';
-import { hexToBytes } from './bytes.js';
+import { bytesToHex, concatBytes, hexToBytes } from './bytes.js';
+
+const ML_DSA_87_DESCRIPTOR_TYPE = 1;
+export const ML_DSA_DESCRIPTOR_BYTES = 3;
+export const ML_DSA_87_PUBLIC_KEY_BYTES = 2592;
+export const ML_DSA_87_SIGNATURE_BYTES = 4627;
+const CURRENT_QRL_ADDRESS_BYTES = 20;
 
 function bytesOrHex(v: Uint8Array | string): Uint8Array {
-  if (v instanceof Uint8Array) return v;
+  if (v instanceof Uint8Array) return new Uint8Array(v);
   if (typeof v === 'string') return hexToBytes(v);
   throw new Error('expected Uint8Array or 0x-hex string');
+}
+
+function fixedBytesOrHex(
+  value: Uint8Array | string,
+  expectedBytes: number
+): Uint8Array | undefined {
+  if (value instanceof Uint8Array) {
+    return value.length === expectedBytes ? new Uint8Array(value) : undefined;
+  }
+  if (
+    typeof value !== 'string' ||
+    value.length !== expectedBytes * 2 + 2 ||
+    !/^0x[0-9a-fA-F]+$/.test(value)
+  ) {
+    return undefined;
+  }
+  return hexToBytes(value);
+}
+
+function verifyMessageBytes(
+  signature: Uint8Array,
+  publicKey: Uint8Array,
+  messageBytes: Uint8Array
+): boolean {
+  const digest = computeMessageDigest(messageBytes);
+  return mldsaVerify(signature, digest, publicKey, SCHEME_TAG_MSG);
+}
+
+function verifyTypedDataBytes(
+  signature: Uint8Array,
+  publicKey: Uint8Array,
+  payload: TypedDataPayload
+): boolean {
+  const digest = computeTypedDataDigest(payload);
+  return mldsaVerify(signature, digest, publicKey, SCHEME_TAG_TYPED);
 }
 
 export interface VerifyMessageParams {
@@ -24,17 +69,22 @@ export interface VerifyMessageParams {
   messageBytes: Uint8Array | string;
 }
 
-export function verifyMessage({
+/**
+ * Verify against an explicitly supplied ML-DSA public key only. This does not
+ * prove that the key derives the signer claimed by a wallet response. Use
+ * verifyMessageForSigner for authentication or authorization decisions.
+ */
+export function verifyMessageSignature({
   signature,
   publicKey,
   messageBytes,
 }: VerifyMessageParams): boolean {
   try {
-    const sig = bytesOrHex(signature);
-    const pk = bytesOrHex(publicKey);
+    const sig = fixedBytesOrHex(signature, ML_DSA_87_SIGNATURE_BYTES);
+    const pk = fixedBytesOrHex(publicKey, ML_DSA_87_PUBLIC_KEY_BYTES);
+    if (!sig || !pk) return false;
     const msg = bytesOrHex(messageBytes);
-    const digest = computeMessageDigest(msg);
-    return mldsaVerify(sig, digest, pk, SCHEME_TAG_MSG);
+    return verifyMessageBytes(sig, pk, msg);
   } catch {
     return false;
   }
@@ -46,13 +96,116 @@ export interface VerifyTypedDataParams {
   payload: TypedDataPayload;
 }
 
-export function verifyTypedData({ signature, publicKey, payload }: VerifyTypedDataParams): boolean {
+/**
+ * Verify against an explicitly supplied ML-DSA public key only. This does not
+ * bind that key to a Q-address. Use verifyTypedDataForSigner when signer
+ * identity matters.
+ */
+export function verifyTypedDataSignature({
+  signature,
+  publicKey,
+  payload,
+}: VerifyTypedDataParams): boolean {
   try {
-    const sig = bytesOrHex(signature);
-    const pk = bytesOrHex(publicKey);
-    const digest = computeTypedDataDigest(payload);
-    return mldsaVerify(sig, digest, pk, SCHEME_TAG_TYPED);
+    const sig = fixedBytesOrHex(signature, ML_DSA_87_SIGNATURE_BYTES);
+    const pk = fixedBytesOrHex(publicKey, ML_DSA_87_PUBLIC_KEY_BYTES);
+    if (!sig || !pk) return false;
+    return verifyTypedDataBytes(sig, pk, payload);
   } catch {
     return false;
   }
+}
+
+function publicKeyMatchesSigner(
+  expectedSigner: string,
+  descriptor: Uint8Array,
+  publicKey: Uint8Array
+): boolean {
+  if (!isCurrentQrlAddress(expectedSigner)) return false;
+  if (descriptor[0] !== ML_DSA_87_DESCRIPTOR_TYPE) {
+    return false;
+  }
+  const addressBytes = shake256Digest(
+    concatBytes(descriptor, publicKey),
+    CURRENT_QRL_ADDRESS_BYTES
+  );
+  const derived = `Q${bytesToHex(addressBytes).slice(2)}`;
+  return derived.toLowerCase() === expectedSigner.toLowerCase();
+}
+
+export interface VerifyMessageForSignerParams extends VerifyMessageParams {
+  /** Current Q + 40 hex address expected by the dApp. */
+  expectedSigner: string;
+  /** Exact 3-byte wallet descriptor. Missing legacy values fail closed. */
+  descriptor?: Uint8Array | string | undefined;
+}
+
+/** Verify both the message signature and public-key-to-signer binding. */
+export function verifyMessageForSigner({
+  expectedSigner,
+  descriptor,
+  signature,
+  publicKey,
+  messageBytes,
+}: VerifyMessageForSignerParams): boolean {
+  try {
+    if (descriptor === undefined) return false;
+    const descriptorBytes = fixedBytesOrHex(descriptor, ML_DSA_DESCRIPTOR_BYTES);
+    const publicKeyBytes = fixedBytesOrHex(publicKey, ML_DSA_87_PUBLIC_KEY_BYTES);
+    const signatureBytes = fixedBytesOrHex(signature, ML_DSA_87_SIGNATURE_BYTES);
+    if (!descriptorBytes || !publicKeyBytes || !signatureBytes) return false;
+    const message = bytesOrHex(messageBytes);
+    return (
+      publicKeyMatchesSigner(expectedSigner, descriptorBytes, publicKeyBytes) &&
+      verifyMessageBytes(signatureBytes, publicKeyBytes, message)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export interface VerifyTypedDataForSignerParams extends VerifyTypedDataParams {
+  /** Current Q + 40 hex address expected by the dApp. */
+  expectedSigner: string;
+  /** Exact 3-byte wallet descriptor. Missing legacy values fail closed. */
+  descriptor?: Uint8Array | string | undefined;
+}
+
+/** Verify both the typed-data signature and public-key-to-signer binding. */
+export function verifyTypedDataForSigner({
+  expectedSigner,
+  descriptor,
+  signature,
+  publicKey,
+  payload,
+}: VerifyTypedDataForSignerParams): boolean {
+  try {
+    if (descriptor === undefined) return false;
+    const descriptorBytes = fixedBytesOrHex(descriptor, ML_DSA_DESCRIPTOR_BYTES);
+    const publicKeyBytes = fixedBytesOrHex(publicKey, ML_DSA_87_PUBLIC_KEY_BYTES);
+    const signatureBytes = fixedBytesOrHex(signature, ML_DSA_87_SIGNATURE_BYTES);
+    if (!descriptorBytes || !publicKeyBytes || !signatureBytes) return false;
+    return (
+      publicKeyMatchesSigner(expectedSigner, descriptorBytes, publicKeyBytes) &&
+      verifyTypedDataBytes(signatureBytes, publicKeyBytes, payload)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @deprecated Use verifyMessageSignature for a key-only check, or
+ * verifyMessageForSigner when signer identity matters.
+ */
+export function verifyMessage(params: VerifyMessageParams): boolean {
+  return verifyMessageSignature(params);
+}
+
+/**
+ * @deprecated Use verifyTypedDataSignature for a key-only check, or
+ * verifyTypedDataForSigner when signer identity matters.
+ */
+export function verifyTypedData(params: VerifyTypedDataParams): boolean {
+  return verifyTypedDataSignature(params);
 }

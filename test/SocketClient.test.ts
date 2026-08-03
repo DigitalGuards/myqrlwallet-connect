@@ -13,7 +13,12 @@ vi.mock('socket.io-client', () => ({
   io: vi.fn(() => mockSocket),
 }));
 
-import { SocketClient } from '../src/SocketClient.js';
+import {
+  MAX_JOIN_BUFFERED_MESSAGES,
+  MESSAGE_ACK_TIMEOUT_MS,
+  PENDING_JOIN_TIMEOUT_MS,
+  SocketClient,
+} from '../src/SocketClient.js';
 
 describe('SocketClient', () => {
   let client: SocketClient;
@@ -34,6 +39,17 @@ describe('SocketClient', () => {
     it('should initialize with correct properties', () => {
       expect(client.isConnected()).toBe(false);
       expect(client.getChannelId()).toBeNull();
+    });
+
+    it('accepts only an exact canonical ML-KEM public key on dApp joins', () => {
+      const valid = btoa(String.fromCharCode(...new Uint8Array(1184)));
+      expect(() => { client.setPublicKey(valid); }).not.toThrow();
+      expect(() => { client.setPublicKey('AA=='); }).toThrow('1184 bytes');
+      expect(() => { client.setPublicKey(`${valid}AAAA`); }).toThrow('1184 bytes');
+
+      const wallet = new SocketClient('https://relay.test.com', 'wallet');
+      expect(() => { wallet.setPublicKey(valid); }).toThrow('only valid for dApp');
+      wallet.disconnect();
     });
   });
 
@@ -125,6 +141,10 @@ describe('SocketClient', () => {
         event: 'join',
         clientType: 'wallet',
       });
+
+      handler?.({ event: 'close', clientType: 'dapp' });
+      handler?.({ event: 'unknown', clientType: 'wallet' });
+      expect(participantsSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -199,6 +219,55 @@ describe('SocketClient', () => {
       expect(result.bufferedMessages).toEqual(buffered);
     });
 
+    it('should reject join acknowledgements with oversized buffered or participant lists', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({
+              success: true,
+              bufferedMessages: new Array(MAX_JOIN_BUFFERED_MESSAGES + 1).fill({}),
+            });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/buffered message list/);
+      expect(client.getChannelId()).toBeNull();
+
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, participants: ['wallet', 'wallet'] });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/participant list/);
+      expect(client.getChannelId()).toBeNull();
+    });
+
+    it('should reject malformed public-key and termination fields in a join acknowledgement', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, channelPublicKey: 'AA==' });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/channel public key/);
+
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, terminated: 'yes' });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/termination status/);
+    });
+
     it('should reject on join failure', async () => {
       client.connect();
       mockSocket.connected = true;
@@ -212,6 +281,7 @@ describe('SocketClient', () => {
       );
 
       await expect(client.joinChannel('test-channel')).rejects.toThrow('Channel is full');
+      expect(client.getChannelId()).toBeNull();
     });
 
     it('should reject deferred join when connect-time join fails', async () => {
@@ -250,9 +320,74 @@ describe('SocketClient', () => {
         await vi.advanceTimersByTimeAsync(21000);
         const err = await caught;
         expect((err as Error).message).toMatch(/timed out/i);
+        expect(client.getChannelId()).toBeNull();
+        expect(mockSocket.disconnect).toHaveBeenCalledOnce();
+
+        const connectHandler = mockSocket.on.mock.calls.find(
+          (call: unknown[]) => call[0] === 'connect'
+        )?.[1] as Function;
+        mockSocket.connected = true;
+        connectHandler?.();
+        expect(mockSocket.emit).not.toHaveBeenCalledWith(
+          'join_channel',
+          expect.anything(),
+          expect.anything()
+        );
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('should time out when a connected relay never acknowledges the join', async () => {
+      vi.useFakeTimers();
+      try {
+        client.connect();
+        mockSocket.connected = true;
+        mockSocket.emit.mockImplementation(() => undefined);
+
+        const join = client.joinChannel('test-channel');
+        const caught = join.catch((error) => error);
+        await vi.advanceTimersByTimeAsync(PENDING_JOIN_TIMEOUT_MS + 1);
+
+        await expect(caught).resolves.toMatchObject({
+          message: expect.stringMatching(/joinChannel acknowledgement timed out/i),
+        });
+        expect(client.getChannelId()).toBeNull();
+        expect(mockSocket.emit).toHaveBeenCalledWith('leave_channel', {
+          channelId: 'test-channel',
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should reject a connected join immediately when the channel is abandoned', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(() => undefined);
+
+      const join = client.joinChannel('test-channel');
+      const caught = join.catch((error) => error);
+      client.leaveChannel();
+
+      await expect(caught).resolves.toMatchObject({
+        message: expect.stringMatching(/Channel left before join completed/i),
+      });
+    });
+
+    it('should reject and abandon malformed relay join acknowledgements', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) callback(undefined);
+        }
+      );
+
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(
+        'malformed join acknowledgement'
+      );
+      expect(client.getChannelId()).toBeNull();
     });
 
     it('should clear the watchdog when leaveChannel is called before the socket connects', async () => {
@@ -317,6 +452,76 @@ describe('SocketClient', () => {
         client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
       ).rejects.toThrow('Rate limit exceeded');
     });
+
+    it.each([
+      ['non-object', true],
+      ['truthy success', { success: 1, buffered: false }],
+      ['missing buffered', { success: true }],
+      ['untyped buffered', { success: true, buffered: 'false' }],
+    ])('rejects a malformed relay acknowledgement: %s', async (_name, response) => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'message' && callback) callback(response);
+        }
+      );
+
+      await expect(
+        client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
+      ).rejects.toThrow();
+    });
+
+    it('bounds relay-controlled send errors', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'message' && callback) {
+            callback({ success: false, error: 'x'.repeat(4096) });
+          }
+        }
+      );
+
+      const error = await client
+        .sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
+        .catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message.length).toBe(512);
+    });
+
+    it('should reject after a bounded wait when the relay never acknowledges', async () => {
+      vi.useFakeTimers();
+      try {
+        client.connect();
+        mockSocket.connected = true;
+        mockSocket.emit.mockImplementation(() => undefined);
+
+        const send = client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' });
+        const caught = send.catch((error) => error);
+        await vi.advanceTimersByTimeAsync(MESSAGE_ACK_TIMEOUT_MS + 1);
+
+        await expect(caught).resolves.toMatchObject({
+          message: expect.stringMatching(/acknowledgement timed out/i),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should reject an unacknowledged send immediately on disconnect', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(() => undefined);
+
+      const send = client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' });
+      const caught = send.catch((error) => error);
+      client.disconnect();
+
+      await expect(caught).resolves.toMatchObject({
+        message: expect.stringMatching(/disconnected before relay acknowledgement/i),
+      });
+    });
   });
 
   describe('leaveChannel', () => {
@@ -368,11 +573,11 @@ describe('SocketClient', () => {
       await joinChan('chan-close-1');
       mockSocket.emit.mockImplementation(
         (_event: string, _payload: unknown, ack?: (r: unknown) => void) => {
-          if (ack) ack({ success: true });
+          if (ack) ack({ success: true, terminated: true });
         }
       );
 
-      await client.closeChannel();
+      await expect(client.closeChannel()).resolves.toBe(true);
 
       expect(mockSocket.emit).toHaveBeenCalledWith(
         'close_channel',
@@ -389,7 +594,7 @@ describe('SocketClient', () => {
         mockSocket.emit.mockImplementation(() => undefined); // no ack
         const closed = client.closeChannel();
         await vi.advanceTimersByTimeAsync(700);
-        await expect(closed).resolves.toBeUndefined();
+        await expect(closed).resolves.toBe(false);
       } finally {
         vi.useRealTimers();
       }
@@ -397,12 +602,34 @@ describe('SocketClient', () => {
 
     it('should resolve immediately without emitting when disconnected or unjoined', async () => {
       // never connected / no channel
-      await expect(client.closeChannel()).resolves.toBeUndefined();
+      await expect(client.closeChannel()).resolves.toBe(false);
       expect(mockSocket.emit).not.toHaveBeenCalledWith(
         'close_channel',
         expect.anything(),
         expect.anything()
       );
+    });
+
+    it('does not report a relay rejection as a confirmed tombstone', async () => {
+      await joinChan('chan-close-rejected');
+      mockSocket.emit.mockImplementation(
+        (_event: string, _payload: unknown, ack?: (r: unknown) => void) => {
+          if (ack) ack({ success: false, error: 'Control rate limit exceeded' });
+        }
+      );
+
+      await expect(client.closeChannel()).resolves.toBe(false);
+    });
+
+    it('does not treat a generic success acknowledgement as a confirmed tombstone', async () => {
+      await joinChan('chan-close-unconfirmed');
+      mockSocket.emit.mockImplementation(
+        (_event: string, _payload: unknown, ack?: (r: unknown) => void) => {
+          if (ack) ack({ success: true });
+        }
+      );
+
+      await expect(client.closeChannel()).resolves.toBe(false);
     });
   });
 });

@@ -5,6 +5,87 @@ All notable changes to `@qrlwallet/connect` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [4.0.0] - 2026-08-03
+
+### Changed
+
+- **BREAKING: PQP3 / package 4.0.0.** Pairing URIs now contain
+  `PQP3 || cid || fp || capability`, where `fp` and the handshake transcript
+  bind a fresh 32-byte QR-only capability. PQP1 and PQP2 URIs are rejected.
+  The capability is never uploaded to the relay or persisted.
+- **BREAKING: explicit single-account authorization.** A fresh pairing exposes
+  no account. Only a successful `qrl_requestAccounts` response can bind the
+  session account. Transaction `from` and signing `signer` values must match
+  that exact address. `wallet_addQrlChain` and RPC methods absent from the
+  hosted proxy surface are no longer forwarded.
+- Stored dApp sessions move to `version: 5`; older records force a fresh
+  pairing. The SDK package moves to 4.0.0. `@qrlwallet/connect-ui` moves to
+  0.2.0, requires SDK `>=4.0.0 <5`, and retires a pending pairing before its
+  cancellation resolves.
+
+### Security
+
+- RPC forwarding now uses closed, module-private allowlists. Raw transaction
+  broadcast, removed signing methods, and unknown future signing methods fail
+  before the relay round trip, even if a consumer mutates the exported method
+  discovery sets.
+- Approval-bound RPC calls are serialized by request id. A second signing,
+  transaction, or chain-management request is sent only after the first one is
+  answered or rejected. Params are snapshotted at the provider boundary, and a
+  lifecycle generation barrier cancels requests still waiting for a channel
+  rejoin when the session is reset, lost, terminated, or disconnected.
+- Authenticated and restored account lists must use the current Q + 40 hex
+  address format and contain at most one explicitly approved address. They are
+  returned and emitted as copies so consumer mutation cannot rewrite the
+  provider's internal authorization state. `WALLET_INFO` cannot grant or
+  silently switch authorization.
+- `wallet_switchQrlChain` resolves only when the wallet's reported chain state
+  matches the requested chain id. A bare success response on the old chain is
+  rejected.
+- Typed-data encoding now has deterministic limits for type count, graph and
+  array depth, array length, dynamic bytes, field count, and encoded values.
+  Prototype-sensitive identifiers are rejected before hashing.
+- Message and typed-data signing validate the current 41-character Q-address
+  format locally. Opaque signed messages are capped at 16 KiB before relay use.
+- New bound verification helpers validate the ML-DSA signature and derive the
+  expected current Q + 40 hex signer from the exact 3-byte descriptor and
+  2592-byte public key. Explicitly named key-only helpers are available, and
+  their older ambiguous names remain as deprecated aliases for compatibility.
+- Unknown-safe signing-result guards enforce exact field sets, fixed ML-DSA
+  widths, current Q + 40 signer shape, and method-specific scheme tags before
+  a dApp passes the original payload to a bound verifier. DApp display names
+  reject the same C0, C1, line-separator, zero-width, and bidirectional control
+  characters as the wallet approval boundary.
+- Persisted AEAD sessions require an exclusive Web Lock. Only one tab can own
+  a key/counter stream, counters are refreshed after lock acquisition, and a
+  persistence failure tombstones the relay channel before any ciphertext or
+  decrypted plaintext can proceed. Browsers without Web Locks use memory-only
+  sessions. Stored metadata, chain ids, key material, counters, and timestamps
+  are bounded and validated before hydration.
+- Handshake authentication failures retire and tombstone the pairing, and
+  abandoned generations zeroize live ML-KEM secret keys. AEAD counter
+  exhaustion is rejected before cryptographic use. Relay sends and joins have
+  bounded acknowledgement windows. Relay tombstones require an explicit close
+  confirmation, while browser-tab ownership is released only after the durable
+  local session record is invalidated.
+- Originator handshake completion is published only after the relay
+  acknowledges the final ACK. No encrypted metadata or persistent session can
+  be created from a provisional one-sided handshake. Cancelling a pairing UI
+  retires its unconsumed bearer capability and channel first.
+- Auto-rejoin drains validated buffered ciphertexts exactly once and persists
+  every advanced receive counter before returning to `CONNECTED`. Encryption
+  failure after a reserved send counter retires the session instead of leaving
+  an unrecoverable sequence gap.
+- Relay URLs, QR URI shape, Socket.IO acknowledgements, JSON-RPC envelopes,
+  error objects, ids, method names, and fixed-width base64 fields now have
+  closed validation and deterministic bounds. Relay identity is origin-only,
+  and dApp and redirect metadata URLs are canonicalized under the same HTTPS
+  boundary before storage or transmission.
+- Patched vulnerable development-only transitive dependencies and pinned the
+  audited esbuild release used by the build and test toolchain.
+
 ## [3.2.0] - 2026-07-09
 
 ### Added

@@ -10,13 +10,20 @@ Connect your dApp to QRL Wallet. Users scan a QR code (desktop) or tap a button 
 4. Your dApp sends JSON-RPC requests, the wallet prompts for approval
 5. Signed results come back to your dApp
 
-All communication is end-to-end encrypted with ML-KEM-768 (FIPS 203) key encapsulation and AES-256-GCM. The relay server never sees your data.
+All application traffic is end-to-end encrypted with ML-KEM-768 (FIPS 203)
+key encapsulation and AES-256-GCM. PQP3 adds a fresh 32-byte pairing
+capability to every QR/deep link. The relay serves the dApp public key, but it
+never receives that capability or application plaintext.
 
 ## Install
 
 ```bash
 npm install @qrlwallet/connect
 ```
+
+Package installation and source builds require Node.js 20.19.0 or newer because
+the direct cryptography dependencies use that engine floor. Browser execution
+requires Web Crypto.
 
 Want a ready-made pairing dialog (QR code, deep link, copy-code fallback) instead of building your own? Add the framework-free [`@qrlwallet/connect-ui`](ui/) web component.
 
@@ -68,11 +75,13 @@ const accounts = await qrl.request({ method: 'qrl_requestAccounts' });
 
 const txHash = await qrl.request({
   method: 'qrl_sendTransaction',
-  params: [{
-    from: accounts[0],
-    to: '0x...',
-    value: '0x2386F26FC10000', // 0.01 QRL
-  }],
+  params: [
+    {
+      from: accounts[0],
+      to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+      value: '0x2386F26FC10000', // 0.01 QRL
+    },
+  ],
 });
 ```
 
@@ -85,17 +94,23 @@ const qrl = new QRLConnect({
     name: 'QuantaPool',
     url: 'https://quantapool.com',
     icon: 'https://quantapool.com/icon.png', // optional
+    redirectUrl: 'https://quantapool.com/return', // optional
   },
 
   // Optional
-  relayUrl: 'https://qrlwallet.com',  // default relay
-  chainId: '0x0',                      // QRL chain ID
-  autoReconnect: true,                 // reconnect on page load (default: true)
-  walletRedirectOnRequest: true,       // mobile: deep-link the wallet app awake
-                                       // for approval requests (default: true)
-  debug: false,                        // console logging
+  relayUrl: 'https://qrlwallet.com', // default relay
+  chainId: '0x0', // QRL chain ID
+  autoReconnect: true, // reconnect on page load (default: true)
+  walletRedirectOnRequest: true, // mobile: deep-link the wallet app awake
+  // for approval requests (default: true)
+  debug: false, // console logging
 });
 ```
+
+`dappMetadata.url` and optional `redirectUrl` are canonicalized
+credential-free HTTP(S) URLs. HTTPS is required except on an explicit
+`localhost`, `.localhost`, `127.0.0.1`, or `[::1]` development hostname. A
+custom app scheme is not accepted as a return target.
 
 ## API
 
@@ -103,57 +118,96 @@ const qrl = new QRLConnect({
 
 The main class. Creates a connection manager and EIP-1193 provider.
 
-| Method | Description |
-|--------|-------------|
-| `getConnectionURI()` | Returns the `qrlconnect://` URI for QR codes or deep links |
-| `request({ method, params })` | Send a JSON-RPC request to the wallet |
-| `isMobile()` | Check if the user is on a mobile browser |
-| `getAppStoreUrl()` | Get the app store link for QRL Wallet |
-| `isConnected()` | Whether the wallet is connected |
-| `isPaired()` | Whether a pairing exists, even while the wallet app is backgrounded |
-| `isWalletPresent()` | Whether the wallet is currently live in the relay channel |
-| `getAccounts()` | Get connected accounts |
-| `getStatus()` | Current connection status |
-| `hasStoredSession()` | Check if a reconnectable session exists in local storage |
-| `newConnection()` | Reset current pairing and generate a new channel/URI |
-| `disconnect()` | End the session |
-| `getChannelId()` | Get the current relay channel ID (useful for debugging) |
+| Method                        | Description                                                         |
+| ----------------------------- | ------------------------------------------------------------------- |
+| `getConnectionURI()`          | Retires any prior pairing and returns a fresh `qrlconnect://` URI   |
+| `request({ method, params })` | Send a JSON-RPC request to the wallet                               |
+| `isMobile()`                  | Check if the user is on a mobile browser                            |
+| `getAppStoreUrl()`            | Get the app store link for QRL Wallet                               |
+| `isConnected()`               | Whether the wallet is connected                                     |
+| `isPaired()`                  | Whether a pairing exists, even while the wallet app is backgrounded |
+| `isWalletPresent()`           | Whether the wallet is currently live in the relay channel           |
+| `getAccounts()`               | Get connected accounts                                              |
+| `getStatus()`                 | Current connection status                                           |
+| `hasStoredSession()`          | Check if a reconnectable session exists in local storage            |
+| `newConnection()`             | Reset current pairing and generate a new channel/URI                |
+| `disconnect()`                | End the session                                                     |
+| `getChannelId()`              | Get the current relay channel ID (useful for debugging)             |
 
 ### Events
 
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `connect` | `{ chainId }` | Wallet connected |
-| `disconnect` | `{ code, message }` | Wallet disconnected |
-| `accountsChanged` | `string[]` | Account list changed |
-| `chainChanged` | `string` | Chain switched |
-| `statusChanged` | `ConnectionStatus` | Intermediate lifecycle states (see values below) |
-| `connection_lost` | (none) | Emitted after 5 failed reconnection attempts |
+| Event             | Payload             | Description                                      |
+| ----------------- | ------------------- | ------------------------------------------------ |
+| `connect`         | `{ chainId }`       | Wallet connected                                 |
+| `disconnect`      | `{ code, message }` | Wallet disconnected                              |
+| `accountsChanged` | `string[]`          | Account list changed                             |
+| `chainChanged`    | `string`            | Chain switched                                   |
+| `statusChanged`   | `ConnectionStatus`  | Intermediate lifecycle states (see values below) |
+| `connection_lost` | (none)              | Emitted after 5 failed reconnection attempts     |
 
 #### `ConnectionStatus` values
 
-| Value | Meaning |
-|-------|---------|
-| `disconnected` | No active connection |
-| `connecting` | Connecting to relay server |
-| `waiting` | Waiting for the wallet: a first scan, or (when `isPaired()`) a backgrounded wallet app to return |
-| `key_exchange` | Post-quantum key exchange in progress |
-| `connected` | Wallet connected, ready for requests |
-| `reconnecting` | Attempting to restore a previous session |
+| Value          | Meaning                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `disconnected` | No active connection                                                                             |
+| `connecting`   | Connecting to relay server                                                                       |
+| `waiting`      | Waiting for the wallet: a first scan, or (when `isPaired()`) a backgrounded wallet app to return |
+| `key_exchange` | Post-quantum key exchange in progress                                                            |
+| `connected`    | Wallet connected, ready for requests                                                             |
+| `reconnecting` | Attempting to restore a previous session                                                         |
 
 ### Supported RPC methods
 
 **Require user approval:**
-`qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_addQrlChain`, `wallet_switchQrlChain`
+`qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_switchQrlChain`
 
-`qrl_signMessage` and `qrl_signTypedData` (v3.0.0) replace the Ethereum-flavored `personal_sign` / `qrl_sign` / `qrl_signTypedData_v3` / `qrl_signTypedData_v4`. Both use SHAKE256 + native ML-DSA-87 ctx and return a rich `{ signature, publicKey, signer, digest, schemeVersion }` object; verify locally with `verifyMessage` / `verifyTypedData` exported from this package.
+`qrl_signMessage` and `qrl_signTypedData` (v3.0.0) replace the Ethereum-flavored `personal_sign` / `qrl_sign` / `qrl_signTypedData_v3` / `qrl_signTypedData_v4`. Both use SHAKE256 + native ML-DSA-87 ctx and return a rich `{ signature, publicKey, descriptor, signer, digest, schemeVersion }` object.
+
+`request()` returns `unknown`. First validate the exact response shape with
+`isQrlSignedMessageResult` or `isQrlSignedTypedDataResult`, then require
+`hasSigningDescriptor`. PQP3 authenticates the paired transport session. It
+does not prove that the returned ML-DSA signature is valid or that its public
+key belongs to the claimed signer. Authentication and authorization flows must
+call `verifyMessageForSigner` or `verifyTypedDataForSigner` with the original
+challenge or payload and the expected current Q + 40 hex address.
+
+The lower-level `verifyMessageSignature` / `verifyTypedDataSignature` helpers
+verify only the supplied key and signature; they do not prove that the key
+belongs to a claimed signer. The old `verifyMessage` / `verifyTypedData` names
+remain as deprecated aliases. `descriptor` remains optional in the response
+type for older-wallet compatibility. Strict shape guards accept its absence,
+while `hasSigningDescriptor` and both bound verifiers fail closed.
+
+Approval-bound calls are serialized. Unknown methods and direct node mutation
+surfaces such as `qrl_sendRawTransaction` and `wallet_addQrlChain` are rejected
+locally. Signing and transaction calls also fail locally until exactly one
+account has been approved by `qrl_requestAccounts`. Their signer or `from`
+field must exactly match that approved address.
 
 **Auto-proxied (no approval needed):**
-`qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_blockNumber`, `qrl_chainId`, `qrl_getTransactionReceipt`, and 30+ more read-only methods.
+`qrl_chainId`, `qrl_blockNumber`, `qrl_getBalance`,
+`qrl_getTransactionCount`, `qrl_getBlockByNumber`,
+`qrl_getTransactionReceipt`, `qrl_call`, `qrl_estimateGas`, `qrl_gasPrice`,
+`qrl_getCode`, `qrl_getLogs`, `net_version`, and `net_listening`.
+
+`qrl_accounts` is a wallet-local authorization read. It returns `[]` until
+`qrl_requestAccounts` succeeds and is never forwarded to hosted node RPC.
+An account string is not proof of control. For authentication, request a fresh
+challenge with `qrl_signMessage` and verify it with `verifyMessageForSigner`.
 
 ## Sessions
 
-Sessions persist in `localStorage` for 7 days. When a user returns to your dApp, the SDK can automatically reconnect without requiring a new QR scan.
+Established v5 sessions persist in `localStorage` for 7 days. When a user
+returns to your dApp, the SDK can automatically reconnect without requiring a
+new QR scan. Pairing capabilities are never persisted. An exclusive Web Lock
+gives one browser tab ownership of the persisted key and AEAD counters. A
+second tab cannot restore or use that stream. Browsers without Web Locks use a
+memory-only session and require a fresh pairing after reload.
+
+Malformed handshake frames and ambiguous relay acknowledgements retire the
+affected pairing. A fresh QR starts a new key, channel, and request generation;
+pending work from the prior wallet is rejected locally, and the old relay
+channel must be tombstoned before the new bearer capability is issued.
 
 A paired session also survives the wallet app being backgrounded or closed. On the same device at most one of the two apps is ever foregrounded, so the wallet's socket being absent is the normal steady state of a mobile flow, not an error:
 
@@ -188,6 +242,11 @@ const qrl = new QRLConnect({
   relayUrl: 'https://my-relay-server.com',
 });
 ```
+
+Relay URLs must use HTTPS. Plain HTTP is accepted only for an explicit
+`localhost`, `.localhost`, `127.0.0.1`, or `[::1]` development endpoint. Relay
+URLs identify an origin only: credentials, paths, query strings, and fragments
+are rejected before the URL can be logged, connected, or embedded in a QR.
 
 ## Development
 
@@ -234,14 +293,18 @@ The example connects to the production relay at `wss://qrlwallet.com/relay` by d
 
 - Private keys and seeds never leave the wallet
 - All relay traffic is end-to-end encrypted with **AES-256-GCM** bound to a
-  **transcript hash** derived from the full handshake (`LABEL || cid || pk || ct`)
+  **transcript hash** derived from the full handshake
+  (`"pq-pair/v3" || cid || pk || ct || capability`)
 - Session keys are established with **ML-KEM-768** (FIPS 203, NIST Level 3),
-  carried in the QR code so the relay never sees an uncommitted public key
+  with the public key uploaded to the relay and pinned by a full 32-byte
+  capability-bound fingerprint in the QR
+- The PQP3 capability is a bearer secret. Do not log, persist, cache, or send
+  a pairing URI to analytics. Retire the channel when a pairing UI is cancelled
 - Ciphertext tampering is detected exclusively at the AES-GCM tag;
   ML-KEM's implicit rejection is NOT used for authentication
 - PIN or biometric authentication required for every transaction
-- dApp URL is displayed to the user before connecting
-- Unknown RPC methods are rejected with `-32601`
+- dApp name and URL are displayed as unverified, dApp-supplied metadata
+- Unknown RPC methods are rejected locally before a relay round trip
 
 ## License
 

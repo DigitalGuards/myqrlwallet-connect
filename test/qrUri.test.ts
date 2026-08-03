@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   BLOB_LEN,
+  CAP_LEN,
   CID_LEN,
   FP_LEN,
+  MAX_CONNECTION_URI_LENGTH,
   cidFromString,
   cidToString,
   computeFingerprint,
@@ -16,56 +18,100 @@ function randomCid(): Uint8Array {
   return globalThis.crypto.getRandomValues(new Uint8Array(CID_LEN));
 }
 
-describe('qrUri PQP2', () => {
+function randomCapability(): Uint8Array {
+  return globalThis.crypto.getRandomValues(new Uint8Array(CAP_LEN));
+}
+
+describe('qrUri PQP3', () => {
   describe('generateConnectionURI', () => {
-    it('produces a compact qrlconnect:// URI with only cid+fp in the blob', async () => {
+    it('produces a compact capability-bearing qrlconnect:// URI', async () => {
       const cid = randomCid();
       const { pk } = kemKeygen();
-      const uri = await generateConnectionURI(cid, pk);
+      const uri = await generateConnectionURI(cid, pk, randomCapability());
       expect(uri.startsWith('qrlconnect://?q=')).toBe(true);
       expect(uri.includes('&')).toBe(false);
-      // 52-byte blob → ~78 base45 chars → URL-encoded still under ~100 chars
-      // of payload. Plenty of headroom for a version-5-class QR.
-      expect(uri.length).toBeLessThan(200);
+      expect(uri.length).toBeLessThan(250);
     });
 
     it('rejects a non-16-byte cid', async () => {
       const { pk } = kemKeygen();
-      await expect(generateConnectionURI(new Uint8Array(15), pk)).rejects.toThrow();
-      await expect(generateConnectionURI(new Uint8Array(17), pk)).rejects.toThrow();
+      const capability = randomCapability();
+      await expect(generateConnectionURI(new Uint8Array(15), pk, capability)).rejects.toThrow();
+      await expect(generateConnectionURI(new Uint8Array(17), pk, capability)).rejects.toThrow();
     });
 
-    it('does not embed the PK in the URI', async () => {
+    it('rejects an ML-KEM public key with the wrong width', async () => {
       const cid = randomCid();
+      const capability = randomCapability();
+      await expect(generateConnectionURI(cid, new Uint8Array(1183), capability)).rejects.toThrow(
+        /public key/
+      );
+      await expect(computeFingerprint(cid, new Uint8Array(1185), capability)).rejects.toThrow(
+        /public key/
+      );
+    });
+
+    it('rejects a capability that is not exactly 32 bytes', async () => {
       const { pk } = kemKeygen();
-      const uri = await generateConnectionURI(cid, pk);
-      // The compressed URI can't possibly contain the 1184-byte PK.
+      await expect(
+        generateConnectionURI(randomCid(), pk, new Uint8Array(CAP_LEN - 1))
+      ).rejects.toThrow(/capability/);
+    });
+
+    it('does not embed the public key in the URI', async () => {
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(randomCid(), pk, randomCapability());
       expect(uri.length).toBeLessThan(pk.length);
+    });
+
+    it('validates and normalizes custom relay URLs before embedding them', async () => {
+      const { pk } = kemKeygen();
+      const cid = randomCid();
+      const capability = randomCapability();
+      const local = await generateConnectionURI(cid, pk, capability, 'http://localhost:3000/');
+      expect((await parseConnectionURI(local)).relayUrl).toBe('http://localhost:3000');
+
+      await expect(
+        generateConnectionURI(cid, pk, capability, 'http://relay.example')
+      ).rejects.toThrow(/relay URL/);
+      await expect(
+        generateConnectionURI(cid, pk, capability, 'https://user:secret@relay.example')
+      ).rejects.toThrow(/relay URL/);
+      await expect(
+        generateConnectionURI(cid, pk, capability, 'https://relay.example/#fragment')
+      ).rejects.toThrow(/relay URL/);
+      await expect(
+        generateConnectionURI(cid, pk, capability, 'https://relay.example/ignored-base')
+      ).rejects.toThrow(/relay URL/);
     });
   });
 
   describe('parseConnectionURI', () => {
-    it('roundtrips cid and fp', async () => {
+    it('roundtrips cid, fingerprint, and capability', async () => {
       const cid = randomCid();
+      const capability = randomCapability();
       const { pk } = kemKeygen();
-      const uri = await generateConnectionURI(cid, pk);
+      const uri = await generateConnectionURI(cid, pk, capability);
       const parsed = await parseConnectionURI(uri);
-      expect(Array.from(parsed.cid)).toEqual(Array.from(cid));
-      expect(parsed.fp.length).toBe(FP_LEN);
+      expect(parsed.cid).toEqual(cid);
+      expect(parsed.fp).toHaveLength(FP_LEN);
+      expect(parsed.capability).toEqual(capability);
 
-      // The fp in the URI must equal the fp the wallet re-derives after
-      // fetching the PK from the relay.
-      const expectedFp = await computeFingerprint(cid, pk);
+      const expectedFp = await computeFingerprint(cid, pk, capability);
       expect(fingerprintEquals(parsed.fp, expectedFp)).toBe(true);
       expect(parsed.relayUrl).toBeUndefined();
     });
 
     it('carries an optional relay URL', async () => {
-      const cid = randomCid();
       const { pk } = kemKeygen();
-      const uri = await generateConnectionURI(cid, pk, 'https://custom.relay/test');
+      const uri = await generateConnectionURI(
+        randomCid(),
+        pk,
+        randomCapability(),
+        'https://custom.relay/'
+      );
       const parsed = await parseConnectionURI(uri);
-      expect(parsed.relayUrl).toBe('https://custom.relay/test');
+      expect(parsed.relayUrl).toBe('https://custom.relay');
     });
 
     it('rejects legacy v1 URIs with a clear error', async () => {
@@ -75,30 +121,64 @@ describe('qrUri PQP2', () => {
     });
 
     it('rejects legacy PQP1 URIs with a clear error', async () => {
-      // Build a dummy PQP1-shaped 1208-byte blob so the parser can recognise
-      // the shape and emit the "regenerate the QR" hint instead of a generic
-      // size mismatch.
       const { base45Encode } = await import('../src/utils/base45.js');
       const pqp1 = new Uint8Array(1208);
-      pqp1[0] = 0x50;
-      pqp1[1] = 0x51;
-      pqp1[2] = 0x50;
-      pqp1[3] = 0x31; // '1'
+      pqp1.set([0x50, 0x51, 0x50, 0x31]);
       const uri = 'qrlconnect://?' + new URLSearchParams({ q: base45Encode(pqp1) }).toString();
       await expect(parseConnectionURI(uri)).rejects.toThrow(/legacy PQP1/);
     });
 
+    it('rejects legacy PQP2 URIs instead of falling back insecurely', async () => {
+      const { base45Encode } = await import('../src/utils/base45.js');
+      const pqp2 = new Uint8Array(52);
+      pqp2.set([0x50, 0x51, 0x50, 0x32]);
+      const uri = 'qrlconnect://?' + new URLSearchParams({ q: base45Encode(pqp2) }).toString();
+      await expect(parseConnectionURI(uri)).rejects.toThrow(/legacy PQP2/);
+    });
+
     it('rejects URIs with bad magic', async () => {
-      const cid = randomCid();
       const { pk } = kemKeygen();
-      const uri = await generateConnectionURI(cid, pk);
-      // Flip a byte in the base45 payload to break the magic.
+      const uri = await generateConnectionURI(randomCid(), pk, randomCapability());
       const mutated = uri.slice(0, 17) + 'X' + uri.slice(18);
       await expect(parseConnectionURI(mutated)).rejects.toThrow();
     });
 
-    it('rejects URIs missing q parameter', async () => {
-      await expect(parseConnectionURI('qrlconnect://?')).rejects.toThrow();
+    it('rejects missing, oversized, and duplicate parameters before decoding', async () => {
+      await expect(parseConnectionURI('qrlconnect://?')).rejects.toThrow(/missing q/);
+      await expect(
+        parseConnectionURI(`qrlconnect://?q=${'A'.repeat(MAX_CONNECTION_URI_LENGTH)}`)
+      ).rejects.toThrow(/exceeds/);
+
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(randomCid(), pk, randomCapability());
+      await expect(parseConnectionURI(`${uri}&q=ABC`)).rejects.toThrow(/duplicate/);
+      await expect(parseConnectionURI(`${uri}&r=one&r=two`)).rejects.toThrow(/duplicate/);
+    });
+
+    it('rejects non-canonical URI components and unknown parameters', async () => {
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(randomCid(), pk, randomCapability());
+      const query = uri.slice('qrlconnect://?'.length);
+
+      await expect(parseConnectionURI(`qrlconnect://relay.example/?${query}`)).rejects.toThrow(
+        /canonical/
+      );
+      await expect(parseConnectionURI(`qrlconnect:///?${query}`)).rejects.toThrow(/canonical/);
+      await expect(parseConnectionURI(`${uri}#fragment`)).rejects.toThrow(/canonical/);
+      await expect(parseConnectionURI(`${uri}&unexpected=value`)).rejects.toThrow(/unknown/);
+      await expect(parseConnectionURI(uri.replace('qrlconnect:', 'QRLCONNECT:'))).rejects.toThrow();
+    });
+
+    it('rejects invalid relay overrides from untrusted QR input', async () => {
+      const { pk } = kemKeygen();
+      const uri = await generateConnectionURI(randomCid(), pk, randomCapability());
+      await expect(
+        parseConnectionURI(`${uri}&r=${encodeURIComponent('http://relay.example')}`)
+      ).rejects.toThrow(/relay URL/);
+      await expect(
+        parseConnectionURI(`${uri}&r=${encodeURIComponent('https://relay.example/ignored-base')}`)
+      ).rejects.toThrow(/relay URL/);
+      await expect(parseConnectionURI(`${uri}&r=`)).rejects.toThrow(/empty relay URL/);
     });
 
     it('rejects non-qrlconnect URIs', async () => {
@@ -106,45 +186,49 @@ describe('qrUri PQP2', () => {
       await expect(parseConnectionURI('')).rejects.toThrow();
     });
 
-    it('has blob length 52 bytes', () => {
-      // Sanity check: the whole point of PQP2 is the small blob.
-      expect(BLOB_LEN).toBe(4 + CID_LEN + FP_LEN);
-      expect(BLOB_LEN).toBe(52);
+    it('has the exact 84-byte PQP3 blob layout', () => {
+      expect(BLOB_LEN).toBe(4 + CID_LEN + FP_LEN + CAP_LEN);
+      expect(BLOB_LEN).toBe(84);
     });
   });
 
   describe('computeFingerprint', () => {
-    it('is deterministic', async () => {
+    it('is deterministic and binds cid, public key, and capability', async () => {
       const cid = randomCid();
+      const capability = randomCapability();
       const { pk } = kemKeygen();
-      const fp1 = await computeFingerprint(cid, pk);
-      const fp2 = await computeFingerprint(cid, pk);
-      expect(fingerprintEquals(fp1, fp2)).toBe(true);
+      const fp = await computeFingerprint(cid, pk, capability);
+      expect(fingerprintEquals(fp, await computeFingerprint(cid, pk, capability))).toBe(true);
+
+      const cidAlt = cid.slice();
+      cidAlt[0] ^= 1;
+      expect(fingerprintEquals(fp, await computeFingerprint(cidAlt, pk, capability))).toBe(false);
+
+      const { pk: pkAlt } = kemKeygen();
+      expect(fingerprintEquals(fp, await computeFingerprint(cid, pkAlt, capability))).toBe(false);
+
+      const capabilityAlt = capability.slice();
+      capabilityAlt[0] ^= 1;
+      expect(fingerprintEquals(fp, await computeFingerprint(cid, pk, capabilityAlt))).toBe(false);
     });
 
-    it('depends on both cid and pk (domain separation)', async () => {
-      const cidA = randomCid();
-      const cidB = randomCid();
-      const { pk } = kemKeygen();
-      const fpA = await computeFingerprint(cidA, pk);
-      const fpB = await computeFingerprint(cidB, pk);
-      expect(fingerprintEquals(fpA, fpB)).toBe(false);
-    });
-
-    it('produces 32-byte output', async () => {
-      const cid = randomCid();
-      const { pk } = kemKeygen();
-      const fp = await computeFingerprint(cid, pk);
-      expect(fp.length).toBe(32);
+    it('matches the canonical cross-repo PQP3 fingerprint vector', async () => {
+      const cid = new Uint8Array(CID_LEN).map((_, i) => i);
+      const pk = new Uint8Array(1184).map((_, i) => i & 0xff);
+      const capability = new Uint8Array(CAP_LEN).map((_, i) => 0xa0 + i);
+      const fp = await computeFingerprint(cid, pk, capability);
+      const hex = Array.from(fp, (value) => value.toString(16).padStart(2, '0')).join('');
+      expect(fp).toHaveLength(FP_LEN);
+      expect(hex).toBe('d5419e406f0d0defcd4d9b756bc51b22cde8650d216041b17ab328c0a9b04836');
     });
   });
 
   describe('cid helpers', () => {
-    it('cidToString/cidFromString roundtrip', () => {
+    it('cidToString/cidFromString roundtrips', () => {
       const cid = randomCid();
-      const s = cidToString(cid);
-      expect(s).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-      expect(Array.from(cidFromString(s))).toEqual(Array.from(cid));
+      const value = cidToString(cid);
+      expect(value).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(cidFromString(value)).toEqual(cid);
     });
   });
 });

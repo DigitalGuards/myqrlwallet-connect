@@ -1,7 +1,7 @@
 // showPairingModal(): the one-line integration. Wires a <qrl-pairing-modal>
 // to a connect provider using only its public API (getConnectionURI,
-// newConnection, isMobile, connect/statusChanged events), so this package
-// adds no protocol surface.
+// newConnection, disconnect, isMobile, connect/statusChanged events), so
+// this package adds no protocol surface.
 
 import { defineQrlPairingModal, isPairingUri, QrlPairingModal } from './element.js';
 
@@ -11,10 +11,12 @@ import { defineQrlPairingModal, isPairingUri, QrlPairingModal } from './element.
  * a compile-time test asserts the real provider satisfies it.
  */
 export interface PairingProvider {
-  /** Returns the pairing URI, reusing a stored session when available. */
+  /** Retires any previous pairing and returns a fresh pairing URI. */
   getConnectionURI(): Promise<string>;
   /** Tears down the existing pairing and rotates to a fresh channel/keys. */
   newConnection(): Promise<string>;
+  /** Retires the current channel and any unconsumed pairing capability. */
+  disconnect(): Promise<void>;
   isMobile(): boolean;
   on(event: 'connect', listener: (info: { chainId: string }) => void): unknown;
   on(event: 'statusChanged', listener: (status: string) => void): unknown;
@@ -82,6 +84,7 @@ export async function showPairingModal(
 
   return new Promise<PairingResult>((resolve) => {
     let settled = false;
+    let cancellationInFlight = false;
 
     const onStatus = (status: string): void => {
       modal.setAttribute('status', status);
@@ -100,7 +103,23 @@ export async function showPairingModal(
     }
 
     modal.addEventListener('qrl-cancel', () => {
-      finish('cancelled');
+      if (settled || cancellationInFlight) return;
+      cancellationInFlight = true;
+      modal.setAttribute('status', 'cancelling...');
+      void provider
+        .disconnect()
+        .then(() => {
+          finish('cancelled');
+        })
+        .catch((err: unknown) => {
+          cancellationInFlight = false;
+          if (!settled) {
+            modal.setAttribute(
+              'status',
+              err instanceof Error ? err.message : 'could not retire the pairing'
+            );
+          }
+        });
     });
     modal.addEventListener('qrl-new-connection', () => {
       modal.setAttribute('status', 'rotating…');

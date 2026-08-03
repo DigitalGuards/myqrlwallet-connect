@@ -1,5 +1,5 @@
 /**
- * E2E Test: QRL Connect v2 — relay + post-quantum handshake + JSON-RPC round-trip.
+ * E2E Test: QRL Connect 4.0 + protocol-v3 post-quantum handshake + JSON-RPC round-trip.
  *
  * Exercises the real built SDK (dist/index.mjs) as the dApp, and a minimal
  * wallet simulator built on top of the SDK's KeyExchange (isOriginator=false)
@@ -31,8 +31,8 @@ import {
   SCHEME_TAG_TYPED,
   SCHEME_VERSION_MSG,
   SCHEME_VERSION_TYPED,
-  verifyMessage,
-  verifyTypedData,
+  verifyMessageForSigner,
+  verifyTypedDataForSigner,
 } from './dist/index.mjs';
 import * as mldsa from '@theqrl/mldsa87';
 import { newWalletFromExtendedSeed } from '@theqrl/wallet.js';
@@ -48,7 +48,8 @@ const TEST_PORT = 3001;
 const RELAY_URL = `http://localhost:${TEST_PORT}`;
 const RELAY_PATH = '/relay';
 
-const WALLET_ADDRESS = 'Q208318ecd68f26726CE7C54b29CaBA94584969B6';
+// Current Q + 40 hex address derived from descriptor || ML-DSA public key.
+const WALLET_ADDRESS = 'Q919e248e9bc56e8d1f255841d6c92d9bd892e33a';
 const TEST_TX_HASH =
   '0x3e306b5a5a37532e1734503f7d2427a86f2c992fbe471f5be403b9f734e661c5';
 
@@ -59,6 +60,7 @@ const TEST_TX_HASH =
  */
 const E2E_HEX_SEED =
   '0x0100005bb4c0cea35e758d19a93923d014e41615e7d3d35076c9b659b880156b5c37bc3a6ccf3d3b7beaef012c4ff930fcb270';
+const WALLET_DESCRIPTOR = E2E_HEX_SEED.slice(0, 8);
 
 function signE2E(digest, ctxTag) {
   const wallet = newWalletFromExtendedSeed(E2E_HEX_SEED);
@@ -138,6 +140,7 @@ async function run() {
   let io;
   let dapp;
   let walletSocket;
+  let pairingCapability;
 
   try {
     console.log(`1. Starting relay on port ${TEST_PORT}`);
@@ -159,14 +162,18 @@ async function run() {
     });
 
     const uri = await dapp.getConnectionURI();
-    console.log(`   URI length: ${uri.length} chars (v2 PQP2 blob, compact)`);
+    console.log(`   URI length: ${uri.length} chars (protocol-v3 PQP3 capability-bearing blob)`);
     if (!uri.startsWith('qrlconnect://?q=')) {
-      throw new Error('dApp generated a non-v2 URI');
+      throw new Error('dApp generated a non-v3 URI');
     }
 
-    console.log('3. Wallet: parsing URI (extracts cid + fp, no pk)');
-    const { cid, fp } = await parseConnectionURI(uri);
+    console.log('3. Wallet: parsing URI (extracts cid + fp + capability, no pk)');
+    const { cid, fp, capability } = await parseConnectionURI(uri);
+    pairingCapability = capability;
     if (fp.length !== 32) throw new Error(`Wallet parsed bad fp length ${fp.length}`);
+    if (pairingCapability.length !== 32) {
+      throw new Error(`Wallet parsed bad capability length ${pairingCapability.length}`);
+    }
 
     console.log('4. Wallet: joining channel on relay → receives PK from ack');
     const walletKex = new KeyExchange(false);
@@ -187,13 +194,14 @@ async function run() {
     }
 
     console.log('   Wallet: verifying PK fingerprint against QR out-of-band commitment');
-    const expectedFp = await computeFingerprint(cid, pk);
+    const expectedFp = await computeFingerprint(cid, pk, pairingCapability);
     if (!fingerprintEquals(fp, expectedFp)) {
       throw new Error('Fingerprint mismatch — relay may have substituted the PK');
     }
 
     console.log('5. Wallet: running receiveQR → Encaps + seal HELLO_WALLET');
-    const synack = await walletKex.receiveQR(cid, pk);
+    const synack = await walletKex.receiveQR(cid, pk, pairingCapability);
+    pairingCapability.fill(0);
     if (synack.type !== KeyExchangeMessageType.SYNACK) {
       throw new Error('wallet produced wrong SYNACK type');
     }
@@ -245,7 +253,38 @@ async function run() {
     // Give the dApp a moment to fold in WALLET_INFO.
     await new Promise((r) => setTimeout(r, 50));
 
-    console.log('10. dApp: firing qrl_sendTransaction via provider.request()');
+    console.log('10. dApp: requiring explicit qrl_requestAccounts approval');
+    const preApprovalAccounts = await dapp.request({ method: 'qrl_accounts' });
+    if (!Array.isArray(preApprovalAccounts) || preApprovalAccounts.length !== 0) {
+      throw new Error('WALLET_INFO authorized an account before explicit approval');
+    }
+    const accountsPromise = dapp.request({ method: 'qrl_requestAccounts' });
+    const accountsRpcEnc = (
+      await waitForMessage((d) => typeof d?.message === 'string')
+    ).message;
+    const accountsRpcMsg = JSON.parse(await walletKex.decryptMessage(accountsRpcEnc));
+    if (accountsRpcMsg.method !== 'qrl_requestAccounts') {
+      throw new Error(`wallet saw wrong method: ${accountsRpcMsg.method}`);
+    }
+    await sendMessage(
+      walletSocket,
+      channelIdStr,
+      'wallet',
+      await walletKex.encryptMessage(
+        JSON.stringify({
+          type: MessageType.JSONRPC,
+          jsonrpc: '2.0',
+          id: accountsRpcMsg.id,
+          result: [WALLET_ADDRESS],
+        })
+      )
+    );
+    const approvedAccounts = await accountsPromise;
+    if (approvedAccounts.length !== 1 || approvedAccounts[0] !== WALLET_ADDRESS) {
+      throw new Error('dApp did not bind the explicitly approved account');
+    }
+
+    console.log('11. dApp: firing qrl_sendTransaction via provider.request()');
     const txPromise = dapp.request({
       method: 'qrl_sendTransaction',
       params: [
@@ -266,7 +305,7 @@ async function run() {
     }
     console.log(`    Wallet decrypted JSON-RPC: ${rpcMsg.method} id=${rpcMsg.id}`);
 
-    console.log('11. Wallet → dApp: encrypted JSON-RPC response');
+    console.log('12. Wallet → dApp: encrypted JSON-RPC response');
     const rpcResponse = JSON.stringify({
       type: MessageType.JSONRPC,
       jsonrpc: '2.0',
@@ -286,7 +325,7 @@ async function run() {
     }
     console.log(`    dApp resolved tx hash: ${txResult}`);
 
-    console.log('12. dApp: firing qrl_signMessage via provider.request()');
+    console.log('13. dApp: firing qrl_signMessage via provider.request()');
     const MSG_HEX = '0x48656c6c6f2c20514f4c21';
     const msgRpcPromise = dapp.request({
       method: 'qrl_signMessage',
@@ -304,6 +343,7 @@ async function run() {
     const msgResult = {
       signature: bytesToHex(msgSig.signature),
       publicKey: bytesToHex(msgSig.publicKey),
+      descriptor: WALLET_DESCRIPTOR,
       signer: WALLET_ADDRESS,
       digest: bytesToHex(msgDigest),
       schemeVersion: SCHEME_VERSION_MSG,
@@ -323,17 +363,19 @@ async function run() {
     );
     const msgRpcResult = await msgRpcPromise;
     if (
-      !verifyMessage({
+      !verifyMessageForSigner({
+        expectedSigner: WALLET_ADDRESS,
+        descriptor: msgRpcResult.descriptor,
         signature: msgRpcResult.signature,
         publicKey: msgRpcResult.publicKey,
         messageBytes: MSG_HEX,
       })
     ) {
-      throw new Error('dApp verifyMessage rejected a valid signature');
+      throw new Error('dApp bound message verification rejected a valid signature');
     }
-    console.log('    dApp verifyMessage() returned true');
+    console.log('    dApp verifyMessageForSigner() returned true');
 
-    console.log('13. dApp: firing qrl_signTypedData via provider.request()');
+    console.log('14. dApp: firing qrl_signTypedData via provider.request()');
     const TYPED_PAYLOAD = {
       types: {
         QRLDomain: [{ name: 'name', type: 'string' }],
@@ -367,6 +409,7 @@ async function run() {
     const typedResult = {
       signature: bytesToHex(typedSig.signature),
       publicKey: bytesToHex(typedSig.publicKey),
+      descriptor: WALLET_DESCRIPTOR,
       signer: WALLET_ADDRESS,
       digest: bytesToHex(typedDigest),
       schemeVersion: SCHEME_VERSION_TYPED,
@@ -387,17 +430,19 @@ async function run() {
     );
     const typedRpcResult = await typedRpcPromise;
     if (
-      !verifyTypedData({
+      !verifyTypedDataForSigner({
+        expectedSigner: WALLET_ADDRESS,
+        descriptor: typedRpcResult.descriptor,
         signature: typedRpcResult.signature,
         publicKey: typedRpcResult.publicKey,
         payload: TYPED_PAYLOAD,
       })
     ) {
-      throw new Error('dApp verifyTypedData rejected a valid signature');
+      throw new Error('dApp bound typed-data verification rejected a valid signature');
     }
-    console.log('    dApp verifyTypedData() returned true');
+    console.log('    dApp verifyTypedDataForSigner() returned true');
 
-    console.log('14. Wallet: leaving the relay channel (app backgrounded/closed)');
+    console.log('15. Wallet: leaving the relay channel (app backgrounded/closed)');
     const sawWalletLeave = new Promise((resolve) => {
       const onStatus = (status) => {
         if (status === ConnectionStatus.WAITING) {
@@ -417,14 +462,14 @@ async function run() {
     }
     console.log('    dApp: WAITING with session intact (paired, wallet absent)');
 
-    console.log('15. dApp: qrl_sendTransaction while the wallet is ABSENT (relay must buffer)');
+    console.log('16. dApp: qrl_sendTransaction while the wallet is ABSENT (relay must buffer)');
     const offlineTxPromise = dapp.request({
       method: 'qrl_sendTransaction',
       params: [
         {
           from: WALLET_ADDRESS,
           to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
-          value: '0x01',
+          value: '0x1',
         },
       ],
     });
@@ -437,7 +482,7 @@ async function run() {
     }
     console.log('    Relay buffered the encrypted request for the absent wallet');
 
-    console.log('16. Wallet: re-joining channel → buffered request drains from the join ack');
+    console.log('17. Wallet: re-joining channel → buffered request drains from the join ack');
     const rejoinAck = await joinChannel(walletSocket, channelIdStr, 'wallet');
     const bufferedEnvelopes = (rejoinAck.bufferedMessages ?? []).filter(
       (m) => typeof m?.message === 'string'
@@ -473,7 +518,7 @@ async function run() {
     }
     console.log('    dApp resolved the request that was buffered while the wallet was away');
 
-    console.log('17. Desync teardown: wallet skips a seq (simulated relay buffer drop)');
+    console.log('18. Desync teardown: wallet skips a seq (simulated relay buffer drop)');
     // Burn one wallet sendSeq without delivering the ciphertext: exactly what
     // a relay buffer TTL/cap drop looks like to the dApp. Every subsequent
     // ciphertext must fail its tag; two in a row must tombstone the channel.
@@ -510,20 +555,22 @@ async function run() {
 
     const stats = io.channelManager.getStats();
     console.log(
-      `18. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
+      `19. Relay stats: channels=${stats.activeChannels} participants=${stats.totalParticipants}`
     );
 
-    console.log('\n✅ E2E v2 SUCCESS');
-    console.log('   - PQP2 QR (cid + 32-byte fingerprint, no embedded PK)');
+    console.log('\n✅ E2E protocol-v3 SUCCESS');
+    console.log('   - PQP3 QR (cid + fingerprint + QR-only capability, no embedded PK)');
     console.log('   - Relay binds dApp PK, serves it to wallet via join_channel ack');
-    console.log('   - Wallet verifies fp(pk) before using it; MITM by relay impossible');
+    console.log('   - Wallet verifies fp(cid, pk, cap) before using the relay-served key');
+    console.log('   - Capability binds transcript + HKDF and blocks relay wallet impersonation');
     console.log('   - ML-KEM-768 keygen + encap + decap');
     console.log('   - AES-256-GCM bidirectional AEAD bound to transcript H_tx');
     console.log('   - SYNACK / ACK handshake over relay');
     console.log('   - ORIGINATOR_INFO / WALLET_INFO metadata exchange');
+    console.log('   - WALLET_INFO cannot bypass explicit single-account authorization');
     console.log('   - qrl_sendTransaction request/response round-trip');
-    console.log('   - qrl_signMessage round-trip with local verifyMessage');
-    console.log('   - qrl_signTypedData round-trip with local verifyTypedData');
+    console.log('   - qrl_signMessage round-trip with signer-bound local verification');
+    console.log('   - qrl_signTypedData round-trip with signer-bound local verification');
     console.log('   - offline-wallet request buffered by relay + resolved on re-join');
   } catch (err) {
     console.error('\n❌ E2E TEST FAILED:', err.message);
@@ -531,6 +578,7 @@ async function run() {
     process.exit(1);
   } finally {
     clearTimeout(TIMEOUT);
+    pairingCapability?.fill(0);
     try {
       dapp?.disconnect();
     } catch {}
