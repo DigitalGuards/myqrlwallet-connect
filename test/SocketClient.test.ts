@@ -14,6 +14,7 @@ vi.mock('socket.io-client', () => ({
 }));
 
 import {
+  MAX_JOIN_BUFFERED_MESSAGES,
   MESSAGE_ACK_TIMEOUT_MS,
   PENDING_JOIN_TIMEOUT_MS,
   SocketClient,
@@ -38,6 +39,17 @@ describe('SocketClient', () => {
     it('should initialize with correct properties', () => {
       expect(client.isConnected()).toBe(false);
       expect(client.getChannelId()).toBeNull();
+    });
+
+    it('accepts only an exact canonical ML-KEM public key on dApp joins', () => {
+      const valid = btoa(String.fromCharCode(...new Uint8Array(1184)));
+      expect(() => { client.setPublicKey(valid); }).not.toThrow();
+      expect(() => { client.setPublicKey('AA=='); }).toThrow('1184 bytes');
+      expect(() => { client.setPublicKey(`${valid}AAAA`); }).toThrow('1184 bytes');
+
+      const wallet = new SocketClient('https://relay.test.com', 'wallet');
+      expect(() => { wallet.setPublicKey(valid); }).toThrow('only valid for dApp');
+      wallet.disconnect();
     });
   });
 
@@ -129,6 +141,10 @@ describe('SocketClient', () => {
         event: 'join',
         clientType: 'wallet',
       });
+
+      handler?.({ event: 'close', clientType: 'dapp' });
+      handler?.({ event: 'unknown', clientType: 'wallet' });
+      expect(participantsSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -201,6 +217,55 @@ describe('SocketClient', () => {
 
       const result = await client.joinChannel('test-channel');
       expect(result.bufferedMessages).toEqual(buffered);
+    });
+
+    it('should reject join acknowledgements with oversized buffered or participant lists', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({
+              success: true,
+              bufferedMessages: new Array(MAX_JOIN_BUFFERED_MESSAGES + 1).fill({}),
+            });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/buffered message list/);
+      expect(client.getChannelId()).toBeNull();
+
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, participants: ['wallet', 'wallet'] });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/participant list/);
+      expect(client.getChannelId()).toBeNull();
+    });
+
+    it('should reject malformed public-key and termination fields in a join acknowledgement', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, channelPublicKey: 'AA==' });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/channel public key/);
+
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'join_channel' && callback) {
+            callback({ success: true, terminated: 'yes' });
+          }
+        }
+      );
+      await expect(client.joinChannel('test-channel')).rejects.toThrow(/termination status/);
     });
 
     it('should reject on join failure', async () => {
@@ -386,6 +451,43 @@ describe('SocketClient', () => {
       await expect(
         client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
       ).rejects.toThrow('Rate limit exceeded');
+    });
+
+    it.each([
+      ['non-object', true],
+      ['truthy success', { success: 1, buffered: false }],
+      ['missing buffered', { success: true }],
+      ['untyped buffered', { success: true, buffered: 'false' }],
+    ])('rejects a malformed relay acknowledgement: %s', async (_name, response) => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'message' && callback) callback(response);
+        }
+      );
+
+      await expect(
+        client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
+      ).rejects.toThrow();
+    });
+
+    it('bounds relay-controlled send errors', async () => {
+      client.connect();
+      mockSocket.connected = true;
+      mockSocket.emit.mockImplementation(
+        (event: string, _payload: unknown, callback?: Function) => {
+          if (event === 'message' && callback) {
+            callback({ success: false, error: 'x'.repeat(4096) });
+          }
+        }
+      );
+
+      const error = await client
+        .sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
+        .catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message.length).toBe(512);
     });
 
     it('should reject after a bounded wait when the relay never acknowledges', async () => {

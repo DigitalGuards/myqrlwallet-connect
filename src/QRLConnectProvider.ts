@@ -8,6 +8,8 @@ import { ConnectionManager } from './ConnectionManager.js';
 import {
   classifyRpcMethod,
   isCurrentQrlAddress,
+  isValidJsonRpcId,
+  isValidJsonRpcMethod,
   REQUEST_TIMEOUT_MS,
   STORAGE_KEY_PREFIX,
 } from './config.js';
@@ -66,8 +68,8 @@ function isUnknownArray(v: unknown): v is unknown[] {
 function parseInflightRecord(v: unknown): InflightRecord | null {
   if (!isRecordObj(v)) return null;
   const { id, method, ts } = v;
-  if (typeof id !== 'string' && typeof id !== 'number') return null;
-  if (typeof method !== 'string' || typeof ts !== 'number') return null;
+  if (!isValidJsonRpcId(id) || !isValidJsonRpcMethod(method)) return null;
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return null;
   if (v.expectedChainId !== undefined && typeof v.expectedChainId !== 'string') return null;
   return { id, method, ts, expectedChainId: v.expectedChainId };
 }
@@ -88,6 +90,60 @@ function requestedSwitchChainId(params: unknown[] | undefined): string {
     throw new Error('wallet_switchQrlChain requires one chain configuration object');
   }
   return canonicalChainId(request.chainId);
+}
+
+const TRANSACTION_FIELDS = new Set(['from', 'to', 'value', 'gas', 'data']);
+const QRL_TRANSACTION_MAX_DATA_BYTES = 128 * 1024;
+const QRL_TRANSACTION_MAX_QUANTITY_HEX_DIGITS = 64;
+const RPC_QUANTITY_RE = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
+
+function validateRpcQuantity(value: unknown, field: 'value' | 'gas'): void {
+  if (field === 'gas' && typeof value === 'number') {
+    if (Number.isSafeInteger(value) && value >= 0) return;
+    throw new Error('transaction gas must be a non-negative safe integer');
+  }
+  if (
+    typeof value !== 'string' ||
+    value.length > QRL_TRANSACTION_MAX_QUANTITY_HEX_DIGITS + 2 ||
+    !RPC_QUANTITY_RE.test(value)
+  ) {
+    throw new Error(`transaction ${field} must be a canonical 0x quantity`);
+  }
+  if (field === 'gas' && BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('transaction gas exceeds the wallet safe-integer limit');
+  }
+}
+
+function validateTransactionRequest(
+  method: string,
+  params: unknown[] | undefined,
+  authorizedAccount: string
+): void {
+  if (params?.length !== 1 || !isRecordObj(params[0])) {
+    throw new Error(`${method} requires exactly one transaction object`);
+  }
+  const tx = params[0];
+  const unsupported = Object.keys(tx).find((field) => !TRANSACTION_FIELDS.has(field));
+  if (unsupported) throw new Error(`transaction field is not supported: ${unsupported}`);
+  if (!isCurrentQrlAddress(tx.from)) {
+    throw new Error('transaction from must be a valid Q-address');
+  }
+  if (tx.from !== authorizedAccount) {
+    throw new Error('transaction from is not the authorized account');
+  }
+  if (!isCurrentQrlAddress(tx.to)) {
+    throw new Error('transaction to must be a valid Q-address');
+  }
+  if ('value' in tx) validateRpcQuantity(tx.value, 'value');
+  if ('gas' in tx) validateRpcQuantity(tx.gas, 'gas');
+  if (
+    'data' in tx &&
+    (typeof tx.data !== 'string' ||
+      tx.data.length > QRL_TRANSACTION_MAX_DATA_BYTES * 2 + 2 ||
+      !/^0x(?:[0-9a-fA-F]{2})*$/.test(tx.data))
+  ) {
+    throw new Error('transaction data must be bounded 0x-prefixed bytes');
+  }
 }
 
 /**
@@ -111,10 +167,25 @@ function snapshotRequestParams(params: unknown[] | undefined): unknown[] | undef
 
 function validateRestrictedRequest(
   method: string,
-  params: unknown[] | undefined
+  params: unknown[] | undefined,
+  authorizedAccounts: string[]
 ): string | undefined {
+  if (method === 'qrl_requestAccounts') {
+    if (params !== undefined && params.length !== 0) {
+      throw new Error('qrl_requestAccounts does not accept parameters');
+    }
+    return undefined;
+  }
   if (method === 'wallet_switchQrlChain') {
     return requestedSwitchChainId(params);
+  }
+  const authorizedAccount = authorizedAccounts[0];
+  if (!authorizedAccount || authorizedAccounts.length !== 1) {
+    throw new Error('No authorized account: call qrl_requestAccounts first');
+  }
+  if (method === 'qrl_sendTransaction' || method === 'qrl_signTransaction') {
+    validateTransactionRequest(method, params, authorizedAccount);
+    return undefined;
   }
   if (method === 'qrl_signMessage') {
     if (params?.length !== 2) {
@@ -123,6 +194,9 @@ function validateRestrictedRequest(
     const [signer, messageHex] = params;
     if (!isCurrentQrlAddress(signer)) {
       throw new Error('qrl_signMessage requires a valid Q-address signer');
+    }
+    if (signer !== authorizedAccount) {
+      throw new Error('qrl_signMessage signer is not the authorized account');
     }
     if (
       typeof messageHex !== 'string' ||
@@ -140,8 +214,20 @@ function validateRestrictedRequest(
   if (!isCurrentQrlAddress(params[0])) {
     throw new Error('qrl_signTypedData requires a valid Q-address signer');
   }
+  if (params[0] !== authorizedAccount) {
+    throw new Error('qrl_signTypedData signer is not the authorized account');
+  }
   computeTypedDataDigest(params[1]);
   return undefined;
+}
+
+function requiresAuthorizedAccount(method: string): boolean {
+  return (
+    method === 'qrl_sendTransaction' ||
+    method === 'qrl_signTransaction' ||
+    method === 'qrl_signMessage' ||
+    method === 'qrl_signTypedData'
+  );
 }
 
 export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
@@ -334,72 +420,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     });
 
     this.connectionManager.on('jsonrpc_response', (response: JsonRpcResponse) => {
-      const pending = this.pendingRequests.get(response.id);
-      if (!pending) {
-        const orphan = this.orphanedRequests.get(response.id);
-        if (orphan) {
-          // Completed after the page reloaded (same-device return redirect):
-          // the original await is gone, so surface it as an event instead of
-          // dropping the wallet's answer on the floor.
-          this.settleInflight(response.id);
-          if (
-            !response.error &&
-            orphan.method === 'wallet_switchQrlChain' &&
-            (!orphan.expectedChainId || !this.isCurrentChain(orphan.expectedChainId))
-          ) {
-            this.emit('late_response', {
-              id: response.id,
-              method: orphan.method,
-              error: {
-                code: -32000,
-                message: `Wallet reported success but did not switch to requested chain ${orphan.expectedChainId ?? '(unknown)'}`,
-              },
-            });
-            return;
-          }
-          this.emit('late_response', {
-            id: response.id,
-            method: orphan.method,
-            ...(response.error ? { error: response.error } : { result: response.result }),
-          });
-          return;
-        }
-        warn('Provider', `No pending request for id ${response.id}`);
-        return;
-      }
-
-      this.pendingRequests.delete(response.id);
-
-      if (response.error) {
-        pending.reject(new Error(response.error.message || 'Request failed'));
-      } else {
-        if (pending.method === 'wallet_switchQrlChain') {
-          const requested = pending.expectedChainId;
-          if (!requested) {
-            pending.reject(new Error('Missing wallet_switchQrlChain postcondition'));
-            return;
-          }
-          if (!this.isCurrentChain(requested)) {
-            pending.reject(
-              new Error(
-                `Wallet reported success but did not switch to requested chain ${requested}`
-              )
-            );
-            return;
-          }
-        }
-        pending.resolve(response.result);
-      }
-    });
-
-    this.connectionManager.on('wallet_info', (info) => {
-      // Resolve pending qrl_requestAccounts or qrl_accounts if any
-      for (const [id, pending] of this.pendingRequests) {
-        if (pending.method === 'qrl_requestAccounts' || pending.method === 'qrl_accounts') {
-          pending.resolve(info.accounts);
-          this.pendingRequests.delete(id);
-        }
-      }
+      void this.handleJsonRpcResponse(response);
     });
 
     this.connectionManager.on('error', (err) => {
@@ -418,6 +439,86 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       this.cancelAllRequests(new Error('Session terminated by wallet'));
       this.clearAllInflight();
     });
+  }
+
+  private async handleJsonRpcResponse(response: JsonRpcResponse): Promise<void> {
+    const pending = this.pendingRequests.get(response.id);
+    if (!pending) {
+      const orphan = this.orphanedRequests.get(response.id);
+      if (!orphan) {
+        warn('Provider', `No pending request for id ${response.id}`);
+        return;
+      }
+
+      // Completed after the page reloaded (same-device return redirect): the
+      // original await is gone, so surface it as an event after applying any
+      // security-sensitive postcondition to the restored session.
+      this.settleInflight(response.id);
+      if (!response.error && orphan.method === 'qrl_requestAccounts') {
+        try {
+          const accounts = await this.connectionManager.authorizeAccounts(response.result);
+          this.emit('late_response', { id: response.id, method: orphan.method, result: accounts });
+        } catch (error) {
+          this.emit('late_response', {
+            id: response.id,
+            method: orphan.method,
+            error: {
+              code: -32000,
+              message: error instanceof Error ? error.message : 'Invalid account approval response',
+            },
+          });
+        }
+        return;
+      }
+      if (
+        !response.error &&
+        orphan.method === 'wallet_switchQrlChain' &&
+        (!orphan.expectedChainId || !this.isCurrentChain(orphan.expectedChainId))
+      ) {
+        this.emit('late_response', {
+          id: response.id,
+          method: orphan.method,
+          error: {
+            code: -32000,
+            message: `Wallet reported success but did not switch to requested chain ${orphan.expectedChainId ?? '(unknown)'}`,
+          },
+        });
+        return;
+      }
+      this.emit('late_response', {
+        id: response.id,
+        method: orphan.method,
+        ...(response.error ? { error: response.error } : { result: response.result }),
+      });
+      return;
+    }
+
+    this.pendingRequests.delete(response.id);
+    if (response.error) {
+      pending.reject(new Error(response.error.message || 'Request failed'));
+      return;
+    }
+    try {
+      if (pending.method === 'qrl_requestAccounts') {
+        const accounts = await this.connectionManager.authorizeAccounts(response.result);
+        pending.resolve(accounts);
+        return;
+      }
+      if (pending.method === 'wallet_switchQrlChain') {
+        const requested = pending.expectedChainId;
+        if (!requested) {
+          throw new Error('Missing wallet_switchQrlChain postcondition');
+        }
+        if (!this.isCurrentChain(requested)) {
+          throw new Error(
+            `Wallet reported success but did not switch to requested chain ${requested}`
+          );
+        }
+      }
+      pending.resolve(response.result);
+    } catch (error) {
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private cancelAllRequests(error: Error): void {
@@ -488,6 +589,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    */
   async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
     const { method, params } = args;
+    if (!isValidJsonRpcMethod(method)) {
+      throw new Error('Invalid JSON-RPC method');
+    }
     if (this.lifecycleTransition) {
       throw new Error(this.requestCancellationMessage);
     }
@@ -498,9 +602,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     }
 
     if (method === 'qrl_accounts') {
-      const accounts = this.connectionManager.getAccounts();
-      if (accounts.length > 0) return accounts;
-      // Fall through to request from wallet if no cached accounts
+      // This is the local authorization cache, not a prompt and not a node RPC.
+      // Before qrl_requestAccounts approval it must remain an empty array.
+      return this.connectionManager.getAccounts();
     }
 
     const policy = classifyRpcMethod(method);
@@ -512,7 +616,14 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     const generation = this.requestGeneration;
 
     if (policy === 'restricted') {
-      const expectedChainId = validateRestrictedRequest(method, stableParams);
+      if (requiresAuthorizedAccount(method) && this.connectionManager.getAccounts().length === 0) {
+        throw new Error('No authorized account: call qrl_requestAccounts first');
+      }
+      const expectedChainId = validateRestrictedRequest(
+        method,
+        stableParams,
+        this.connectionManager.getAccounts()
+      );
       return this.enqueueRestrictedRequest(method, stableParams, expectedChainId, generation);
     }
 
@@ -610,6 +721,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       }
     }
 
+    if (this.requestCounter >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('JSON-RPC request id counter exhausted');
+    }
     const id = `${this.requestIdPrefix}-${++this.requestCounter}`;
 
     return new Promise((resolve, reject) => {

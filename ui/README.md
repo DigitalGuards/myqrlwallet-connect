@@ -34,13 +34,22 @@ if (result === 'connected') {
 }
 ```
 
-`showPairingModal` reuses a stored session URI when one exists. To force a fresh pairing (tear down the old channel and rotate keys), pass `{ fresh: true }`; wire that to your "New connection" affordance outside the modal if you have one. Inside the modal the New connection action already rotates in place.
+`showPairingModal` always obtains a fresh pairing URI. The provider tombstones
+any prior channel before rotating its key and PQP3 capability. The `fresh`
+option remains for integrations that explicitly want to call
+`newConnection()`; both entry points retire older pairing material. Inside the
+modal the New connection action rotates in place.
+
+Cancelling is also a protocol action: the helper awaits `provider.disconnect()`
+before resolving `"cancelled"` or removing the modal. This makes the displayed
+URI unusable instead of leaving an unconsumed bearer capability alive until
+relay expiry.
 
 ### Options
 
 | Option | Default | Meaning |
 |---|---|---|
-| `fresh` | `false` | Start from `newConnection()` instead of the stored session URI |
+| `fresh` | `false` | Use the explicit `newConnection()` rotation entry point |
 | `walletName` | `"MyQRLWallet"` | Dialog title branding |
 | `walletUrl` | `https://myqrlwallet.com` | Get-the-wallet link under the title (app downloads; intentionally a different host than `webWalletUrl`) |
 | `webWalletUrl` | `https://qrlwallet.com` | Base URL for the "Open web wallet" action; pass `''` to hide it |
@@ -64,11 +73,17 @@ defineQrlPairingModal();
 ></qrl-pairing-modal>
 ```
 
-Attributes: `uri`, `status`, `wallet-name`, `wallet-url`, `web-wallet-url` (absent = default web wallet, empty string = hide the action). Events (bubbling, composed): `qrl-new-connection` when the user asks for a fresh pairing, `qrl-cancel` when the dialog is dismissed (Cancel action, Escape, or backdrop click). The element renders nothing outside its own box: mount and remove it to show and hide.
+Attributes: `uri`, `status`, `wallet-name`, `wallet-url`, `web-wallet-url` (absent = default web wallet, empty string = hide the action). Events (bubbling, composed): `qrl-new-connection` when the user asks for a fresh pairing, `qrl-cancel` when the dialog is dismissed (Cancel action, Escape, or backdrop click). When using the element directly, handle `qrl-cancel` by awaiting `provider.disconnect()` before removal. The element renders nothing outside its own box: mount and remove it to show and hide.
 
 ### The web-wallet handoff link
 
 "Open web wallet" opens `<web-wallet-url>/dapp-sessions#qrlconnect=<encodeURIComponent(uri)>` in a new tab; the wallet reads the fragment, scrubs it from the address bar, and asks the user to approve. The URI travels in the URL fragment so it never reaches any server. If you build this link yourself, the `encodeURIComponent` step is mandatory: an un-encoded URI truncates at its first `&` or `#`. Requires a wallet deployment that reads the fragment; older deployments ignore it entirely (no pairing starts, and the URI lingers in the address bar), which is why the wallet ingress ships first.
+
+PQP3 pairing URIs contain a 32-byte bearer capability. Never log them, place
+them in local storage, include them in analytics or error reporting, or put
+them in a normal query string. The fragment handoff above is safe only when
+the wallet page reads and scrubs it immediately. A copied URI remains usable
+until its relay channel is paired, cancelled, rotated, or expired.
 
 ## Theming
 

@@ -1,19 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'eventemitter3';
 import { ConnectionStatus, KeyExchangeMessageType } from '../src/types.js';
+import * as qrUri from '../src/utils/qrUri.js';
 
 // Track latest mock instances (same pattern as QRLConnectProvider.test.ts)
 let latestMockSocket: MockSocketClient;
 let latestMockKex: MockKeyExchange;
 let nextJoinError: Error | null = null;
 const TERMINATE_TEST_TIMEOUT_MS = 801;
+const VALID_SYNACK_CT = btoa(String.fromCharCode(...new Uint8Array(1088)));
+const VALID_SYNACK_C0 = btoa(String.fromCharCode(...new Uint8Array(31)));
 
 const PERSISTED_KEX = {
-  cid: 'AA==',
-  kAeadRaw: 'AA==',
-  htx: 'AA==',
-  sendDir: 'AA==',
-  recvDir: 'AA==',
+  protocolVersion: 3,
+  cid: 'ERERERERQRGBEREREREREQ==',
+  kAeadRaw: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  htx: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  sendDir: 'AAAAAQ==',
+  recvDir: 'AAAAAg==',
   sendSeq: 4,
   recvSeq: 7,
 };
@@ -107,7 +111,7 @@ function installBrowserStorage(
 
 function storedSession(sendSeq = 4): string {
   return JSON.stringify({
-    version: 4,
+    version: 5,
     channelId: '11111111-1111-4111-8111-111111111111',
     keyExchange: { ...PERSISTED_KEX, sendSeq },
     dappMetadata: { name: 'Stored dApp', url: 'https://stored.invalid' },
@@ -175,7 +179,10 @@ class MockKeyExchange extends EventEmitter {
     latestMockKex = this;
   }
 
-  initiate = vi.fn(() => new Uint8Array(1184));
+  initiate = vi.fn(() => ({
+    publicKey: new Uint8Array(1184),
+    capability: new Uint8Array(32).fill(0xa5),
+  }));
   reset = vi.fn(() => {
     this.exchanged = false;
   });
@@ -187,6 +194,11 @@ class MockKeyExchange extends EventEmitter {
   exportPersisted = vi.fn().mockResolvedValue(null);
   onSynAck = vi.fn();
   getLastAck = vi.fn(() => null);
+  confirmOriginatorAckDelivered = vi.fn(() => {
+    if (this.exchanged) return;
+    this.exchanged = true;
+    this.emit('keys_exchanged');
+  });
 }
 
 vi.mock('../src/SocketClient.js', () => ({
@@ -194,6 +206,7 @@ vi.mock('../src/SocketClient.js', () => ({
 }));
 
 vi.mock('../src/KeyExchange.js', () => ({
+  SYNACK_C0_LEN: 31,
   KeyExchange: Object.assign(
     vi.fn().mockImplementation(() => new MockKeyExchange()),
     { sessionFromPersisted: vi.fn() }
@@ -222,6 +235,19 @@ function walletCiphertext(cm: ConnectionManager): {
   return { id: cm.getChannelId(), clientType: 'wallet', message: 'opaque-ciphertext' };
 }
 
+function walletSynAck(cm: ConnectionManager) {
+  return {
+    id: cm.getChannelId(),
+    clientType: 'wallet',
+    message: {
+      type: KeyExchangeMessageType.SYNACK,
+      ct: VALID_SYNACK_CT,
+      c0: VALID_SYNACK_C0,
+      v: 3,
+    },
+  };
+}
+
 describe('ConnectionManager desync teardown', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -229,7 +255,99 @@ describe('ConnectionManager desync teardown', () => {
   });
 
   afterEach(() => {
+    if (vi.isMockFunction(qrUri.generateConnectionURI)) {
+      vi.mocked(qrUri.generateConnectionURI).mockRestore();
+    }
     vi.unstubAllGlobals();
+  });
+
+  it('canonicalizes credential-free HTTP(S) dApp and redirect metadata URLs', async () => {
+    const cm = new ConnectionManager({
+      dappMetadata: {
+        name: 'Canonical metadata',
+        url: 'HTTPS://DAPP.Example:443/a/../home?mode=1#section',
+        redirectUrl: 'https://Return.Example:443/path/../done?flow=mobile#state',
+      },
+    });
+    await cm.getConnectionURI();
+    const kex = latestMockKex;
+    kex.exchanged = true;
+    kex.emit('keys_exchanged');
+
+    await vi.waitFor(() => {
+      expect(kex.encryptMessage).toHaveBeenCalledOnce();
+    });
+    const payload = JSON.parse(kex.encryptMessage.mock.calls[0][0]) as {
+      originatorInfo: { url: string; redirectUrl: string };
+    };
+    expect(payload.originatorInfo.url).toBe('https://dapp.example/home?mode=1#section');
+    expect(payload.originatorInfo.redirectUrl).toBe(
+      'https://return.example/done?flow=mobile#state'
+    );
+    await cm.disconnect();
+  });
+
+  it.each([
+    ['url', 'javascript:alert(1)'],
+    ['url', 'https://user:secret@dapp.example/'],
+    ['url', 'http://dapp.example/'],
+    ['url', 'http://127.0.0.2/'],
+    ['url', 'mydapp://return'],
+    ['redirectUrl', 'javascript:alert(1)'],
+    ['redirectUrl', 'https://user:secret@dapp.example/return'],
+    ['redirectUrl', 'http://dapp.example/return'],
+    ['redirectUrl', 'http://127.0.0.2/return'],
+    ['redirectUrl', 'mydapp://return'],
+  ] as const)('rejects unsafe dApp metadata %s %s', (field, value) => {
+    expect(
+      () =>
+        new ConnectionManager({
+          dappMetadata: {
+            name: 'Unsafe metadata',
+            url: 'https://safe.example/',
+            redirectUrl: 'https://safe.example/return',
+            [field]: value,
+          },
+        })
+    ).toThrow('Invalid or unbounded dApp metadata');
+  });
+
+  it.each([
+    ['embedded C0 control', 'Safe\u0000evil.example'],
+    ['DEL control', 'Safe\u007fevil.example'],
+    ['C1 control', 'Safe\u0085evil.example'],
+    ['Arabic letter mark', 'Safe\u061cevil.example'],
+    ['zero-width text', 'Safe\u200bevil.example'],
+    ['bidi mark', 'Safe\u200eevil.example'],
+    ['line separator', 'Safe\u2028evil.example'],
+    ['paragraph separator', 'Safe\u2029evil.example'],
+    ['bidi override', 'Safe\u202eevil.example'],
+    ['word joiner', 'Safe\u2060evil.example'],
+    ['bidi isolate', 'Safe\u2066evil.example'],
+    ['byte-order mark', 'Safe\ufeffevil.example'],
+  ] as const)('rejects %s in a dApp display name before pairing', (_label, name) => {
+    expect(
+      () =>
+        new ConnectionManager({
+          dappMetadata: {
+            name,
+            url: 'https://safe.example/',
+          },
+        })
+    ).toThrow('Invalid or unbounded dApp metadata');
+  });
+
+  it('accepts plain HTTP metadata only on explicit localhost hostnames', async () => {
+    for (const [url, redirectUrl] of [
+      ['http://dev.localhost:5173/app', 'http://localhost:5173/return'],
+      ['http://127.0.0.1:5173/app', 'http://127.0.0.1:5173/return'],
+      ['http://[::1]:5173/app', 'http://[::1]:5173/return'],
+    ]) {
+      const cm = new ConnectionManager({
+        dappMetadata: { name: 'Local development', url, redirectUrl },
+      });
+      await cm.disconnect();
+    }
   });
 
   it('terminates the session after two consecutive AEAD open failures', async () => {
@@ -277,6 +395,57 @@ describe('ConnectionManager desync teardown', () => {
     expect(pendingKex.reset).toHaveBeenCalledOnce();
   });
 
+  it('tombstones the old channel and clears authorization before generating another URI', async () => {
+    const { cm, socket: oldSocket } = await pairedManager();
+    const oldChannelId = cm.getChannelId();
+    const account = 'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    await cm.authorizeAccounts([account]);
+    const accountsChanged = vi.fn();
+    cm.on('accounts_changed', accountsChanged);
+
+    const nextUri = await cm.getConnectionURI();
+
+    expect(nextUri).toMatch(/^qrlconnect:/);
+    expect(oldSocket.closeChannel).toHaveBeenCalledOnce();
+    expect(cm.getChannelId()).not.toBe(oldChannelId);
+    expect(cm.getAccounts()).toEqual([]);
+    expect(accountsChanged).toHaveBeenCalledWith([]);
+  });
+
+  it('joins and tombstones a cold stored channel before replacing it', async () => {
+    const values = installBrowserStorage();
+    values.set('@qrlwallet/connect:session', storedSession());
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Cold rotation', url: 'https://cold-rotation.invalid' },
+    });
+    const oldSocket = latestMockSocket;
+    const accountsChanged = vi.fn();
+    cm.on('accounts_changed', accountsChanged);
+
+    await expect(cm.getConnectionURI()).resolves.toMatch(/^qrlconnect:/);
+
+    expect(oldSocket.joinChannel).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+    expect(oldSocket.closeChannel).toHaveBeenCalledOnce();
+    expect(cm.getAccounts()).toEqual([]);
+    expect(accountsChanged).toHaveBeenCalledWith([]);
+  });
+
+  it('joins and tombstones a cold stored channel on disconnect', async () => {
+    const values = installBrowserStorage();
+    values.set('@qrlwallet/connect:session', storedSession());
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Cold disconnect', url: 'https://cold-disconnect.invalid' },
+    });
+    const socket = latestMockSocket;
+
+    await cm.disconnect();
+
+    expect(socket.joinChannel).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+    expect(socket.closeChannel).toHaveBeenCalledOnce();
+    expect(values.has('@qrlwallet/connect:session')).toBe(false);
+    expect(cm.getAccounts()).toEqual([]);
+  });
+
   it('retires the socket and handshake when an initial channel join fails', async () => {
     const cm = new ConnectionManager({
       dappMetadata: { name: 'Failed join', url: 'https://failed-join.invalid' },
@@ -291,6 +460,35 @@ describe('ConnectionManager desync teardown', () => {
     expect(latestMockKex.reset).toHaveBeenCalledOnce();
     expect(cm.isPaired()).toBe(false);
     expect(cm.getStatus()).toBe(ConnectionStatus.DISCONNECTED);
+  });
+
+  it('retires capability, transport, and Web Lock when URI generation fails', async () => {
+    const locks = fakeLockManager();
+    installBrowserStorage({ lockManager: locks });
+    vi.spyOn(qrUri, 'generateConnectionURI').mockRejectedValueOnce(
+      new Error('fingerprint generation failed')
+    );
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Failed URI', url: 'https://failed-uri.invalid' },
+    });
+
+    await expect(cm.getConnectionURI()).rejects.toThrow('fingerprint generation failed');
+
+    const failedKex = latestMockKex;
+    const failedSocket = latestMockSocket;
+    const initiated = failedKex.initiate.mock.results[0]!.value;
+    expect(Array.from(initiated.capability)).toEqual(new Array(32).fill(0));
+    expect(failedKex.reset).toHaveBeenCalledOnce();
+    expect(failedSocket.leaveChannel).toHaveBeenCalledOnce();
+    expect(failedSocket.disconnect).toHaveBeenCalledOnce();
+    expect(cm.getStatus()).toBe(ConnectionStatus.DISCONNECTED);
+    expect(cm.isPaired()).toBe(false);
+
+    const second = new ConnectionManager({
+      dappMetadata: { name: 'Second tab', url: 'https://second.invalid' },
+    });
+    await expect(second.getConnectionURI()).resolves.toMatch(/^qrlconnect:/);
+    await second.disconnect();
   });
 
   it('tombstones and retires a pairing after SYNACK authentication fails', async () => {
@@ -309,9 +507,9 @@ describe('ConnectionManager desync teardown', () => {
       clientType: 'wallet',
       message: {
         type: KeyExchangeMessageType.SYNACK,
-        ct: 'AA==',
-        c0: 'AA==',
-        v: 2,
+        ct: VALID_SYNACK_CT,
+        c0: VALID_SYNACK_C0,
+        v: 3,
       },
     });
 
@@ -322,6 +520,210 @@ describe('ConnectionManager desync teardown', () => {
     expect(kex.reset).toHaveBeenCalledOnce();
     expect(cm.getStatus()).toBe(ConnectionStatus.DISCONNECTED);
     expect(cm.isPaired()).toBe(false);
+  });
+
+  it('publishes the session only after the relay acknowledges the originator ACK', async () => {
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'ACK gate', url: 'https://ack-gate.invalid' },
+    });
+    await cm.getConnectionURI();
+    const socket = latestMockSocket;
+    const kex = latestMockKex;
+    kex.onSynAck.mockResolvedValueOnce({
+      type: KeyExchangeMessageType.ACK,
+      c1: btoa(String.fromCharCode(...new Uint8Array(29))),
+      v: 3,
+    });
+    let acknowledge!: () => void;
+    const pendingAck = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    socket.sendMessage.mockImplementationOnce(() => pendingAck);
+
+    socket.emit('message', walletSynAck(cm));
+
+    await vi.waitFor(() => {
+      expect(socket.sendMessage).toHaveBeenCalledOnce();
+    });
+    expect(kex.confirmOriginatorAckDelivered).not.toHaveBeenCalled();
+    expect(kex.encryptMessage).not.toHaveBeenCalled();
+    expect(cm.getStatus()).toBe(ConnectionStatus.KEY_EXCHANGE);
+    expect(cm.isPaired()).toBe(false);
+
+    acknowledge();
+    await vi.waitFor(() => {
+      expect(kex.confirmOriginatorAckDelivered).toHaveBeenCalledOnce();
+      expect(kex.encryptMessage).toHaveBeenCalledOnce();
+    });
+    expect(cm.getStatus()).toBe(ConnectionStatus.CONNECTED);
+    expect(cm.isPaired()).toBe(true);
+  });
+
+  it('queues originator identity before a synchronous CONNECTED listener request', async () => {
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Ordering gate', url: 'https://ordering.invalid' },
+    });
+    await cm.getConnectionURI();
+    const socket = latestMockSocket;
+    const kex = latestMockKex;
+    const requestSends: Promise<void>[] = [];
+
+    cm.on('status_changed', (status) => {
+      if (status !== ConnectionStatus.CONNECTED) return;
+      requestSends.push(
+        cm.sendJsonRpc({
+          jsonrpc: '2.0',
+          id: 'sync-request-accounts',
+          method: 'qrl_requestAccounts',
+          params: [],
+        })
+      );
+    });
+
+    kex.exchanged = true;
+    kex.emit('keys_exchanged');
+
+    await vi.waitFor(() => {
+      expect(kex.encryptMessage).toHaveBeenCalledTimes(2);
+    });
+    const encryptedPayloads = kex.encryptMessage.mock.calls.map(
+      ([plaintext]) => JSON.parse(plaintext) as { type: string; method?: string }
+    );
+    expect(encryptedPayloads).toEqual([
+      expect.objectContaining({ type: 'originator_info' }),
+      expect.objectContaining({ type: 'jsonrpc', method: 'qrl_requestAccounts' }),
+    ]);
+    await Promise.all(requestSends);
+    expect(socket.sendMessage).toHaveBeenCalledTimes(2);
+    await cm.disconnect();
+  });
+
+  it('retires a provisional session when ACK delivery is ambiguous', async () => {
+    const stored = installBrowserStorage();
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Failed ACK', url: 'https://failed-ack.invalid' },
+    });
+    await cm.getConnectionURI();
+    const socket = latestMockSocket;
+    const kex = latestMockKex;
+    kex.onSynAck.mockResolvedValueOnce({
+      type: KeyExchangeMessageType.ACK,
+      c1: btoa(String.fromCharCode(...new Uint8Array(29))),
+      v: 3,
+    });
+    socket.sendMessage.mockRejectedValueOnce(new Error('relay ack lost'));
+    const terminated = vi.fn();
+    cm.on('session_terminated', terminated);
+
+    socket.emit('message', walletSynAck(cm));
+
+    await vi.waitFor(() => {
+      expect(terminated).toHaveBeenCalledOnce();
+    });
+    expect(kex.confirmOriginatorAckDelivered).not.toHaveBeenCalled();
+    expect(kex.encryptMessage).not.toHaveBeenCalled();
+    expect(kex.reset).toHaveBeenCalledOnce();
+    expect(socket.closeChannel).toHaveBeenCalledOnce();
+    expect(cm.isPaired()).toBe(false);
+    expect(cm.getStatus()).toBe(ConnectionStatus.DISCONNECTED);
+    expect(stored.size).toBe(0);
+  });
+
+  it('queues an early wallet ciphertext until ACK delivery completes', async () => {
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'ACK race', url: 'https://ack-race.invalid' },
+    });
+    await cm.getConnectionURI();
+    const socket = latestMockSocket;
+    const kex = latestMockKex;
+    kex.onSynAck.mockResolvedValueOnce({
+      type: KeyExchangeMessageType.ACK,
+      c1: btoa(String.fromCharCode(...new Uint8Array(29))),
+      v: 3,
+    });
+    kex.decryptMessage.mockResolvedValue(
+      JSON.stringify({ type: 'wallet_info', accounts: [], chainId: '0x1' })
+    );
+    let acknowledge!: () => void;
+    const pendingAck = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    socket.sendMessage.mockImplementationOnce(() => pendingAck);
+
+    socket.emit('message', walletSynAck(cm));
+    socket.emit('message', walletCiphertext(cm));
+
+    await vi.waitFor(() => {
+      expect(socket.sendMessage).toHaveBeenCalledOnce();
+    });
+    expect(kex.decryptMessage).not.toHaveBeenCalled();
+
+    acknowledge();
+    await vi.waitFor(() => {
+      expect(kex.decryptMessage).toHaveBeenCalledOnce();
+    });
+    expect(kex.confirmOriginatorAckDelivered).toHaveBeenCalledOnce();
+    expect(cm.getStatus()).toBe(ConnectionStatus.CONNECTED);
+  });
+
+  it('drops cross-channel and self-role envelopes before they reach session state', async () => {
+    const { cm, socket, kex } = await pairedManager();
+    kex.decryptMessage.mockRejectedValue(new Error('must not be reached'));
+    const channelId = cm.getChannelId();
+
+    socket.emit('message', {
+      id: '22222222-2222-4222-8222-222222222222',
+      clientType: 'wallet',
+      message: 'cross-channel-ciphertext',
+    });
+    socket.emit('message', {
+      id: channelId,
+      clientType: 'dapp',
+      message: 'self-role-ciphertext',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(kex.decryptMessage).not.toHaveBeenCalled();
+    expect(socket.closeChannel).not.toHaveBeenCalled();
+    expect(cm.isPaired()).toBe(true);
+  });
+
+  it('drops oversized or non-canonical SYNACK fields before key exchange decoding', async () => {
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Bounded handshake', url: 'https://bounded.invalid' },
+    });
+    await cm.getConnectionURI();
+    const socket = latestMockSocket;
+    const kex = latestMockKex;
+
+    socket.emit('message', {
+      id: cm.getChannelId(),
+      clientType: 'wallet',
+      message: {
+        type: KeyExchangeMessageType.SYNACK,
+        ct: `${VALID_SYNACK_CT}AAAA`,
+        c0: VALID_SYNACK_C0,
+        v: 3,
+      },
+    });
+    socket.emit('message', {
+      id: cm.getChannelId(),
+      clientType: 'wallet',
+      message: {
+        type: KeyExchangeMessageType.SYNACK,
+        ct: VALID_SYNACK_CT,
+        c0: `${VALID_SYNACK_C0.slice(0, -2)}AB`,
+        v: 3,
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(kex.onSynAck).not.toHaveBeenCalled();
+    expect(socket.closeChannel).not.toHaveBeenCalled();
+    expect(cm.getStatus()).toBe(ConnectionStatus.WAITING);
+    await cm.disconnect();
   });
 
   it('resets the failure counter on a successful decrypt', async () => {
@@ -366,6 +768,60 @@ describe('ConnectionManager desync teardown', () => {
     expect(cm.getStatus()).toBe(ConnectionStatus.RECONNECTING);
   });
 
+  it('drains an auto-rejoin backlog once and persists counters before CONNECTED', async () => {
+    const order: string[] = [];
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        order.push('persist');
+        values.set(key, value);
+      },
+      removeItem: (key: string) => values.delete(key),
+    });
+    vi.stubGlobal('navigator', { locks: fakeLockManager() });
+    const { cm, socket, kex } = await pairedManager();
+    kex.exportPersisted.mockResolvedValue({ ...PERSISTED_KEX });
+    kex.decryptMessage.mockImplementation((ciphertext: string) => {
+      order.push(`decrypt:${ciphertext}`);
+      return Promise.resolve(
+        JSON.stringify({
+          type: 'jsonrpc',
+          jsonrpc: '2.0',
+          id: ciphertext,
+          result: ciphertext,
+        })
+      );
+    });
+    cm.on('status_changed', (status) => order.push(`status:${status}`));
+    socket.emit('participants_changed', { event: 'join', clientType: 'wallet' });
+    socket.emit('disconnected', 'transport close');
+    order.length = 0;
+
+    socket.emit('reconnected', {
+      bufferedMessages: [
+        { id: cm.getChannelId(), clientType: 'wallet', message: 'ciphertext-1' },
+        { id: cm.getChannelId(), clientType: 'wallet', message: 'ciphertext-2' },
+      ],
+      channelPublicKey: null,
+      participants: ['wallet'],
+      terminated: false,
+    });
+
+    await vi.waitFor(() => {
+      expect(cm.getStatus()).toBe(ConnectionStatus.CONNECTED);
+    });
+    expect(kex.decryptMessage.mock.calls.map(([ciphertext]) => ciphertext)).toEqual([
+      'ciphertext-1',
+      'ciphertext-2',
+    ]);
+    expect(order.filter((entry) => entry === 'persist')).toHaveLength(2);
+    const connectedIndex = order.indexOf(`status:${ConnectionStatus.CONNECTED}`);
+    expect(connectedIndex).toBeGreaterThan(order.lastIndexOf('persist'));
+    await Promise.resolve();
+    expect(kex.decryptMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('does not count a throwing consumer listener toward the teardown', async () => {
     const { cm, socket, kex } = await pairedManager();
     kex.decryptMessage
@@ -390,6 +846,45 @@ describe('ConnectionManager desync teardown', () => {
     expect(terminated).not.toHaveBeenCalled();
   });
 
+  it('drops malformed JSON-RPC responses at the decrypted boundary', async () => {
+    const { cm, socket, kex } = await pairedManager();
+    kex.decryptMessage
+      .mockResolvedValueOnce(JSON.stringify({ type: 'jsonrpc', id: 'a', result: 1 }))
+      .mockResolvedValueOnce(
+        JSON.stringify({ type: 'jsonrpc', jsonrpc: '2.0', id: 'b', result: 1, error: {} })
+      )
+      .mockResolvedValueOnce(JSON.stringify({ type: 'jsonrpc', jsonrpc: '2.0', id: 'c' }))
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          type: 'jsonrpc',
+          jsonrpc: '2.0',
+          id: 'd',
+          error: { code: 1.5, message: 'fractional code' },
+        })
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          type: 'jsonrpc',
+          jsonrpc: '2.0',
+          id: 'e',
+          error: { code: -32000, message: 'x'.repeat(1025) },
+        })
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({ type: 'jsonrpc', jsonrpc: '2.0', id: 'ok', result: 'accepted' })
+      );
+    const responses = vi.fn();
+    cm.on('jsonrpc_response', responses);
+
+    for (let i = 0; i < 6; i++) socket.emit('message', walletCiphertext(cm));
+
+    await vi.waitFor(() => {
+      expect(kex.decryptMessage).toHaveBeenCalledTimes(6);
+    });
+    expect(responses).toHaveBeenCalledOnce();
+    expect(responses).toHaveBeenCalledWith({ jsonrpc: '2.0', id: 'ok', result: 'accepted' });
+  });
+
   it('fails closed before sending when the advanced counter cannot be persisted', async () => {
     installBrowserStorage({ failWrites: true });
     const { cm, socket, kex } = await pairedManager();
@@ -402,6 +897,43 @@ describe('ConnectionManager desync teardown', () => {
     expect(socket.sendMessage).not.toHaveBeenCalled();
     expect(socket.closeChannel).toHaveBeenCalledOnce();
     expect(cm.isPaired()).toBe(false);
+  });
+
+  it('retires the session when sealing fails after counter reservation', async () => {
+    const { cm, socket, kex } = await pairedManager();
+    kex.encryptMessage.mockRejectedValueOnce(new Error('WebCrypto seal failed'));
+
+    await expect(
+      cm.sendJsonRpc({ jsonrpc: '2.0', id: 'seal-fail', method: 'qrl_blockNumber' })
+    ).rejects.toThrow('WebCrypto seal failed');
+
+    expect(socket.sendMessage).not.toHaveBeenCalled();
+    expect(socket.closeChannel).toHaveBeenCalledOnce();
+    expect(cm.isPaired()).toBe(false);
+  });
+
+  it('rejects unbounded ids and method names at the final outbound boundary', async () => {
+    const { cm, socket, kex } = await pairedManager();
+
+    expect(() =>
+      cm.sendJsonRpc({ jsonrpc: '2.0', id: 'x'.repeat(129), method: 'qrl_blockNumber' })
+    ).toThrow('Invalid JSON-RPC request id');
+    expect(() =>
+      cm.sendJsonRpc({
+        jsonrpc: '2.0',
+        id: Number.MAX_SAFE_INTEGER + 1,
+        method: 'qrl_blockNumber',
+      })
+    ).toThrow('Invalid JSON-RPC request id');
+    expect(() => cm.sendJsonRpc({ jsonrpc: '2.0', id: 'valid', method: 'qrl method' })).toThrow(
+      'Unsupported JSON-RPC method'
+    );
+    expect(() =>
+      cm.sendJsonRpc({ jsonrpc: '2.0', id: 'valid', method: 'qrl_getTransactionByHash' })
+    ).toThrow('Unsupported JSON-RPC method');
+
+    expect(kex.encryptMessage).not.toHaveBeenCalled();
+    expect(socket.sendMessage).not.toHaveBeenCalled();
   });
 
   it('tombstones the session when a relay send outcome is unknown', async () => {
@@ -521,7 +1053,7 @@ describe('ConnectionManager desync teardown', () => {
     expect(cm.isPaired()).toBe(true);
   });
 
-  it('does not expose mutable references to authenticated account state', async () => {
+  it('does not authorize or disclose accounts from fresh WALLET_INFO metadata', async () => {
     const { cm, socket, kex } = await pairedManager();
     kex.decryptMessage.mockResolvedValue(
       JSON.stringify({
@@ -530,21 +1062,64 @@ describe('ConnectionManager desync teardown', () => {
         chainId: '0x539',
       })
     );
-    cm.on('wallet_info', (info) => {
-      info.accounts[0] = 'Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const walletInfo = vi.fn();
+    const accountsChanged = vi.fn();
+    cm.on('wallet_info', walletInfo);
+    cm.on('accounts_changed', accountsChanged);
+
+    socket.emit('message', walletCiphertext(cm));
+    await vi.waitFor(() => {
+      expect(walletInfo).toHaveBeenCalledWith({ accounts: [], chainId: '0x539' });
     });
+    expect(accountsChanged).not.toHaveBeenCalled();
+    expect(cm.getAccounts()).toEqual([]);
+  });
+
+  it('persists approved accounts without exposing mutable internal references', async () => {
+    const { cm } = await pairedManager();
     cm.on('accounts_changed', (accounts) => {
       accounts.length = 0;
     });
 
-    socket.emit('message', walletCiphertext(cm));
-    await vi.waitFor(() => {
-      expect(cm.getAccounts()).toEqual(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
-    });
+    await expect(
+      cm.authorizeAccounts(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'])
+    ).resolves.toEqual(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
 
     const returned = cm.getAccounts();
     returned[0] = 'Qcccccccccccccccccccccccccccccccccccccccc';
     expect(cm.getAccounts()).toEqual(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+  });
+
+  it('rejects multi-account approval results at the session boundary', async () => {
+    const { cm } = await pairedManager();
+
+    await expect(
+      cm.authorizeAccounts([
+        'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        'Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      ])
+    ).rejects.toThrow('invalid account list');
+    expect(cm.getAccounts()).toEqual([]);
+  });
+
+  it('stores only accounts committed through the approval result boundary', async () => {
+    const values = installBrowserStorage();
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Account persistence', url: 'https://accounts.invalid' },
+    });
+    await cm.getConnectionURI();
+    const kex = latestMockKex;
+    kex.exchanged = true;
+    kex.exportPersisted.mockResolvedValue(PERSISTED_KEX);
+
+    const account = 'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    await cm.authorizeAccounts([account]);
+
+    const stored = JSON.parse(values.get('@qrlwallet/connect:session') ?? '{}') as {
+      connectedAccounts?: unknown;
+    };
+    expect(stored.connectedAccounts).toEqual([account]);
+    await cm.disconnect();
   });
 
   it('drops authenticated wallet info containing a malformed current-format address', async () => {
@@ -562,6 +1137,23 @@ describe('ConnectionManager desync teardown', () => {
 
     expect(walletInfo).not.toHaveBeenCalled();
     expect(cm.getAccounts()).toEqual([]);
+  });
+
+  it('drops authenticated wallet info containing a non-canonical chain id', async () => {
+    const { cm, socket, kex } = await pairedManager();
+    kex.decryptMessage.mockResolvedValue(
+      JSON.stringify({ type: 'wallet_info', accounts: [], chainId: '0x0539' })
+    );
+    const walletInfo = vi.fn();
+    cm.on('wallet_info', walletInfo);
+
+    socket.emit('message', walletCiphertext(cm));
+    await vi.waitFor(() => {
+      expect(kex.decryptMessage).toHaveBeenCalledOnce();
+    });
+
+    expect(walletInfo).not.toHaveBeenCalled();
+    expect(cm.getChainId()).toBe('0x0');
   });
 
   it('does not revive a restore that was cancelled during key hydration', async () => {
@@ -591,7 +1183,10 @@ describe('ConnectionManager desync teardown', () => {
     finishHydration();
 
     await expect(reconnect).resolves.toBe(false);
-    expect(latestMockSocket.joinChannel).not.toHaveBeenCalled();
+    expect(latestMockSocket.joinChannel).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    expect(latestMockSocket.closeChannel).toHaveBeenCalledOnce();
     expect(cm.isPaired()).toBe(false);
   });
 
@@ -608,8 +1203,8 @@ describe('ConnectionManager desync teardown', () => {
 
     const reconnect = cm.reconnect();
     const disconnect = cm.disconnect();
-    // Let disconnect() advance past flushTerminate() into release() before the
-    // browser dispatches the deferred Web Locks callback.
+    // Let disconnect() retire the cold relay channel and advance into
+    // release() before the browser dispatches the deferred Web Locks callback.
     await Promise.resolve();
     const dispatch = locks.dispatch();
 
@@ -617,7 +1212,10 @@ describe('ConnectionManager desync teardown', () => {
     await dispatch;
     await expect(reconnect).resolves.toBe(false);
     expect(hydrate).not.toHaveBeenCalled();
-    expect(latestMockSocket.joinChannel).not.toHaveBeenCalled();
+    expect(latestMockSocket.joinChannel).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    expect(latestMockSocket.closeChannel).toHaveBeenCalledOnce();
     expect(cm.isPaired()).toBe(false);
   });
 
@@ -826,10 +1424,10 @@ describe('ConnectionManager desync teardown', () => {
     await second.disconnect();
   });
 
-  it('drops pre-ownership v3 sessions instead of trusting their counters', async () => {
+  it('drops pre-PQP3 version 4 sessions instead of restoring their keys', async () => {
     const values = installBrowserStorage();
     const legacy = JSON.parse(storedSession()) as Record<string, unknown>;
-    legacy.version = 3;
+    legacy.version = 4;
     values.set('@qrlwallet/connect:session', JSON.stringify(legacy));
 
     const cm = new ConnectionManager({
@@ -839,6 +1437,85 @@ describe('ConnectionManager desync teardown', () => {
     expect(cm.hasStoredSession()).toBe(false);
     expect(values.has('@qrlwallet/connect:session')).toBe(false);
     await cm.disconnect();
+  });
+
+  it('drops a version 5 record whose inner key exchange predates protocol v3', async () => {
+    const values = installBrowserStorage();
+    const legacy = JSON.parse(storedSession()) as {
+      keyExchange: Record<string, unknown>;
+    };
+    legacy.keyExchange.protocolVersion = 2;
+    values.set('@qrlwallet/connect:session', JSON.stringify(legacy));
+
+    const cm = new ConnectionManager({
+      dappMetadata: { name: 'Inner migration', url: 'https://inner-migration.invalid' },
+    });
+
+    expect(cm.hasStoredSession()).toBe(false);
+    expect(values.has('@qrlwallet/connect:session')).toBe(false);
+    await cm.disconnect();
+  });
+
+  it('drops persisted sessions whose base64 fields do not have exact decoded widths', async () => {
+    const fields = ['cid', 'kAeadRaw', 'htx', 'sendDir', 'recvDir'] as const;
+    for (const field of fields) {
+      const values = installBrowserStorage();
+      const malformed = JSON.parse(storedSession()) as {
+        keyExchange: Record<string, unknown>;
+      };
+      malformed.keyExchange[field] = 'AA==';
+      values.set('@qrlwallet/connect:session', JSON.stringify(malformed));
+
+      const cm = new ConnectionManager({
+        dappMetadata: { name: `Malformed ${field}`, url: 'https://base64.invalid' },
+      });
+      expect(cm.hasStoredSession()).toBe(false);
+      expect(values.has('@qrlwallet/connect:session')).toBe(false);
+      await cm.disconnect();
+    }
+  });
+
+  it('drops poisoned stored metadata, chain ids, and timestamps', async () => {
+    const poisoners: ((session: Record<string, unknown>) => void)[] = [
+      (session) => {
+        const metadata = session.dappMetadata as Record<string, unknown>;
+        metadata.name = 'x'.repeat(129);
+      },
+      (session) => {
+        const metadata = session.dappMetadata as Record<string, unknown>;
+        metadata.url = 'javascript:alert(1)';
+      },
+      (session) => {
+        session.chainId = '0x0539';
+      },
+      (session) => {
+        session.createdAt = Date.now() + 10 * 60 * 1000;
+        session.lastActivity = session.createdAt;
+      },
+      (session) => {
+        session.lastActivity = 1;
+      },
+      (session) => {
+        session.connectedAccounts = [
+          'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        ];
+      },
+    ];
+
+    for (const poison of poisoners) {
+      const values = installBrowserStorage();
+      const session = JSON.parse(storedSession()) as Record<string, unknown>;
+      poison(session);
+      values.set('@qrlwallet/connect:session', JSON.stringify(session));
+
+      const cm = new ConnectionManager({
+        dappMetadata: { name: 'Poisoned storage', url: 'https://poisoned.invalid' },
+      });
+      expect(cm.hasStoredSession()).toBe(false);
+      expect(values.has('@qrlwallet/connect:session')).toBe(false);
+      await cm.disconnect();
+    }
   });
 
   it('drops a persisted session whose numeric counter cannot advance safely', async () => {
@@ -877,7 +1554,7 @@ describe('ConnectionManager desync teardown', () => {
     });
     await cm.getConnectionURI();
     const socket = latestMockSocket;
-    socket.closeChannel.mockResolvedValue(false);
+    socket.closeChannel.mockResolvedValue(true);
     values.set('@qrlwallet/connect:session', storedSession());
     storageOptions.failRemoves = true;
 
@@ -897,14 +1574,13 @@ describe('ConnectionManager desync teardown', () => {
       dappMetadata: { name: 'Retirement failure', url: 'https://retirement.invalid' },
     });
     await first.getConnectionURI();
-    latestMockSocket.closeChannel.mockResolvedValue(false);
+    const firstSocket = latestMockSocket;
+    firstSocket.closeChannel.mockResolvedValue(false);
     values.set('@qrlwallet/connect:session', storedSession());
     storageOptions.failRemoves = true;
     storageOptions.failWrites = true;
 
-    await expect(first.disconnect()).rejects.toThrow(
-      'Unable to invalidate stored session; retaining browser-tab ownership'
-    );
+    await expect(first.disconnect()).rejects.toThrow('Unable to retire the relay channel');
 
     const second = new ConnectionManager({
       dappMetadata: { name: 'Second tab', url: 'https://second-tab.invalid' },
@@ -914,6 +1590,7 @@ describe('ConnectionManager desync teardown', () => {
     // Restore storage only for deterministic cleanup of the retained lock.
     storageOptions.failRemoves = false;
     storageOptions.failWrites = false;
+    firstSocket.closeChannel.mockResolvedValue(true);
     await first.disconnect();
     await second.disconnect();
   });
@@ -935,7 +1612,7 @@ describe('ConnectionManager desync teardown', () => {
     storageOptions.failWrites = true;
 
     await expect(first.getConnectionURI()).rejects.toThrow(
-      'Unable to clear the previous persisted AEAD session'
+      'Unable to invalidate stored session; retaining browser-tab ownership'
     );
 
     const second = new ConnectionManager({

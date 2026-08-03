@@ -1,27 +1,40 @@
 /**
  * Connection Manager - orchestrates socket lifecycle, the post-quantum
  * handshake, encrypted message routing, and session persistence for the
- * dApp side of QRL Connect v2.
+ * dApp side of QRL Connect v3.
  */
 
 import EventEmitter from 'eventemitter3';
 import {
   KeyExchange,
+  SYNACK_C0_LEN,
   type AckMessage,
   type PersistedSession,
   type SynAckMessage,
 } from './KeyExchange.js';
-import { SocketClient } from './SocketClient.js';
+import { SocketClient, type JoinResult } from './SocketClient.js';
 import {
   DEFAULT_RELAY_URL,
   STORAGE_KEY_PREFIX,
   SESSION_TTL_MS,
   WALLET_UNRESPONSIVE_MS,
   RECONNECT_WALLET_PROBE_MS,
+  PROTOCOL_VERSION,
+  classifyRpcMethod,
   isCurrentQrlAddress,
+  isExplicitLoopbackHostname,
+  isValidJsonRpcId,
+  isValidJsonRpcMethod,
+  normalizeRelayUrl,
 } from './config.js';
 import { cidFromString, generateConnectionURI } from './utils/qrUri.js';
-import { toBase64 } from './PQCrypto.js';
+import {
+  DIR_DAPP_TX,
+  DIR_WALLET_TX,
+  ML_KEM_768_CT_LEN,
+  isCanonicalBase64OfLength,
+  toBase64,
+} from './PQCrypto.js';
 import { randomUuid } from './crypto/primitives.js';
 import { getBrowserLockManager, getBrowserStorage, SessionOwnership } from './SessionOwnership.js';
 import { log, warn, error as logError } from './utils/logger.js';
@@ -37,6 +50,20 @@ import {
 } from './types.js';
 
 const DAPP_PARTICIPANT_CONFLICT_ERROR_MSG = 'dapp participant is already connected';
+const MAX_RELAY_CIPHERTEXT_CHARS = 256 * 1024;
+const MAX_JSON_RPC_ERROR_MESSAGE_CHARS = 1024;
+const MAX_DAPP_NAME_CHARS = 128;
+const MAX_DAPP_URL_CHARS = 2048;
+const MAX_DAPP_ICON_CHARS = 4096;
+const MAX_CHAIN_ID_CHARS = 66;
+const MAX_STORED_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const PERSISTED_CID_LEN = 16;
+const PERSISTED_AEAD_KEY_LEN = 32;
+const PERSISTED_HTX_LEN = 32;
+const PERSISTED_DIRECTION_LEN = 4;
+const MAX_CONNECTED_ACCOUNTS = 1;
+const DAPP_TX_B64 = toBase64(DIR_DAPP_TX);
+const WALLET_TX_B64 = toBase64(DIR_WALLET_TX);
 
 // ── Wire-input validation ─────────────────────────────────────
 // Everything that arrives from the relay (or from localStorage) is untrusted
@@ -47,17 +74,99 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** Match the wallet's visual-spoofing rejection for authenticated dApp names. */
+function hasUnsafeDAppNameCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x061c ||
+      code === 0x180e ||
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x2028 && code <= 0x202e) ||
+      code === 0x2060 ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function canonicalChainId(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MAX_CHAIN_ID_CHARS ||
+    !/^0x[0-9a-fA-F]+$/.test(value)
+  ) {
+    return null;
+  }
+  try {
+    return `0x${BigInt(value).toString(16)}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Canonicalize metadata navigation URLs at the dApp/wallet trust boundary. */
+function canonicalDAppHttpUrl(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MAX_DAPP_URL_CHARS ||
+    value.trim() !== value
+  ) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    const isLoopback = isExplicitLoopbackHostname(hostname);
+    if (
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback)) ||
+      url.username !== '' ||
+      url.password !== '' ||
+      hostname === ''
+    ) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isBoundedTimestamp(value: unknown, now: number): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= now + MAX_STORED_CLOCK_SKEW_MS
+  );
+}
+
 function isCurrentQrlAddressArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every(isCurrentQrlAddress);
+  return (
+    Array.isArray(v) &&
+    v.length <= MAX_CONNECTED_ACCOUNTS &&
+    v.every(isCurrentQrlAddress) &&
+    new Set(v).size === v.length
+  );
 }
 
 function isRelayMessage(v: unknown): v is RelayMessage {
   return (
     isRecord(v) &&
     typeof v.id === 'string' &&
+    v.id.length > 0 &&
+    v.id.length <= 128 &&
     (v.clientType === 'dapp' || v.clientType === 'wallet') &&
     'message' in v &&
-    (typeof v.message === 'string' || (typeof v.message === 'object' && v.message !== null))
+    ((typeof v.message === 'string' && v.message.length <= MAX_RELAY_CIPHERTEXT_CHARS) ||
+      isRecord(v.message))
   );
 }
 
@@ -68,16 +177,29 @@ const MESSAGE_TYPE_BY_VALUE: Record<string, MessageType | undefined> = Object.fr
 
 /** Validate a decrypted wire object into a JsonRpcResponse, or null if malformed. */
 function parseJsonRpcResponse(msg: Record<string, unknown>): JsonRpcResponse | null {
-  if (typeof msg.id !== 'string' && typeof msg.id !== 'number') return null;
+  if (msg.jsonrpc !== '2.0' || !isValidJsonRpcId(msg.id)) return null;
+  const hasResult = Object.prototype.hasOwnProperty.call(msg, 'result');
+  const hasError = Object.prototype.hasOwnProperty.call(msg, 'error');
+  if (hasResult === hasError) return null;
   const out: JsonRpcResponse = {
-    jsonrpc: typeof msg.jsonrpc === 'string' ? msg.jsonrpc : '2.0',
+    jsonrpc: '2.0',
     id: msg.id,
   };
-  if ('result' in msg) out.result = msg.result;
-  if (msg.error !== undefined) {
-    if (!isRecord(msg.error) || typeof msg.error.message !== 'string') return null;
+  if (hasResult) out.result = msg.result;
+  if (hasError) {
+    const code = isRecord(msg.error) ? msg.error.code : undefined;
+    if (
+      !isRecord(msg.error) ||
+      typeof code !== 'number' ||
+      !Number.isSafeInteger(code) ||
+      typeof msg.error.message !== 'string' ||
+      msg.error.message.length === 0 ||
+      msg.error.message.length > MAX_JSON_RPC_ERROR_MESSAGE_CHARS
+    ) {
+      return null;
+    }
     out.error = {
-      code: typeof msg.error.code === 'number' ? msg.error.code : -32000,
+      code,
       message: msg.error.message,
       data: msg.error.data,
     };
@@ -87,8 +209,9 @@ function parseJsonRpcResponse(msg: Record<string, unknown>): JsonRpcResponse | n
 
 function parsePersistedKex(v: unknown): PersistedSession | null {
   if (!isRecord(v)) return null;
-  const { cid, kAeadRaw, htx, sendDir, recvDir, sendSeq, recvSeq } = v;
+  const { protocolVersion, cid, kAeadRaw, htx, sendDir, recvDir, sendSeq, recvSeq } = v;
   if (
+    protocolVersion !== PROTOCOL_VERSION ||
     typeof cid !== 'string' ||
     typeof kAeadRaw !== 'string' ||
     typeof htx !== 'string' ||
@@ -101,28 +224,63 @@ function parsePersistedKex(v: unknown): PersistedSession | null {
     typeof recvSeq !== 'number' ||
     !Number.isSafeInteger(recvSeq) ||
     recvSeq >= Number.MAX_SAFE_INTEGER ||
-    recvSeq < 0
+    recvSeq < 0 ||
+    !isCanonicalBase64OfLength(cid, PERSISTED_CID_LEN) ||
+    !isCanonicalBase64OfLength(kAeadRaw, PERSISTED_AEAD_KEY_LEN) ||
+    !isCanonicalBase64OfLength(htx, PERSISTED_HTX_LEN) ||
+    !isCanonicalBase64OfLength(sendDir, PERSISTED_DIRECTION_LEN) ||
+    !isCanonicalBase64OfLength(recvDir, PERSISTED_DIRECTION_LEN) ||
+    sendDir !== DAPP_TX_B64 ||
+    recvDir !== WALLET_TX_B64
   ) {
     return null;
   }
-  return { cid, kAeadRaw, htx, sendDir, recvDir, sendSeq, recvSeq };
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    cid,
+    kAeadRaw,
+    htx,
+    sendDir,
+    recvDir,
+    sendSeq,
+    recvSeq,
+  };
 }
 
 function parseDAppMetadata(v: unknown): DAppMetadata | null {
-  if (!isRecord(v) || typeof v.name !== 'string' || typeof v.url !== 'string') return null;
-  const meta: DAppMetadata = { name: v.name, url: v.url };
-  if (typeof v.icon === 'string') meta.icon = v.icon;
-  if (typeof v.redirectUrl === 'string') meta.redirectUrl = v.redirectUrl;
+  if (
+    !isRecord(v) ||
+    typeof v.name !== 'string' ||
+    v.name.length === 0 ||
+    v.name.length > MAX_DAPP_NAME_CHARS ||
+    v.name.trim() !== v.name ||
+    hasUnsafeDAppNameCharacter(v.name) ||
+    typeof v.url !== 'string'
+  ) {
+    return null;
+  }
+  const url = canonicalDAppHttpUrl(v.url);
+  if (!url) return null;
+  const meta: DAppMetadata = { name: v.name, url };
+  if (v.icon !== undefined) {
+    if (typeof v.icon !== 'string' || v.icon.length > MAX_DAPP_ICON_CHARS) return null;
+    meta.icon = v.icon;
+  }
+  if (v.redirectUrl !== undefined) {
+    const redirectUrl = canonicalDAppHttpUrl(v.redirectUrl);
+    if (!redirectUrl) return null;
+    meta.redirectUrl = redirectUrl;
+  }
   return meta;
 }
 
 /**
  * Validate raw localStorage JSON into a DAppSession, or null if malformed.
  *
- * Only version 4 is accepted. v2 sessions used sparse counter checkpoints.
- * v3 checkpointed every seal/open but had no cross-tab ownership and ignored
- * storage write failures. Neither older format can prove that its counters
- * are safe to resume, so both fail closed into a fresh pairing.
+ * Only version 5 is accepted. Versions through 3 cannot prove counter and
+ * browser-tab ownership safety. Version 4 has those properties but predates
+ * the PQP3 out-of-band capability, so restoring it would retain the relay
+ * impersonation weakness. Every older format fails closed into fresh pairing.
  */
 function parseStoredSession(raw: string): DAppSession | null {
   let v: unknown;
@@ -131,19 +289,40 @@ function parseStoredSession(raw: string): DAppSession | null {
   } catch {
     return null;
   }
-  if (!isRecord(v) || v.version !== 4) return null;
+  if (!isRecord(v) || v.version !== 5) return null;
   if (typeof v.channelId !== 'string' || typeof v.chainId !== 'string') return null;
-  if (typeof v.createdAt !== 'number' || typeof v.lastActivity !== 'number') return null;
+  const parsedChainId = canonicalChainId(v.chainId);
+  if (!parsedChainId || parsedChainId !== v.chainId) return null;
+  let encodedChannelId: string;
+  try {
+    encodedChannelId = toBase64(cidFromString(v.channelId));
+  } catch {
+    return null;
+  }
+  const now = Date.now();
+  if (
+    !isBoundedTimestamp(v.createdAt, now) ||
+    !isBoundedTimestamp(v.lastActivity, now) ||
+    v.lastActivity < v.createdAt
+  ) {
+    return null;
+  }
   const keyExchange = parsePersistedKex(v.keyExchange);
   const dappMetadata = parseDAppMetadata(v.dappMetadata);
-  if (!keyExchange || !dappMetadata || !isCurrentQrlAddressArray(v.connectedAccounts)) return null;
+  if (
+    keyExchange?.cid !== encodedChannelId ||
+    !dappMetadata ||
+    !isCurrentQrlAddressArray(v.connectedAccounts)
+  ) {
+    return null;
+  }
   return {
-    version: 4,
+    version: 5,
     channelId: v.channelId,
     keyExchange,
     dappMetadata,
     connectedAccounts: v.connectedAccounts,
-    chainId: v.chainId,
+    chainId: parsedChainId,
     createdAt: v.createdAt,
     lastActivity: v.lastActivity,
   };
@@ -218,9 +397,13 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     storageKey?: string | undefined;
   }) {
     super();
-    this.dappMetadata = options.dappMetadata;
-    this.relayUrl = options.relayUrl ?? DEFAULT_RELAY_URL;
-    this.chainId = options.chainId ?? '0x0';
+    const dappMetadata = parseDAppMetadata(options.dappMetadata);
+    if (!dappMetadata) throw new Error('Invalid or unbounded dApp metadata');
+    const initialChainId = canonicalChainId(options.chainId ?? '0x0');
+    if (!initialChainId) throw new Error('Invalid chainId');
+    this.dappMetadata = dappMetadata;
+    this.relayUrl = normalizeRelayUrl(options.relayUrl ?? DEFAULT_RELAY_URL);
+    this.chainId = initialChainId;
     this.storageKey = options.storageKey ?? `${STORAGE_KEY_PREFIX}:session`;
 
     this.storage = getBrowserStorage();
@@ -266,37 +449,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     const isCurrentSocket = (): boolean => this.socketClient === socketClient;
 
     socketClient.on('reconnected', (result) => {
-      if (!isCurrentSocket()) return;
-      // The re-join ack tells us, fresh, whether the channel was explicitly
-      // terminated and whether the wallet is still present. The preceding
-      // 'disconnected' cleared walletPresent, so without re-deriving it here
-      // an idle-but-present wallet looks absent and the probe would tear down
-      // a healthy session (and a tombstone would be ignored on auto-reconnect).
-      if (result?.terminated) {
-        log('ConnectionManager', 'Channel terminated, observed on auto-reconnect');
-        this.handleSessionTerminated(true);
-        return;
-      }
-      if (result) {
-        this.walletPresent = result.participants.includes('wallet');
-      }
-      if (this.keyExchange?.areKeysExchanged()) {
-        if (this.walletPresent) {
-          this.clearReconnectProbe();
-          this.setStatus(ConnectionStatus.CONNECTED);
-          this.failedReconnects = 0;
-        } else {
-          // We have a live session but the wallet is not in the channel.
-          // Don't sit in WAITING forever: give it a bounded window to
-          // (re)appear, then surface DISCONNECTED so the dApp can fall back
-          // to a fresh QR.
-          this.setStatus(ConnectionStatus.WAITING);
-          this.armReconnectProbe();
-        }
-      } else {
-        // Handshake not yet complete; simply wait for wallet SYNACK.
-        this.setStatus(ConnectionStatus.WAITING);
-      }
+      void this.handleAutoReconnected(socketClient, result);
     });
 
     socketClient.on('disconnected', () => {
@@ -316,7 +469,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
     });
 
-    socketClient.on('message', (data: RelayMessage) => {
+    socketClient.on('message', (data: unknown) => {
       if (!isCurrentSocket()) return;
       const context = this.captureSessionWorkContext();
       if (context?.socketClient !== socketClient) return;
@@ -330,6 +483,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     socketClient.on('participants_changed', (data) => {
       if (!isCurrentSocket()) return;
+      if (data.clientType !== 'wallet') return;
       if (data.event === 'join' && data.clientType === 'wallet') {
         this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
@@ -348,19 +502,50 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         return;
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
-        if (data.clientType === 'wallet' || !data.clientType) {
-          this.walletPresent = false;
-          if (
-            this.keyExchange?.areKeysExchanged() &&
-            (this.status === ConnectionStatus.CONNECTED ||
-              this.status === ConnectionStatus.RECONNECTING)
-          ) {
-            this.setStatus(ConnectionStatus.WAITING);
-          }
-          log('ConnectionManager', 'Wallet left channel');
+        this.walletPresent = false;
+        if (
+          this.keyExchange?.areKeysExchanged() &&
+          (this.status === ConnectionStatus.CONNECTED ||
+            this.status === ConnectionStatus.RECONNECTING)
+        ) {
+          this.setStatus(ConnectionStatus.WAITING);
         }
+        log('ConnectionManager', 'Wallet left channel');
       }
     });
+  }
+
+  private async handleAutoReconnected(
+    socketClient: SocketClient,
+    result: JoinResult
+  ): Promise<void> {
+    if (this.socketClient !== socketClient) return;
+    const context = this.captureSessionWorkContext();
+    if (context?.socketClient !== socketClient) return;
+
+    // The rejoin acknowledgement is the authoritative tombstone and roster
+    // snapshot. Drain its validated backlog before publishing CONNECTED so
+    // receive counters are checkpointed first and no frame is lost.
+    if (result.terminated) {
+      log('ConnectionManager', 'Channel terminated, observed on auto-reconnect');
+      this.handleSessionTerminated(true);
+      return;
+    }
+    this.walletPresent = result.participants.includes('wallet');
+    for (const message of result.bufferedMessages) {
+      this.enqueueRelayMessage(message, context, false);
+    }
+    await this.messageQueue;
+    if (!this.isSessionWorkCurrent(context)) return;
+
+    if (context.keyExchange.areKeysExchanged() && this.walletPresent) {
+      this.clearReconnectProbe();
+      this.failedReconnects = 0;
+      this.setStatus(ConnectionStatus.CONNECTED);
+    } else {
+      this.setStatus(ConnectionStatus.WAITING);
+      if (context.keyExchange.areKeysExchanged()) this.armReconnectProbe();
+    }
   }
 
   private setupKeyExchangeListeners(): void {
@@ -371,16 +556,22 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       if (this.keyExchange !== keyExchange || this.sessionGeneration !== generation) return;
       log('ConnectionManager', 'Key exchange complete');
       this.clearReconnectProbe();
-      this.setStatus(ConnectionStatus.CONNECTED);
       this.walletPresent = true;
       this.failedReconnects = 0;
-      void this.sendEncrypted({
+
+      // Queue authenticated dApp identity before publishing CONNECTED. Status
+      // listeners are synchronous and may immediately call requestAccounts();
+      // sendEncrypted's FIFO queue must already contain ORIGINATOR_INFO so the
+      // wallet never sees approval-bound JSON-RPC before identity provenance.
+      const originatorInfoSend = this.sendEncrypted({
         type: MessageType.ORIGINATOR_INFO,
         originatorInfo: {
           ...this.dappMetadata,
           chainId: this.chainId,
         },
-      }).catch((err: unknown) => {
+      });
+      this.setStatus(ConnectionStatus.CONNECTED);
+      void originatorInfoSend.catch((err: unknown) => {
         logError('ConnectionManager', 'Failed to send originator info:', err);
       });
     });
@@ -389,7 +580,8 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   // ── Public API ─────────────────────────────────────────────
 
   /**
-   * Generate a new v2 connection URI. Rotates channel id and keypair.
+   * Generate a new v3 connection URI. Rotates channel id, keypair, and the
+   * QR-only pairing capability.
    * Returns a `qrlconnect://?q=…` URI safe for QR-rendering or deep-link.
    */
   async getConnectionURI(retryOnConflict = true): Promise<string> {
@@ -399,6 +591,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
     if (this.sessionGeneration !== acquisitionGeneration) {
       throw new Error('QRL Connect session changed while browser-tab ownership was pending');
+    }
+
+    // Every URI carries a live bearer capability. Before issuing another one,
+    // retire any joined, paired, or restorable channel so an older QR cannot
+    // remain usable in the wallet until relay TTL expiry. The conflict retry
+    // below skips this because its failed join never established membership.
+    if (
+      retryOnConflict &&
+      (this.socketClient.getChannelId() !== null ||
+        this.pendingRestore !== null ||
+        this.keyExchange !== null)
+    ) {
+      await this.resetForNewChannel();
     }
 
     // A fresh QR is a new cryptographic generation. Retire the prior transport
@@ -415,11 +620,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.pendingRestore = null;
     this.walletPresent = false;
     this.consecutiveDecryptFailures = 0;
+    const accountsWereAuthorized = this.connectedAccounts.length > 0;
+    this.connectedAccounts = [];
+    if (accountsWereAuthorized) this.emit('accounts_changed', []);
     try {
       this.removeStoredSessionOrThrow();
     } catch (err) {
       this.setStatus(ConnectionStatus.DISCONNECTED);
-      // A stale v4 record may still be present and this path has not created a
+      // A stale v5 record may still be present and this path has not created a
       // relay tombstone. Retain ownership so no second tab can restore that
       // counter stream while this page remains alive.
       throw err;
@@ -429,56 +637,85 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     this.keyExchange = new KeyExchange(true);
     this.setupKeyExchangeListeners();
-    const pk = this.keyExchange.initiate();
+    const initiated = this.keyExchange.initiate();
+    const pk = initiated.publicKey;
+    const capability = initiated.capability;
+    let context: SessionWorkContext | null = null;
 
-    // Always rotate the channel id on fresh QR generation so that relay
-    // buffers and participant lists from a prior pairing cannot leak in.
-    this.channelId = randomUuid();
-    const context = this.captureSessionWorkContext();
-    if (!context) throw new Error('Failed to initialize QRL Connect session');
-
-    // v2 protocol: upload the KEM public key to the relay before joining
-    // so the relay can bind it to the channel and serve it back to the
-    // wallet on its join_channel ack. The wallet verifies it against the
-    // fingerprint carried in the QR - the PK itself is no longer in the QR.
-    context.socketClient.setPublicKey(toBase64(pk));
-
-    context.socketClient.connect();
     try {
-      await context.socketClient.joinChannel(context.channelId);
-      this.assertSessionWorkCurrent(context);
-    } catch (err) {
-      if (!this.isSessionWorkCurrent(context)) throw err;
-      if (retryOnConflict && this.isDappParticipantConflictError(err)) {
-        warn(
-          'ConnectionManager',
-          'Channel already has an active dApp participant. Rotating to a fresh channel.'
-        );
-        this.channelId = randomUuid();
-        return this.getConnectionURI(false);
+      // Always rotate the channel id on fresh QR generation so that relay
+      // buffers and participant lists from a prior pairing cannot leak in.
+      this.channelId = randomUuid();
+      context = this.captureSessionWorkContext();
+      if (!context) throw new Error('Failed to initialize QRL Connect session');
+
+      // PQP3 uploads only the KEM public key to the relay. The capability
+      // remains in this generation and its eventual QR/deep-link URI.
+      context.socketClient.setPublicKey(toBase64(pk));
+
+      context.socketClient.connect();
+      try {
+        await context.socketClient.joinChannel(context.channelId);
+        this.assertSessionWorkCurrent(context);
+      } catch (err) {
+        if (!this.isSessionWorkCurrent(context)) throw err;
+        if (retryOnConflict && this.isDappParticipantConflictError(err)) {
+          warn(
+            'ConnectionManager',
+            'Channel already has an active dApp participant. Rotating to a fresh channel.'
+          );
+          this.channelId = randomUuid();
+          return await this.getConnectionURI(false);
+        }
+        // A failed initial join is terminal for this pairing attempt. Stop the
+        // Socket.IO retry loop and clear its channel so it cannot auto-rejoin
+        // as a ghost participant after the caller received an error.
+        this.invalidateSessionWork();
+        this.keyExchange = null;
+        context.socketClient.leaveChannel();
+        context.socketClient.disconnect();
+        this.setStatus(ConnectionStatus.DISCONNECTED);
+        await this.releaseSessionOwnership();
+        throw err;
       }
-      // A failed initial join is terminal for this pairing attempt. Stop the
-      // Socket.IO retry loop and clear its channel so it cannot auto-rejoin as
-      // a ghost participant after the caller has already received an error.
-      this.invalidateSessionWork();
-      this.keyExchange = null;
-      context.socketClient.leaveChannel();
-      context.socketClient.disconnect();
-      this.setStatus(ConnectionStatus.DISCONNECTED);
-      await this.releaseSessionOwnership();
+
+      this.setStatus(ConnectionStatus.WAITING);
+
+      let uri: string;
+      try {
+        uri = await generateConnectionURI(
+          cidFromString(context.channelId),
+          pk,
+          capability,
+          this.relayUrl === DEFAULT_RELAY_URL ? undefined : this.relayUrl
+        );
+        this.assertSessionWorkCurrent(context);
+      } catch (err) {
+        if (this.isSessionWorkCurrent(context)) {
+          this.invalidateSessionWork();
+          this.keyExchange = null;
+          context.socketClient.leaveChannel();
+          context.socketClient.disconnect();
+          this.setStatus(ConnectionStatus.DISCONNECTED);
+          await this.releaseSessionOwnership();
+        }
+        throw err;
+      }
+      log('ConnectionManager', `Generated v3 connection URI for channel ${context.channelId}`);
+      return uri;
+    } catch (err) {
+      if (context ? this.isSessionWorkCurrent(context) : this.keyExchange !== null) {
+        this.invalidateSessionWork();
+        this.keyExchange = null;
+        this.socketClient.leaveChannel();
+        this.socketClient.disconnect();
+        this.setStatus(ConnectionStatus.DISCONNECTED);
+        await this.releaseSessionOwnership();
+      }
       throw err;
+    } finally {
+      capability.fill(0);
     }
-
-    this.setStatus(ConnectionStatus.WAITING);
-
-    const uri = await generateConnectionURI(
-      cidFromString(context.channelId),
-      pk,
-      this.relayUrl === DEFAULT_RELAY_URL ? undefined : this.relayUrl
-    );
-    this.assertSessionWorkCurrent(context);
-    log('ConnectionManager', `Generated v2 connection URI for channel ${context.channelId}`);
-    return uri;
   }
 
   /**
@@ -621,7 +858,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
 
       for (const msg of bufferedMessages) {
-        this.enqueueRelayMessage(msg, context);
+        this.enqueueRelayMessage(msg, context, false);
       }
       await this.messageQueue;
       if (!this.isSessionWorkCurrent(context)) return false;
@@ -725,6 +962,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.walletPresent = false;
     this.consecutiveDecryptFailures = 0;
     this.pendingRestore = null;
+    const accountsWereAuthorized = this.connectedAccounts.length > 0;
+    this.connectedAccounts = [];
+    if (accountsWereAuthorized) this.emit('accounts_changed', []);
     // Null the key exchange too. Otherwise channelId + areKeysExchanged() stay
     // truthy and a later resume() (tab foreground / online) would try to
     // re-join the now-dead channel. disconnect() clears it for the same reason.
@@ -792,6 +1032,18 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (!this.keyExchange?.areKeysExchanged()) {
       throw new Error('Not connected: key exchange not complete');
     }
+    if (!isValidJsonRpcId(request.id)) {
+      throw new Error('Invalid JSON-RPC request id');
+    }
+    if (
+      !isValidJsonRpcMethod(request.method) ||
+      classifyRpcMethod(request.method) === 'unsupported'
+    ) {
+      throw new Error('Unsupported JSON-RPC method');
+    }
+    if (request.params !== undefined && !Array.isArray(request.params)) {
+      throw new Error('JSON-RPC params must be an array');
+    }
     const sent = this.sendEncrypted({
       type: MessageType.JSONRPC,
       jsonrpc: '2.0',
@@ -812,6 +1064,35 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   getAccounts(): string[] {
     return [...this.connectedAccounts];
   }
+
+  /**
+   * Commit accounts returned by an approved qrl_requestAccounts response.
+   * WALLET_INFO alone cannot grant this authorization.
+   */
+  async authorizeAccounts(value: unknown): Promise<string[]> {
+    if (!isCurrentQrlAddressArray(value) || value.length === 0) {
+      throw new Error('qrl_requestAccounts returned an invalid account list');
+    }
+    const context = this.captureSessionWorkContext();
+    if (!context?.keyExchange.areKeysExchanged()) {
+      throw new Error('Cannot authorize accounts without an established session');
+    }
+    const nextAccounts = [...value];
+    const previousAccounts = this.connectedAccounts;
+    const changed = !this.areArraysEqual(previousAccounts, nextAccounts);
+    this.connectedAccounts = nextAccounts;
+    try {
+      await this.persistSession(context);
+      this.assertSessionWorkCurrent(context);
+    } catch (error) {
+      if (this.isSessionWorkCurrent(context)) this.connectedAccounts = previousAccounts;
+      await this.teardownPersistenceFailedSession(error, context);
+      throw error;
+    }
+    if (changed) this.emit('accounts_changed', [...this.connectedAccounts]);
+    return [...this.connectedAccounts];
+  }
+
   getChainId(): string {
     return this.chainId;
   }
@@ -848,6 +1129,32 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   /**
+   * Ensure this socket is a relay participant before closing a restorable or
+   * temporarily disconnected channel. close_channel is intentionally
+   * participant-only on the relay, so a cold stored session cannot be retired
+   * by emitting the close event from an unjoined socket.
+   */
+  private async prepareRelayChannelForRetirement(): Promise<{
+    hadRelayChannel: boolean;
+    alreadyRetired: boolean;
+  }> {
+    const socketChannelId = this.socketClient.getChannelId();
+    const fallbackChannelId =
+      this.pendingRestore !== null || this.keyExchange !== null ? this.channelId : null;
+    const channelId = socketChannelId ?? fallbackChannelId;
+    if (!channelId) return { hadRelayChannel: false, alreadyRetired: false };
+
+    if (!this.socketClient.isConnected() || socketChannelId !== channelId) {
+      this.socketClient.connect();
+      const result = await this.socketClient.joinChannel(channelId);
+      if (result.terminated) {
+        return { hadRelayChannel: true, alreadyRetired: true };
+      }
+    }
+    return { hadRelayChannel: true, alreadyRetired: false };
+  }
+
+  /**
    * Reset to a fresh channel + keypair. Sends TERMINATE to any live peer,
    * drops the persisted session, and prepares a clean state for
    * getConnectionURI() to be called again.
@@ -857,21 +1164,27 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.clearReconnectProbe();
     this.walletPresent = false;
 
-    await this.flushTerminate();
-
-    const hadRelayChannel = this.socketClient.getChannelId() !== null;
-    let relayRetired = false;
+    const retirement = await this.prepareRelayChannelForRetirement();
+    let relayRetired = retirement.alreadyRetired;
     try {
-      relayRetired = await this.socketClient.closeChannel();
+      if (!relayRetired) {
+        await this.flushTerminate();
+        relayRetired = await this.socketClient.closeChannel();
+      }
     } catch (err) {
       logError('ConnectionManager', 'Failed to tombstone reset channel:', err);
+    }
+    if (retirement.hadRelayChannel && !relayRetired) {
+      throw new Error('Unable to retire the previous relay channel');
     }
 
     this.invalidateSessionWork();
     this.socketClient.leaveChannel();
     this.socketClient.disconnect();
     const storageInvalidated = this.clearSession();
+    const accountsWereAuthorized = this.connectedAccounts.length > 0;
     this.connectedAccounts = [];
+    if (accountsWereAuthorized) this.emit('accounts_changed', []);
     this.pendingRestore = null;
     this.channelId = randomUuid();
     this.keyExchange = null;
@@ -882,9 +1195,6 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.setupSocketListeners();
 
     this.setStatus(ConnectionStatus.DISCONNECTED);
-    if (hadRelayChannel && !relayRetired) {
-      warn('ConnectionManager', 'Reset channel termination was not confirmed');
-    }
     if (!storageInvalidated) {
       const error = new Error(
         'Unable to invalidate stored session; retaining browser-tab ownership'
@@ -899,14 +1209,24 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.clearReconnectProbe();
     this.walletPresent = false;
 
-    await this.flushTerminate();
-
-    const hadRelayChannel = this.socketClient.getChannelId() !== null;
+    let hadRelayChannel =
+      this.socketClient.getChannelId() !== null ||
+      this.pendingRestore !== null ||
+      this.keyExchange !== null;
     let relayRetired = false;
     try {
-      relayRetired = await this.socketClient.closeChannel();
+      const retirement = await this.prepareRelayChannelForRetirement();
+      hadRelayChannel = retirement.hadRelayChannel;
+      relayRetired = retirement.alreadyRetired;
+      if (hadRelayChannel && !relayRetired) {
+        await this.flushTerminate();
+        relayRetired = await this.socketClient.closeChannel();
+      }
     } catch (err) {
       logError('ConnectionManager', 'Failed to tombstone disconnected channel:', err);
+    }
+    if (hadRelayChannel && !relayRetired) {
+      throw new Error('Unable to retire the relay channel');
     }
 
     this.invalidateSessionWork();
@@ -935,11 +1255,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   // ── Internals ──────────────────────────────────────────────
 
-  private enqueueRelayMessage(data: unknown, context: SessionWorkContext): void {
+  private enqueueRelayMessage(
+    data: unknown,
+    context: SessionWorkContext,
+    settleConnection = true
+  ): void {
     // Single validation funnel for both live socket messages and relay-buffered
     // backlog: nothing past this point handles an unshaped envelope.
     if (!isRelayMessage(data)) {
       warn('ConnectionManager', 'Dropping malformed relay envelope');
+      return;
+    }
+    if (data.id !== context.channelId || data.clientType !== 'wallet') {
+      warn('ConnectionManager', 'Dropping relay envelope for the wrong channel or peer role');
       return;
     }
     // Chain with .catch so that a single failing handler (tag-fail,
@@ -947,6 +1275,17 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // silently starve every subsequent message on the channel.
     this.messageQueue = this.messageQueue
       .then(() => this.handleRelayMessage(data, context))
+      .then(() => {
+        if (
+          settleConnection &&
+          this.isSessionWorkCurrent(context) &&
+          context.keyExchange.areKeysExchanged() &&
+          this.walletPresent
+        ) {
+          this.failedReconnects = 0;
+          this.setStatus(ConnectionStatus.CONNECTED);
+        }
+      })
       .catch((err: unknown) => {
         logError('ConnectionManager', 'messageQueue handler error:', err);
       });
@@ -954,20 +1293,17 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   private async handleRelayMessage(data: RelayMessage, context: SessionWorkContext): Promise<void> {
     if (!this.isSessionWorkCurrent(context)) return;
-    if (data.clientType === 'wallet') {
-      this.walletPresent = true;
-      this.clearReconnectProbe();
-      if (this.keyExchange?.areKeysExchanged() && this.status !== ConnectionStatus.CONNECTED) {
-        this.failedReconnects = 0;
-        this.setStatus(ConnectionStatus.CONNECTED);
-      }
-    }
+    this.walletPresent = true;
+    this.clearReconnectProbe();
 
     const message = data.message;
 
     if (isRecord(message)) {
       if (message.type === KeyExchangeMessageType.SYNACK) {
-        if (typeof message.ct === 'string' && typeof message.c0 === 'string') {
+        if (
+          isCanonicalBase64OfLength(message.ct, ML_KEM_768_CT_LEN) &&
+          isCanonicalBase64OfLength(message.c0, SYNACK_C0_LEN)
+        ) {
           await this.handleSynAck(
             {
               type: KeyExchangeMessageType.SYNACK,
@@ -1095,7 +1431,23 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
     if (!this.isSessionWorkCurrent(context)) return;
     if (response) {
-      this.sendPlaintext(response, context);
+      try {
+        await this.sendPlaintext(response, context);
+        this.assertSessionWorkCurrent(context);
+        context.keyExchange.confirmOriginatorAckDelivered();
+      } catch (err) {
+        if (!this.isSessionWorkCurrent(context)) return;
+        const error = err instanceof Error ? err : new Error(String(err));
+        logError('ConnectionManager', 'ACK delivery failed; retiring provisional session:', error);
+        this.emit('error', error);
+        let relayRetired = false;
+        try {
+          relayRetired = await context.socketClient.closeChannel();
+        } catch (closeError) {
+          logError('ConnectionManager', 'Failed to tombstone ambiguous handshake:', closeError);
+        }
+        if (this.isSessionWorkCurrent(context)) this.handleSessionTerminated(relayRetired);
+      }
       return;
     }
     // Duplicate SYNACK: the wallet re-sent it because it never saw our ACK
@@ -1105,7 +1457,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     const cachedAck = context.keyExchange.getLastAck();
     if (context.keyExchange.areKeysExchanged() && cachedAck) {
       log('ConnectionManager', 'Duplicate SYNACK after handshake; re-sending cached ACK');
-      this.sendPlaintext(cachedAck, context);
+      try {
+        await this.sendPlaintext(cachedAck, context);
+      } catch (err) {
+        logError('ConnectionManager', 'Failed to re-send cached ACK:', err);
+      }
     }
   }
 
@@ -1124,13 +1480,28 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
           warn('ConnectionManager', 'Dropping wallet info with malformed account addresses');
           break;
         }
-        const nextAccounts = msg.accounts;
-        const nextChainId =
-          typeof msg.chainId === 'string' && msg.chainId ? msg.chainId : this.chainId;
+        const reportedAccounts = [...msg.accounts];
+        // WALLET_INFO is presence/metadata, not an approval result. It may
+        // preserve the exact account already authorized for this session, but
+        // it cannot upgrade an empty cache or silently switch to another one.
+        const nextAccounts =
+          this.connectedAccounts.length > 0 &&
+          this.areArraysEqual(this.connectedAccounts, reportedAccounts)
+            ? this.connectedAccounts
+            : [];
+        let nextChainId = this.chainId;
+        if (msg.chainId !== undefined) {
+          const parsedChainId = canonicalChainId(msg.chainId);
+          if (!parsedChainId || parsedChainId !== msg.chainId) {
+            warn('ConnectionManager', 'Dropping wallet info with malformed chain id');
+            break;
+          }
+          nextChainId = parsedChainId;
+        }
         const accountsChanged = !this.areArraysEqual(this.connectedAccounts, nextAccounts);
         const chainChanged = this.chainId !== nextChainId;
 
-        this.connectedAccounts = nextAccounts;
+        this.connectedAccounts = [...nextAccounts];
         this.chainId = nextChainId;
         void this.persistSession(context).catch((err: unknown) => {
           void this.teardownPersistenceFailedSession(err, context);
@@ -1173,17 +1544,19 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
   }
 
-  private sendPlaintext(message: object, context = this.captureSessionWorkContext()): void {
-    if (!context || !this.isSessionWorkCurrent(context)) return;
-    context.socketClient
-      .sendMessage({
-        id: context.channelId,
-        clientType: 'dapp',
-        message,
-      })
-      .catch((err: unknown) => {
-        logError('ConnectionManager', 'Failed to send plaintext:', err);
-      });
+  private async sendPlaintext(
+    message: object,
+    context = this.captureSessionWorkContext()
+  ): Promise<void> {
+    if (!context || !this.isSessionWorkCurrent(context)) {
+      throw new Error('Cannot send plaintext for a retired session');
+    }
+    await context.socketClient.sendMessage({
+      id: context.channelId,
+      clientType: 'dapp',
+      message,
+    });
+    this.assertSessionWorkCurrent(context);
   }
 
   /**
@@ -1212,7 +1585,20 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       throw new Error('sendEncrypted: not connected');
     }
     this.assertSessionWorkCurrent(context);
-    const encrypted = await context.keyExchange.encryptMessage(JSON.stringify(message));
+    let encrypted: string;
+    try {
+      encrypted = await context.keyExchange.encryptMessage(JSON.stringify(message));
+    } catch (err) {
+      // encryptMessage reserves sendSeq synchronously before WebCrypto. Any
+      // later seal failure leaves a permanent counter gap, so this generation
+      // cannot safely send another ciphertext.
+      await this.teardownPersistenceFailedSession(
+        err,
+        context,
+        'Message encryption failed after counter reservation; terminating session'
+      );
+      throw err;
+    }
     this.assertSessionWorkCurrent(context);
     // Checkpoint the advanced sendSeq BEFORE the ciphertext can reach the
     // relay. If we crash in between, the stored counter is ahead (the wallet
@@ -1356,7 +1742,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
 
     const session: DAppSession = {
-      version: 4,
+      version: 5,
       channelId: context.channelId,
       keyExchange: persistedKex,
       dappMetadata: this.dappMetadata,

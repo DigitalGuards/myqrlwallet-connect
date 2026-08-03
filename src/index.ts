@@ -13,9 +13,15 @@ export {
   type EIP6963ProviderInfoOverride,
   type ProviderEvents,
   type RelayMessage,
+  type QrlSigningSchemeVersion,
+  type QrlSigningResult,
   type QrlSignedResult,
   type QrlSignedResultWithDescriptor,
+  type QrlSignedMessageResult,
   type QrlSignedTypedDataResult,
+  isQrlSignedResult,
+  isQrlSignedMessageResult,
+  isQrlSignedTypedDataResult,
   hasSigningDescriptor,
   type QrlSignMessageParams,
   type QrlSignTypedDataParams,
@@ -67,6 +73,7 @@ export {
 export {
   type PersistedSession,
   type Session,
+  type InitiatedKeyExchange,
   type AckMessage,
   type SynAckMessage,
 } from './KeyExchange.js';
@@ -80,8 +87,10 @@ export {
   computeFingerprint,
   fingerprintEquals,
   BLOB_LEN,
+  CAP_LEN,
   CID_LEN,
   FP_LEN,
+  MAX_CONNECTION_URI_LENGTH,
   type ParsedURI,
 } from './utils/qrUri.js';
 export { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
@@ -90,8 +99,15 @@ export {
   UNRESTRICTED_METHODS,
   EXPLICITLY_UNSUPPORTED_METHODS,
   classifyRpcMethod,
+  isValidJsonRpcId,
+  isValidJsonRpcMethod,
+  normalizeRelayUrl,
   type RpcMethodPolicy,
   DEFAULT_RELAY_URL,
+  MAX_JSON_RPC_ID_LENGTH,
+  MAX_JSON_RPC_METHOD_LENGTH,
+  MAX_RELAY_URL_LENGTH,
+  PAIRING_CAPABILITY_LEN,
   PROTOCOL_VERSION,
 } from './config.js';
 

@@ -1,52 +1,71 @@
 /**
- * v2 QR URI codec (PQP2).
+ * v3 QR URI codec (PQP3).
  *
- * Format: qrlconnect://?q=<base45(PQP2 || cid || fp)>[&r=<relayUrl>]
+ * Format: qrlconnect://?q=<base45(PQP3 || cid || fp || cap)>[&r=<relayUrl>]
  *
- *   PQP2 = "PQP2" magic                                 (4 B)
- *   cid  = 16 bytes (UUIDv4 raw)                        (16 B)
- *   fp   = SHA-256("pq-fp/v2" || cid || pk) (full 32B)  (32 B)
- *   total                                               (52 B)
+ *   PQP3 = "PQP3" magic                                        (4 B)
+ *   cid  = 16 bytes (UUIDv4 raw)                               (16 B)
+ *   fp   = SHA-256("pq-fp/v3" || cid || pk || cap) (full 32B) (32 B)
+ *   cap  = fresh CSPRNG pairing capability                     (32 B)
+ *   total                                                       (84 B)
  *
- * 52 bytes → ~78 alphanumeric chars after base45 → URI under 150 chars →
- * fits a version-5 QR at ECC-M. Scannable from any 2015-vintage camera.
+ * The capability is a bearer secret. It is never uploaded to the relay and
+ * must not be logged or persisted before the handshake consumes it.
  *
  * Security: the public key is NOT carried in the QR. It's uploaded by the
  * dApp to the relay at channel creation, the relay binds it to the cid, and
- * the wallet fetches it via the join_channel ack. The 32-byte fp acts as
- * the out-of-band commitment: the wallet rejects the PK served by the relay
- * unless SHA-256("pq-fp/v2" || cid || pk) matches the fp from the QR.
- * Full-width SHA-256 (2^128 collision resistance) rules out brute-force
- * substitution of a maliciously-crafted PK with the same fingerprint.
+ * the wallet fetches it via the join_channel ack. The fingerprint commits
+ * the relay-served key to the exact out-of-band capability. The capability
+ * is also bound into the transcript and HKDF by the key-exchange layer, so a
+ * relay cannot fabricate an authenticated wallet hello.
  *
- * Legacy v2.0 URIs (magic=PQP1, 1208-byte blob with embedded PK) are
- * rejected with a clear error by parseConnectionURI - this is a hard
- * break before 2.0.0 ships, no backcompat.
+ * Legacy PQP1 and PQP2 URIs are rejected with a clear migration error. This
+ * intentional v4.0 break prevents fallback to a pairing mode where the relay
+ * could impersonate a wallet.
  */
 
 import { base45Decode, base45Encode } from './base45.js';
 import { constantTimeEquals, randomBytes, sha256 } from '../crypto/primitives.js';
+import { PAIRING_CAPABILITY_LEN, normalizeRelayUrl } from '../config.js';
+import { ML_KEM_768_PK_LEN } from '../PQCrypto.js';
 
-const MAGIC = new Uint8Array([0x50, 0x51, 0x50, 0x32]); // "PQP2"
-const FP_LABEL = new TextEncoder().encode('pq-fp/v2');
+const MAGIC = new Uint8Array([0x50, 0x51, 0x50, 0x33]); // "PQP3"
+const FP_LABEL = new TextEncoder().encode('pq-fp/v3');
 
 export const CID_LEN = 16;
 export const FP_LEN = 32;
-export const BLOB_LEN = 4 + CID_LEN + FP_LEN; // 52
+export const CAP_LEN = PAIRING_CAPABILITY_LEN;
+export const BLOB_LEN = 4 + CID_LEN + FP_LEN + CAP_LEN; // 84
+export const MAX_CONNECTION_URI_LENGTH = 4096;
 
 /**
- * Compute the full 32-byte fingerprint binding (label || cid || pk).
+ * Compute the full 32-byte fingerprint binding (label || cid || pk || cap).
  * Exported so the wallet side can re-derive and verify.
  */
-export async function computeFingerprint(cid: Uint8Array, pk: Uint8Array): Promise<Uint8Array> {
+export async function computeFingerprint(
+  cid: Uint8Array,
+  pk: Uint8Array,
+  capability: Uint8Array
+): Promise<Uint8Array> {
   if (cid.length !== CID_LEN) {
     throw new Error(`qrUri: cid must be ${CID_LEN} bytes`);
   }
-  const buf = new Uint8Array(FP_LABEL.length + cid.length + pk.length);
+  if (pk.length !== ML_KEM_768_PK_LEN) {
+    throw new Error(`qrUri: ML-KEM public key must be ${ML_KEM_768_PK_LEN} bytes`);
+  }
+  if (capability.length !== CAP_LEN) {
+    throw new Error(`qrUri: capability must be ${CAP_LEN} bytes`);
+  }
+  const buf = new Uint8Array(FP_LABEL.length + cid.length + pk.length + capability.length);
   buf.set(FP_LABEL, 0);
   buf.set(cid, FP_LABEL.length);
   buf.set(pk, FP_LABEL.length + cid.length);
-  return sha256(buf);
+  buf.set(capability, FP_LABEL.length + cid.length + pk.length);
+  try {
+    return await sha256(buf);
+  } finally {
+    buf.fill(0);
+  }
 }
 
 /**
@@ -59,9 +78,9 @@ export function fingerprintEquals(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Encode (cid, pk) as a qrlconnect:// URI. Note the PK is not stored in the
- * URI - we compute its fingerprint and embed only that. The caller must
- * upload the PK to the relay separately before publishing this URI.
+ * Encode (cid, pk, capability) as a qrlconnect:// URI. The PK is not stored
+ * in the URI; only its capability-bound fingerprint is embedded. The caller
+ * must upload the PK to the relay separately before publishing this URI.
  *
  * The optional `relayUrl` rides as a sibling query param (not inside the
  * fp-bound blob) so a tampered relay can cause the pairing to fail but
@@ -70,39 +89,56 @@ export function fingerprintEquals(a: Uint8Array, b: Uint8Array): boolean {
 export async function generateConnectionURI(
   cid: Uint8Array,
   pk: Uint8Array,
+  capability: Uint8Array,
   relayUrl?: string
 ): Promise<string> {
   if (cid.length !== CID_LEN) {
     throw new Error(`qrUri: cid must be ${CID_LEN} bytes (got ${cid.length})`);
   }
-  const fp = await computeFingerprint(cid, pk);
+  if (pk.length !== ML_KEM_768_PK_LEN) {
+    throw new Error(
+      `qrUri: ML-KEM public key must be ${ML_KEM_768_PK_LEN} bytes (got ${pk.length})`
+    );
+  }
+  if (capability.length !== CAP_LEN) {
+    throw new Error(`qrUri: capability must be ${CAP_LEN} bytes (got ${capability.length})`);
+  }
+  const stableCapability = capability.slice();
   const blob = new Uint8Array(BLOB_LEN);
-  blob.set(MAGIC, 0);
-  blob.set(cid, 4);
-  blob.set(fp, 4 + CID_LEN);
-  // URL-encode: the base45 alphabet contains `+`, ` `, `%` which would
-  // otherwise be mangled by URLSearchParams parsing on the wallet side.
-  const params = new URLSearchParams({ q: base45Encode(blob) });
-  if (relayUrl) params.set('r', relayUrl);
-  return `qrlconnect://?${params.toString()}`;
+  try {
+    const fp = await computeFingerprint(cid, pk, stableCapability);
+    blob.set(MAGIC, 0);
+    blob.set(cid, 4);
+    blob.set(fp, 4 + CID_LEN);
+    blob.set(stableCapability, 4 + CID_LEN + FP_LEN);
+    // URL-encode: the base45 alphabet contains `+`, ` `, `%` which would
+    // otherwise be mangled by URLSearchParams parsing on the wallet side.
+    const params = new URLSearchParams({ q: base45Encode(blob) });
+    if (relayUrl !== undefined) params.set('r', normalizeRelayUrl(relayUrl));
+    return `qrlconnect://?${params.toString()}`;
+  } finally {
+    stableCapability.fill(0);
+    blob.fill(0);
+  }
 }
 
 export interface ParsedURI {
   cid: Uint8Array;
   fp: Uint8Array;
+  capability: Uint8Array;
   relayUrl?: string | undefined;
 }
 
 /**
- * Parse a qrlconnect:// URI into (cid, fp, relayUrl?). Throws on malformed
- * blob or legacy PQP1/v1 URIs. The caller must still fetch the PK from the
- * relay and verify it against `fp` before trusting it - `parseConnectionURI`
- * only does syntactic validation here.
+ * Parse a qrlconnect:// URI into (cid, fp, capability, relayUrl?). The caller
+ * owns and must eventually wipe the returned capability. This function
+ * rejects legacy pairings, oversized input, and ambiguous duplicate params.
  */
 // The PQP1 magic we recognise in legacy blobs to give a targeted error.
 // Full-width check avoids false-positives on random 1208-byte payloads
 // whose 4th byte happens to be ASCII '1'.
 const PQP1_MAGIC = new Uint8Array([0x50, 0x51, 0x50, 0x31]);
+const PQP2_MAGIC = new Uint8Array([0x50, 0x51, 0x50, 0x32]);
 
 function startsWith(buf: Uint8Array, prefix: Uint8Array): boolean {
   if (buf.length < prefix.length) return false;
@@ -117,25 +153,43 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
   if (typeof uri !== 'string' || uri.length === 0) {
     throw new Error('qrUri: empty URI');
   }
-  if (!/^qrlconnect:/i.test(uri)) {
+  if (uri.length > MAX_CONNECTION_URI_LENGTH) {
+    throw new Error(`qrUri: URI exceeds ${MAX_CONNECTION_URI_LENGTH} characters`);
+  }
+  if (!uri.startsWith('qrlconnect:')) {
     throw new Error('qrUri: not a qrlconnect URI');
   }
-  // Use WHATWG URL parsing (via a dummy http scheme swap since qrlconnect
-  // isn't a registered special scheme) so we reject genuinely malformed
-  // input like "qrlconnect:q=..." or fragments cleanly, and so parameter
-  // extraction matches what a browser does with the same URI.
+  if (!uri.startsWith('qrlconnect://?') || uri.includes('#')) {
+    throw new Error('qrUri: URI must use canonical qrlconnect://? query form');
+  }
   let params: URLSearchParams;
   try {
-    const swapped = new URL(uri.replace(/^qrlconnect:\/?\/?/i, 'https://qrlconnect/'));
-    params = swapped.searchParams;
+    const parsed = new URL(uri);
+    if (
+      parsed.protocol !== 'qrlconnect:' ||
+      parsed.host !== '' ||
+      parsed.pathname !== '' ||
+      parsed.hash !== ''
+    ) {
+      throw new Error('non-canonical URI components');
+    }
+    params = parsed.searchParams;
   } catch {
     throw new Error('qrUri: malformed URI');
   }
 
   if (params.has('channelId') || params.has('pubKey')) {
     throw new Error(
-      'qrUri: legacy v1 URI detected - this wallet and this dApp must both run protocol v2'
+      'qrUri: legacy v1 URI detected - this wallet and this dApp must both run protocol v3'
     );
+  }
+  if (params.getAll('q').length > 1 || params.getAll('r').length > 1) {
+    throw new Error('qrUri: duplicate q or r parameter');
+  }
+  for (const key of params.keys()) {
+    if (key !== 'q' && key !== 'r') {
+      throw new Error(`qrUri: unknown parameter ${key}`);
+    }
   }
 
   const q = params.get('q');
@@ -151,23 +205,44 @@ export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
     throw new Error(`qrUri: base45 decode failed: ${msg}`);
   }
 
-  if (blob.length !== BLOB_LEN) {
-    // Distinguish the most likely footgun - a PQP1 URI encoded under the
-    // older 1208-byte layout - from random gibberish.
-    if (blob.length === 1208 && startsWith(blob, PQP1_MAGIC)) {
-      throw new Error('qrUri: legacy PQP1 URI detected - regenerate the QR with a v2.0+ dApp SDK');
+  try {
+    if (blob.length !== BLOB_LEN) {
+      // Distinguish known legacy layouts from random gibberish so callers get
+      // a useful migration error without accepting an unauthenticated mode.
+      if (blob.length === 1208 && startsWith(blob, PQP1_MAGIC)) {
+        throw new Error(
+          'qrUri: legacy PQP1 URI detected - regenerate the QR with a v4.0+ dApp SDK'
+        );
+      }
+      if (blob.length === 52 && startsWith(blob, PQP2_MAGIC)) {
+        throw new Error(
+          'qrUri: legacy PQP2 URI detected - regenerate the QR with a v4.0+ dApp SDK'
+        );
+      }
+      throw new Error(`qrUri: expected ${BLOB_LEN}-byte blob, got ${blob.length}`);
     }
-    throw new Error(`qrUri: expected ${BLOB_LEN}-byte blob, got ${blob.length}`);
-  }
 
-  if (!startsWith(blob, MAGIC)) {
-    throw new Error('qrUri: bad PQP2 magic');
-  }
+    if (!startsWith(blob, MAGIC)) {
+      throw new Error('qrUri: bad PQP3 magic');
+    }
 
-  const cid = blob.slice(4, 4 + CID_LEN);
-  const fp = blob.slice(4 + CID_LEN, 4 + CID_LEN + FP_LEN);
-  const r = params.get('r');
-  return { cid, fp, relayUrl: r === null || r === '' ? undefined : r };
+    const cid = blob.slice(4, 4 + CID_LEN);
+    const fp = blob.slice(4 + CID_LEN, 4 + CID_LEN + FP_LEN);
+    const capability = blob.slice(4 + CID_LEN + FP_LEN, BLOB_LEN);
+    const r = params.get('r');
+    let relayUrl: string | undefined;
+    if (r !== null) {
+      if (r === '') throw new Error('qrUri: empty relay URL');
+      try {
+        relayUrl = normalizeRelayUrl(r);
+      } catch {
+        throw new Error('qrUri: invalid relay URL');
+      }
+    }
+    return { cid, fp, capability, relayUrl };
+  } finally {
+    blob.fill(0);
+  }
 }
 
 /** Convert 16 raw cid bytes to RFC 4122 UUID hex string. */

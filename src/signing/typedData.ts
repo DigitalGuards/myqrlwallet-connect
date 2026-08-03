@@ -51,22 +51,32 @@ type AtomicKind =
   | { kind: 'array'; inner: FieldType; size?: number | undefined }
   | { kind: 'ref'; name: string };
 
-function isMessageObject(v: unknown): v is Message {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+function isMessageObject(value: unknown): value is Message {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isTypedField(v: unknown): v is TypedField {
-  return isMessageObject(v) && typeof v.name === 'string' && typeof v.type === 'string';
+function hasExactOwnKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => keys.includes(key));
 }
 
-function isTypeMap(v: unknown): v is TypeMap {
-  if (!isMessageObject(v)) return false;
+function isTypedField(value: unknown): value is TypedField {
+  return (
+    isMessageObject(value) &&
+    hasExactOwnKeys(value, ['name', 'type']) &&
+    typeof value.name === 'string' &&
+    typeof value.type === 'string'
+  );
+}
+
+function isTypeMap(value: unknown): value is TypeMap {
+  if (!isMessageObject(value)) return false;
   let typeCount = 0;
-  for (const name in v) {
-    if (!Object.prototype.hasOwnProperty.call(v, name)) continue;
+  for (const name in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, name)) continue;
     typeCount++;
     if (typeCount > TYPED_DATA_LIMITS.maxTypes) return false;
-    const def = v[name];
+    const def = value[name];
     if (
       !Array.isArray(def) ||
       def.length > TYPED_DATA_LIMITS.maxFieldsPerType ||
@@ -80,6 +90,9 @@ function isTypeMap(v: unknown): v is TypeMap {
 
 function parsePayload(payload: unknown): TypedDataPayload {
   if (!isMessageObject(payload)) throw new Error('invalid typed data payload');
+  if (!hasExactOwnKeys(payload, ['types', 'primaryType', 'domain', 'message'])) {
+    throw new Error('typed data payload contains unknown top-level fields');
+  }
   const { types, primaryType, domain, message } = payload;
   if (!isTypeMap(types)) throw new Error('typed data types must be a struct map');
   if (typeof primaryType !== 'string') throw new Error('typed data primaryType must be a string');
@@ -118,41 +131,57 @@ function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind 
   if (type.length > TYPED_DATA_LIMITS.maxFieldTypeLength) {
     throw new Error(`field type too long: ${type}`);
   }
+  const m = ATOMIC_RE.exec(type);
+  if (m) {
+    const [, atomic, intKind, intWidthStr, bytesWidthStr, innerType, sizeStr] = m;
+    if (atomic === 'address' || atomic === 'bool' || atomic === 'string' || atomic === 'bytes') {
+      return { kind: atomic };
+    }
+    if (intKind) {
+      const width = Number(intWidthStr);
+      if (!Number.isInteger(width) || width < 8 || width > 256 || width % 8 !== 0) {
+        throw new Error(`invalid int width: ${type}`);
+      }
+      return { kind: intKind === 'uint' ? 'uintN' : 'intN', width };
+    }
+    if (bytesWidthStr) {
+      const width = Number(bytesWidthStr);
+      if (!Number.isInteger(width) || width < 1 || width > 32) {
+        throw new Error(`invalid bytesN width: ${type}`);
+      }
+      return { kind: 'bytesN', width };
+    }
+    if (innerType !== undefined) {
+      parseFieldType(innerType, types, depth + 1);
+      if (sizeStr) {
+        const size = Number(sizeStr);
+        if (!Number.isSafeInteger(size) || size <= 0 || size > TYPED_DATA_LIMITS.maxArrayLength) {
+          throw new Error(`invalid array size: ${type}`);
+        }
+        return { kind: 'array', inner: innerType, size };
+      }
+      return { kind: 'array', inner: innerType };
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(types, type)) {
     return { kind: 'ref', name: type };
   }
-  const m = ATOMIC_RE.exec(type);
-  if (!m) throw new Error(`unknown type: ${type}`);
-  const [, atomic, intKind, intWidthStr, bytesWidthStr, innerType, sizeStr] = m;
-  if (atomic === 'address' || atomic === 'bool' || atomic === 'string' || atomic === 'bytes') {
-    return { kind: atomic };
+  throw new Error(`unknown type: ${type}`);
+}
+
+function isReservedAtomicTypeName(name: string): boolean {
+  if (/^(?:address|bool|string|bytes)$/.test(name)) return true;
+  const intMatch = /^(?:u?int)(\d+)$/.exec(name);
+  if (intMatch) {
+    const width = Number(intMatch[1]);
+    return Number.isInteger(width) && width >= 8 && width <= 256 && width % 8 === 0;
   }
-  if (intKind) {
-    const width = Number(intWidthStr);
-    if (!Number.isInteger(width) || width < 8 || width > 256 || width % 8 !== 0) {
-      throw new Error(`invalid int width: ${type}`);
-    }
-    return { kind: intKind === 'uint' ? 'uintN' : 'intN', width };
+  const bytesMatch = /^bytes(\d+)$/.exec(name);
+  if (bytesMatch) {
+    const width = Number(bytesMatch[1]);
+    return Number.isInteger(width) && width >= 1 && width <= 32;
   }
-  if (bytesWidthStr) {
-    const width = Number(bytesWidthStr);
-    if (!Number.isInteger(width) || width < 1 || width > 32) {
-      throw new Error(`invalid bytesN width: ${type}`);
-    }
-    return { kind: 'bytesN', width };
-  }
-  if (innerType !== undefined) {
-    parseFieldType(innerType, types, depth + 1);
-    if (sizeStr) {
-      const size = Number(sizeStr);
-      if (!Number.isSafeInteger(size) || size <= 0 || size > TYPED_DATA_LIMITS.maxArrayLength) {
-        throw new Error(`invalid array size: ${type}`);
-      }
-      return { kind: 'array', inner: innerType, size };
-    }
-    return { kind: 'array', inner: innerType };
-  }
-  throw new Error(`unhandled type: ${type}`);
+  return false;
 }
 
 function baseTypeName(type: FieldType): string {
@@ -197,6 +226,9 @@ function validateTypeMap(types: TypeMap): void {
   let totalFields = 0;
   for (const [name, def] of entries) {
     assertIdentifier(name, 'struct name');
+    if (name !== 'QRLDomain' && isReservedAtomicTypeName(name)) {
+      throw new Error(`struct name is reserved by an atomic type: ${name}`);
+    }
     const defUnknown: unknown = def;
     if (
       !Array.isArray(defUnknown) ||
@@ -498,6 +530,9 @@ export function computeTypedDataDigest(payload: unknown): Uint8Array {
   const parsed = parsePayload(payload);
   validateTypeMap(parsed.types);
   assertIdentifier(parsed.primaryType, 'primary type');
+  if (parsed.primaryType === 'QRLDomain') {
+    throw new Error('QRLDomain cannot be the primary type');
+  }
   validateDomainTypes(parsed.types);
   validatePayloadReachability(parsed.primaryType, parsed.types);
   const budget = { remainingValues: TYPED_DATA_LIMITS.maxEncodedValues };

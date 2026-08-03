@@ -13,6 +13,7 @@ import {
   deriveAeadKey,
   exportRawAeadKey,
   fromBase64,
+  generatePairingCapability,
   importRawAeadKey,
   kemDecaps,
   kemEncaps,
@@ -24,6 +25,13 @@ import {
   transcriptHash,
   zeroize,
 } from '../src/PQCrypto.js';
+import { PAIRING_CAPABILITY_LEN } from '../src/config.js';
+
+const CAPABILITY = new Uint8Array(PAIRING_CAPABILITY_LEN).map((_, i) => 0xa0 + i);
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+}
 
 describe('PQCrypto', () => {
   describe('ML-KEM-768 roundtrip', () => {
@@ -65,13 +73,13 @@ describe('PQCrypto', () => {
   });
 
   describe('transcript hash', () => {
-    it('binds LABEL + cid + pk + ct into a 32-byte digest', async () => {
+    it('binds LABEL + cid + pk + ct + capability into a 32-byte digest', async () => {
       const cid = new Uint8Array(16).map((_, i) => i);
       const pk = new Uint8Array(ML_KEM_768_PK_LEN).map((_, i) => i & 0xff);
       const ct = new Uint8Array(ML_KEM_768_CT_LEN).map((_, i) => (i + 1) & 0xff);
-      const h = await transcriptHash(cid, pk, ct);
+      const h = await transcriptHash(cid, pk, ct, CAPABILITY);
       expect(h.length).toBe(32);
-      const h2 = await transcriptHash(cid, pk, ct);
+      const h2 = await transcriptHash(cid, pk, ct, CAPABILITY);
       expect(constantTimeEquals(h, h2)).toBe(true);
     });
 
@@ -79,16 +87,46 @@ describe('PQCrypto', () => {
       const cid = new Uint8Array(16);
       const pk = new Uint8Array(ML_KEM_768_PK_LEN);
       const ct = new Uint8Array(ML_KEM_768_CT_LEN);
-      const base = await transcriptHash(cid, pk, ct);
+      const base = await transcriptHash(cid, pk, ct, CAPABILITY);
       const cidAlt = new Uint8Array(16);
       cidAlt[0] = 1;
-      expect(constantTimeEquals(base, await transcriptHash(cidAlt, pk, ct))).toBe(false);
+      expect(constantTimeEquals(base, await transcriptHash(cidAlt, pk, ct, CAPABILITY))).toBe(
+        false
+      );
       const pkAlt = new Uint8Array(ML_KEM_768_PK_LEN);
       pkAlt[0] = 1;
-      expect(constantTimeEquals(base, await transcriptHash(cid, pkAlt, ct))).toBe(false);
+      expect(constantTimeEquals(base, await transcriptHash(cid, pkAlt, ct, CAPABILITY))).toBe(
+        false
+      );
       const ctAlt = new Uint8Array(ML_KEM_768_CT_LEN);
       ctAlt[0] = 1;
-      expect(constantTimeEquals(base, await transcriptHash(cid, pk, ctAlt))).toBe(false);
+      expect(constantTimeEquals(base, await transcriptHash(cid, pk, ctAlt, CAPABILITY))).toBe(
+        false
+      );
+      const capabilityAlt = CAPABILITY.slice();
+      capabilityAlt[0] ^= 1;
+      expect(constantTimeEquals(base, await transcriptHash(cid, pk, ct, capabilityAlt))).toBe(
+        false
+      );
+    });
+
+    it('matches the canonical cross-repo PQP3 transcript and HKDF vector', async () => {
+      const cid = new Uint8Array(16).map((_, i) => i);
+      const pk = new Uint8Array(ML_KEM_768_PK_LEN).map((_, i) => i & 0xff);
+      const ct = new Uint8Array(ML_KEM_768_CT_LEN).map((_, i) => (255 - i) & 0xff);
+      const ss = new Uint8Array(SHARED_SECRET_LEN).map((_, i) => i);
+      const htx = await transcriptHash(cid, pk, ct, CAPABILITY);
+      expect(hex(htx)).toBe('c45ed29377570dfbfac06061ee0e72230938fba033b5525d9065deedb7bacc02');
+      const rawKey = await exportRawAeadKey(await deriveAeadKey(ss, htx, CAPABILITY));
+      expect(hex(rawKey)).toBe('5a85b6146f69c7f9f3188fff69839776593736de6c8f59ae67f791c81b0871b0');
+    });
+
+    it('generates fresh 32-byte CSPRNG pairing capabilities', () => {
+      const first = generatePairingCapability();
+      const second = generatePairingCapability();
+      expect(first).toHaveLength(PAIRING_CAPABILITY_LEN);
+      expect(second).toHaveLength(PAIRING_CAPABILITY_LEN);
+      expect(constantTimeEquals(first, second)).toBe(false);
     });
   });
 
@@ -96,8 +134,8 @@ describe('PQCrypto', () => {
     async function freshKey(): Promise<CryptoKey> {
       const { pk } = kemKeygen();
       const { ct, ss } = kemEncaps(pk);
-      const htx = await transcriptHash(new Uint8Array(16), pk, ct);
-      return deriveAeadKey(ss, htx);
+      const htx = await transcriptHash(new Uint8Array(16), pk, ct, CAPABILITY);
+      return deriveAeadKey(ss, htx, CAPABILITY);
     }
 
     it('roundtrips plaintext', async () => {
@@ -165,8 +203,8 @@ describe('PQCrypto', () => {
     it('exports to 32 raw bytes and reimports identically', async () => {
       const { pk } = kemKeygen();
       const { ct, ss } = kemEncaps(pk);
-      const htx = await transcriptHash(new Uint8Array(16), pk, ct);
-      const k = await deriveAeadKey(ss, htx);
+      const htx = await transcriptHash(new Uint8Array(16), pk, ct, CAPABILITY);
+      const k = await deriveAeadKey(ss, htx, CAPABILITY);
       const raw = await exportRawAeadKey(k);
       expect(raw.length).toBe(AEAD_KEY_LEN);
       const k2 = await importRawAeadKey(raw);

@@ -1,10 +1,14 @@
 export const DEFAULT_RELAY_URL = 'https://qrlwallet.com';
 export const RELAY_PATH = '/relay';
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
+export const PAIRING_CAPABILITY_LEN = 32;
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const STORAGE_KEY_PREFIX = '@qrlwallet/connect';
 export const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export const WALLET_UNRESPONSIVE_MS = 30 * 1000; // 30 seconds
+export const MAX_JSON_RPC_ID_LENGTH = 128;
+export const MAX_JSON_RPC_METHOD_LENGTH = 128;
+export const MAX_RELAY_URL_LENGTH = 2048;
 // After re-joining a restored session's channel with no wallet present, how
 // long to wait for the wallet to (re)appear before declaring the reconnect
 // dead and surfacing DISCONNECTED so the dApp can fall back to a fresh QR.
@@ -19,6 +23,46 @@ const CURRENT_QRL_ADDRESS_RE = /^Q[0-9a-fA-F]{40}$/;
 
 export function isCurrentQrlAddress(value: unknown): value is string {
   return typeof value === 'string' && CURRENT_QRL_ADDRESS_RE.test(value);
+}
+
+export function isExplicitLoopbackHostname(value: string): boolean {
+  const hostname = value.toLowerCase();
+  return (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  );
+}
+
+/**
+ * Validate and canonicalize relay endpoints before they reach logging,
+ * Socket.IO, or a QR URI. Production relays require HTTPS; plain HTTP is
+ * limited to explicit loopback hostnames for local development.
+ */
+export function normalizeRelayUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_RELAY_URL_LENGTH) {
+    throw new Error('Invalid relay URL');
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('Invalid relay URL');
+  }
+  const isLoopback = isExplicitLoopbackHostname(url.hostname);
+  if (
+    (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback)) ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.hash !== '' ||
+    url.search !== '' ||
+    url.pathname !== '/'
+  ) {
+    throw new Error('Invalid relay URL');
+  }
+  return `${url.protocol}//${url.host}`;
 }
 
 /**
@@ -38,7 +82,6 @@ const RESTRICTED_METHOD_NAMES = [
   'qrl_signTransaction',
   'qrl_signMessage',
   'qrl_signTypedData',
-  'wallet_addQrlChain',
   'wallet_switchQrlChain',
 ] as const;
 
@@ -49,40 +92,16 @@ const UNRESTRICTED_METHOD_NAMES = [
   'qrl_getBalance',
   'qrl_getTransactionCount',
   'qrl_getBlockByNumber',
-  'qrl_getBlockByHash',
-  'qrl_getTransactionByHash',
   'qrl_getTransactionReceipt',
   'qrl_call',
   'qrl_estimateGas',
   'qrl_gasPrice',
   'qrl_getCode',
-  'qrl_getStorageAt',
   'qrl_getLogs',
-  'qrl_getBlockTransactionCountByHash',
-  'qrl_getBlockTransactionCountByNumber',
-  'qrl_getTransactionByBlockHashAndIndex',
-  'qrl_getTransactionByBlockNumberAndIndex',
+  // Wallet-local authorization cache, never forwarded to hosted node RPC.
   'qrl_accounts',
   'net_version',
   'net_listening',
-  'net_peerCount',
-  'web3_clientVersion',
-  'web3_sha3',
-  'qrl_syncing',
-  'qrl_coinbase',
-  'qrl_mining',
-  'qrl_hashrate',
-  'qrl_protocolVersion',
-  'qrl_getUncleCountByBlockHash',
-  'qrl_getUncleCountByBlockNumber',
-  'qrl_getUncleByBlockHashAndIndex',
-  'qrl_getUncleByBlockNumberAndIndex',
-  'qrl_getFilterChanges',
-  'qrl_getFilterLogs',
-  'qrl_newBlockFilter',
-  'qrl_newFilter',
-  'qrl_newPendingTransactionFilter',
-  'qrl_uninstallFilter',
 ] as const;
 
 /**
@@ -92,6 +111,7 @@ const UNRESTRICTED_METHOD_NAMES = [
  */
 const EXPLICITLY_UNSUPPORTED_METHOD_NAMES = [
   'qrl_sendRawTransaction',
+  'wallet_addQrlChain',
   'personal_sign',
   'qrl_sign',
   'qrl_signTypedData_v3',
@@ -110,6 +130,22 @@ export const EXPLICITLY_UNSUPPORTED_METHODS: ReadonlySet<string> = new Set(
 );
 
 export type RpcMethodPolicy = 'restricted' | 'unrestricted' | 'unsupported';
+
+export function isValidJsonRpcId(value: unknown): value is string | number {
+  return (
+    (typeof value === 'string' && value.length > 0 && value.length <= MAX_JSON_RPC_ID_LENGTH) ||
+    (typeof value === 'number' && Number.isSafeInteger(value))
+  );
+}
+
+export function isValidJsonRpcMethod(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_JSON_RPC_METHOD_LENGTH &&
+    /^[A-Za-z0-9_.]+$/.test(value)
+  );
+}
 
 /**
  * Classify an RPC method with a closed allowlist. Any method absent from the
