@@ -14,7 +14,9 @@ export {
   type ProviderEvents,
   type RelayMessage,
   type QrlSignedResult,
+  type QrlSignedResultWithDescriptor,
   type QrlSignedTypedDataResult,
+  hasSigningDescriptor,
   type QrlSignMessageParams,
   type QrlSignTypedDataParams,
   type QrlTypedDataPayload,
@@ -26,12 +28,22 @@ export {
 export {
   computeMessageDigest,
   computeTypedDataDigest,
+  TYPED_DATA_LIMITS,
   encodeType,
   typeHash,
   hashStruct,
   encodeField,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
   verifyMessage,
+  verifyMessageSignature,
+  verifyMessageForSigner,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
   verifyTypedData,
+  verifyTypedDataSignature,
+  verifyTypedDataForSigner,
+  ML_DSA_DESCRIPTOR_BYTES,
+  ML_DSA_87_PUBLIC_KEY_BYTES,
+  ML_DSA_87_SIGNATURE_BYTES,
   bytesToHex,
   hexToBytes,
   concatBytes,
@@ -47,7 +59,9 @@ export {
   type Domain,
   type Message,
   type VerifyMessageParams,
+  type VerifyMessageForSignerParams,
   type VerifyTypedDataParams,
+  type VerifyTypedDataForSignerParams,
 } from './signing/index.js';
 
 export {
@@ -74,6 +88,9 @@ export { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/
 export {
   RESTRICTED_METHODS,
   UNRESTRICTED_METHODS,
+  EXPLICITLY_UNSUPPORTED_METHODS,
+  classifyRpcMethod,
+  type RpcMethodPolicy,
   DEFAULT_RELAY_URL,
   PROTOCOL_VERSION,
 } from './config.js';

@@ -13,6 +13,14 @@ export const WALLET_UNRESPONSIVE_MS = 30 * 1000; // 30 seconds
 // indefinite "reconnecting…" hang when the wallet is genuinely gone.
 export const RECONNECT_WALLET_PROBE_MS = 12 * 1000; // 12 seconds
 
+// Current network address format. The planned wider address format is a
+// separate protocol migration and must not be accepted implicitly here.
+const CURRENT_QRL_ADDRESS_RE = /^Q[0-9a-fA-F]{40}$/;
+
+export function isCurrentQrlAddress(value: unknown): value is string {
+  return typeof value === 'string' && CURRENT_QRL_ADDRESS_RE.test(value);
+}
+
 /**
  * RPC methods that require user approval in the wallet.
  *
@@ -24,7 +32,7 @@ export const RECONNECT_WALLET_PROBE_MS = 12 * 1000; // 12 seconds
  * longer accepted; a dApp calling them via this SDK will get a
  * "method not supported" error before the relay round-trip.
  */
-export const RESTRICTED_METHODS = new Set([
+const RESTRICTED_METHOD_NAMES = [
   'qrl_requestAccounts',
   'qrl_sendTransaction',
   'qrl_signTransaction',
@@ -32,10 +40,10 @@ export const RESTRICTED_METHODS = new Set([
   'qrl_signTypedData',
   'wallet_addQrlChain',
   'wallet_switchQrlChain',
-]);
+] as const;
 
 /** RPC methods that can be auto-proxied without approval */
-export const UNRESTRICTED_METHODS = new Set([
+const UNRESTRICTED_METHOD_NAMES = [
   'qrl_chainId',
   'qrl_blockNumber',
   'qrl_getBalance',
@@ -75,4 +83,41 @@ export const UNRESTRICTED_METHODS = new Set([
   'qrl_newFilter',
   'qrl_newPendingTransactionFilter',
   'qrl_uninstallFilter',
-]);
+] as const;
+
+/**
+ * Methods that must never be forwarded by QRL Connect. Raw transaction
+ * broadcast is state changing but has no wallet-owned approval or signing
+ * step. Legacy and unknown signing surfaces are rejected for the same reason.
+ */
+const EXPLICITLY_UNSUPPORTED_METHOD_NAMES = [
+  'qrl_sendRawTransaction',
+  'personal_sign',
+  'qrl_sign',
+  'qrl_signTypedData_v3',
+  'qrl_signTypedData_v4',
+] as const;
+
+const RESTRICTED_METHOD_POLICY = new Set<string>(RESTRICTED_METHOD_NAMES);
+const UNRESTRICTED_METHOD_POLICY = new Set<string>(UNRESTRICTED_METHOD_NAMES);
+const EXPLICITLY_UNSUPPORTED_METHOD_POLICY = new Set<string>(EXPLICITLY_UNSUPPORTED_METHOD_NAMES);
+
+/** Public snapshots for discovery. Provider authorization uses private sets. */
+export const RESTRICTED_METHODS: ReadonlySet<string> = new Set(RESTRICTED_METHOD_NAMES);
+export const UNRESTRICTED_METHODS: ReadonlySet<string> = new Set(UNRESTRICTED_METHOD_NAMES);
+export const EXPLICITLY_UNSUPPORTED_METHODS: ReadonlySet<string> = new Set(
+  EXPLICITLY_UNSUPPORTED_METHOD_NAMES
+);
+
+export type RpcMethodPolicy = 'restricted' | 'unrestricted' | 'unsupported';
+
+/**
+ * Classify an RPC method with a closed allowlist. Any method absent from the
+ * two positive policy sets is unsupported, including future signing methods.
+ */
+export function classifyRpcMethod(method: string): RpcMethodPolicy {
+  if (EXPLICITLY_UNSUPPORTED_METHOD_POLICY.has(method)) return 'unsupported';
+  if (RESTRICTED_METHOD_POLICY.has(method)) return 'restricted';
+  if (UNRESTRICTED_METHOD_POLICY.has(method)) return 'unrestricted';
+  return 'unsupported';
+}

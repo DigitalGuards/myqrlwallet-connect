@@ -6,11 +6,12 @@
 import EventEmitter from 'eventemitter3';
 import { ConnectionManager } from './ConnectionManager.js';
 import {
+  classifyRpcMethod,
+  isCurrentQrlAddress,
   REQUEST_TIMEOUT_MS,
-  RESTRICTED_METHODS,
   STORAGE_KEY_PREFIX,
-  UNRESTRICTED_METHODS,
 } from './config.js';
+import { computeTypedDataDigest, TYPED_DATA_LIMITS } from './signing/typedData.js';
 import { log, warn } from './utils/logger.js';
 import { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
@@ -42,10 +43,24 @@ interface InflightRecord {
   id: string | number;
   method: string;
   ts: number;
+  expectedChainId?: string | undefined;
+}
+
+interface QueuedRestrictedRequest {
+  method: string;
+  params?: unknown[] | undefined;
+  expectedChainId?: string | undefined;
+  generation: number;
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
 }
 
 function isRecordObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isUnknownArray(v: unknown): v is unknown[] {
+  return Array.isArray(v);
 }
 
 function parseInflightRecord(v: unknown): InflightRecord | null {
@@ -53,7 +68,80 @@ function parseInflightRecord(v: unknown): InflightRecord | null {
   const { id, method, ts } = v;
   if (typeof id !== 'string' && typeof id !== 'number') return null;
   if (typeof method !== 'string' || typeof ts !== 'number') return null;
-  return { id, method, ts };
+  if (v.expectedChainId !== undefined && typeof v.expectedChainId !== 'string') return null;
+  return { id, method, ts, expectedChainId: v.expectedChainId };
+}
+
+function canonicalChainId(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 66 || !/^0x[0-9a-fA-F]+$/.test(value)) {
+    throw new Error('wallet_switchQrlChain requires a 0x-prefixed chainId');
+  }
+  return `0x${BigInt(value).toString(16)}`;
+}
+
+function requestedSwitchChainId(params: unknown[] | undefined): string {
+  if (params?.length !== 1) {
+    throw new Error('wallet_switchQrlChain requires one chain configuration object');
+  }
+  const request = params?.[0];
+  if (!isRecordObj(request)) {
+    throw new Error('wallet_switchQrlChain requires one chain configuration object');
+  }
+  return canonicalChainId(request.chainId);
+}
+
+/**
+ * Capture JSON-RPC params at the request boundary. Requests may wait for a
+ * channel rejoin or another approval, and retaining caller-owned objects would
+ * let later mutation change the payload after validation or after request().
+ */
+function snapshotRequestParams(params: unknown[] | undefined): unknown[] | undefined {
+  if (params === undefined) return undefined;
+  try {
+    const encoded = JSON.stringify(params);
+    if (typeof encoded !== 'string') throw new Error('params did not serialize');
+    const snapshot: unknown = JSON.parse(encoded);
+    if (!isUnknownArray(snapshot)) throw new Error('params must serialize to an array');
+    return snapshot;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Request params must be JSON-serializable: ${detail}`);
+  }
+}
+
+function validateRestrictedRequest(
+  method: string,
+  params: unknown[] | undefined
+): string | undefined {
+  if (method === 'wallet_switchQrlChain') {
+    return requestedSwitchChainId(params);
+  }
+  if (method === 'qrl_signMessage') {
+    if (params?.length !== 2) {
+      throw new Error('qrl_signMessage requires [signer, messageHex]');
+    }
+    const [signer, messageHex] = params;
+    if (!isCurrentQrlAddress(signer)) {
+      throw new Error('qrl_signMessage requires a valid Q-address signer');
+    }
+    if (
+      typeof messageHex !== 'string' ||
+      messageHex.length > TYPED_DATA_LIMITS.maxDynamicBytes * 2 + 2 ||
+      !/^0x([0-9a-fA-F]{2})*$/.test(messageHex)
+    ) {
+      throw new Error('qrl_signMessage requires bounded 0x-prefixed bytes');
+    }
+    return undefined;
+  }
+  if (method !== 'qrl_signTypedData') return undefined;
+  if (params?.length !== 2) {
+    throw new Error('qrl_signTypedData requires [signer, payload]');
+  }
+  if (!isCurrentQrlAddress(params[0])) {
+    throw new Error('qrl_signTypedData requires a valid Q-address signer');
+  }
+  computeTypedDataDigest(params[1]);
+  return undefined;
 }
 
 export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
@@ -73,13 +161,26 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   // (relay-buffered or live) would be silently dropped. Orphans from the
   // previous page are re-emitted as 'late_response' events instead.
   private inflightKey: string;
-  private orphanedRequests = new Map<string | number, { method: string }>();
+  private orphanedRequests = new Map<
+    string | number,
+    { method: string; expectedChainId?: string | undefined }
+  >();
   // Random per-instance prefix keeps request ids unique across page loads.
   // A bare counter restarts at 1 on reload, and the relay buffers messages
   // for 5 minutes, so a stale buffered response could otherwise be matched
   // to a fresh request that drew the same small id.
   private readonly requestIdPrefix = randomUuid().slice(0, 8);
   private requestCounter = 0;
+  // Cancels work that is still awaiting channel restoration and therefore has
+  // no pendingRequests entry yet. Without this barrier, disconnect() or
+  // newConnection() could miss that request and let it cross into a later
+  // channel once the stale ensureChannelJoined() promise settled.
+  private requestGeneration = 0;
+  private requestCancellationMessage = 'Connection changed while request was pending';
+  private lifecycleTransition: 'reset' | 'disconnect' | null = null;
+  private disconnectInFlight: Promise<void> | null = null;
+  private restrictedRequestActive = false;
+  private restrictedRequestQueue: QueuedRestrictedRequest[] = [];
   readonly isQRLConnect = true;
 
   constructor(options: QRLConnectOptions) {
@@ -87,7 +188,10 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     this.options = options;
     this.inflightKey = `${options.storageKey ?? `${STORAGE_KEY_PREFIX}:session`}:inflight`;
     for (const rec of this.readInflight()) {
-      this.orphanedRequests.set(rec.id, { method: rec.method });
+      this.orphanedRequests.set(rec.id, {
+        method: rec.method,
+        expectedChainId: rec.expectedChainId,
+      });
     }
 
     if (options.debug) {
@@ -238,6 +342,21 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
           // the original await is gone, so surface it as an event instead of
           // dropping the wallet's answer on the floor.
           this.settleInflight(response.id);
+          if (
+            !response.error &&
+            orphan.method === 'wallet_switchQrlChain' &&
+            (!orphan.expectedChainId || !this.isCurrentChain(orphan.expectedChainId))
+          ) {
+            this.emit('late_response', {
+              id: response.id,
+              method: orphan.method,
+              error: {
+                code: -32000,
+                message: `Wallet reported success but did not switch to requested chain ${orphan.expectedChainId ?? '(unknown)'}`,
+              },
+            });
+            return;
+          }
           this.emit('late_response', {
             id: response.id,
             method: orphan.method,
@@ -254,6 +373,21 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       if (response.error) {
         pending.reject(new Error(response.error.message || 'Request failed'));
       } else {
+        if (pending.method === 'wallet_switchQrlChain') {
+          const requested = pending.expectedChainId;
+          if (!requested) {
+            pending.reject(new Error('Missing wallet_switchQrlChain postcondition'));
+            return;
+          }
+          if (!this.isCurrentChain(requested)) {
+            pending.reject(
+              new Error(
+                `Wallet reported success but did not switch to requested chain ${requested}`
+              )
+            );
+            return;
+          }
+        }
         pending.resolve(response.result);
       }
     });
@@ -274,33 +408,65 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     });
 
     this.connectionManager.on('connection_lost', () => {
-      // Reject all pending requests
-      for (const [, pending] of this.pendingRequests) {
-        pending.reject(new Error('Connection to QRL Wallet lost'));
-      }
-      this.pendingRequests.clear();
+      this.cancelAllRequests(new Error('Connection to QRL Wallet lost'));
     });
 
     this.connectionManager.on('session_terminated', () => {
       // The wallet terminated the pairing (or a tombstone was observed on
       // join): buffered/in-flight requests can never be answered. Fail them
       // now rather than letting callers run out the 5-minute timeout.
-      for (const [, pending] of this.pendingRequests) {
-        pending.reject(new Error('Session terminated by wallet'));
-      }
-      this.pendingRequests.clear();
+      this.cancelAllRequests(new Error('Session terminated by wallet'));
       this.clearAllInflight();
     });
+  }
+
+  private cancelAllRequests(error: Error): void {
+    this.requestGeneration++;
+    this.requestCancellationMessage = error.message;
+    for (const [, pending] of this.pendingRequests) pending.reject(error);
+    this.pendingRequests.clear();
+    for (const queued of this.restrictedRequestQueue) queued.reject(error);
+    this.restrictedRequestQueue = [];
+  }
+
+  private assertRequestGeneration(generation: number): void {
+    if (generation !== this.requestGeneration) {
+      throw new Error(this.requestCancellationMessage);
+    }
+  }
+
+  private isCurrentChain(expected: string): boolean {
+    try {
+      return canonicalChainId(this.connectionManager.getChainId()) === expected;
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Generate a connection URI for QR code display or deep link redirect.
    */
   async getConnectionURI(): Promise<string> {
-    // Re-arm the foreground-resume listeners in case a prior disconnect tore
-    // them down and the dApp is re-pairing on this same provider instance.
-    this.setupResumeListeners();
-    return this.connectionManager.getConnectionURI();
+    if (this.lifecycleTransition) {
+      throw new Error('Connection lifecycle transition is already in progress');
+    }
+    // ConnectionManager rotates the channel and key exchange for every fresh
+    // URI, so this public entry point is a lifecycle transition even when the
+    // caller does not use newConnection(). Retire provider-level requests too:
+    // otherwise a queued approval from the prior wallet could be sent after
+    // the new wallet pairs.
+    this.lifecycleTransition = 'reset';
+    this.cancelAllRequests(new Error('Connection reset'));
+    this.clearAllInflight();
+
+    try {
+      // Re-arm the foreground-resume listeners in case a prior disconnect tore
+      // them down and the dApp is re-pairing on this same provider instance.
+      this.setupResumeListeners();
+      return await this.connectionManager.getConnectionURI();
+    } finally {
+      this.lifecycleTransition = null;
+    }
   }
 
   /**
@@ -322,6 +488,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    */
   async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
     const { method, params } = args;
+    if (this.lifecycleTransition) {
+      throw new Error(this.requestCancellationMessage);
+    }
 
     // Handle some methods locally
     if (method === 'qrl_chainId') {
@@ -334,11 +503,90 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       // Fall through to request from wallet if no cached accounts
     }
 
-    // Validate method is known
-    if (!RESTRICTED_METHODS.has(method) && !UNRESTRICTED_METHODS.has(method)) {
+    const policy = classifyRpcMethod(method);
+    if (policy === 'unsupported') {
       throw new Error(`Unsupported method: ${method}`);
     }
 
+    const stableParams = snapshotRequestParams(params);
+    const generation = this.requestGeneration;
+
+    if (policy === 'restricted') {
+      const expectedChainId = validateRestrictedRequest(method, stableParams);
+      return this.enqueueRestrictedRequest(method, stableParams, expectedChainId, generation);
+    }
+
+    return this.performRequest(method, stableParams, false, undefined, generation);
+  }
+
+  /**
+   * Keep at most one approval-bound request active. Wallet approval screens
+   * are a serial human interaction, and request-id ordering must remain
+   * stable even when a dApp fires several signing calls concurrently.
+   */
+  private enqueueRestrictedRequest(
+    method: string,
+    params: unknown[] | undefined,
+    expectedChainId: string | undefined,
+    generation: number
+  ): Promise<unknown> {
+    if (!this.restrictedRequestActive) {
+      this.restrictedRequestActive = true;
+      return this.runRestrictedRequest(method, params, expectedChainId, generation);
+    }
+    return new Promise((resolve, reject) => {
+      this.restrictedRequestQueue.push({
+        method,
+        params,
+        expectedChainId,
+        generation,
+        resolve,
+        reject,
+      });
+    });
+  }
+
+  private runRestrictedRequest(
+    method: string,
+    params: unknown[] | undefined,
+    expectedChainId: string | undefined,
+    generation: number
+  ): Promise<unknown> {
+    const task = this.performRequest(method, params, true, expectedChainId, generation);
+    void task.then(
+      () => {
+        this.finishRestrictedRequest();
+      },
+      () => {
+        this.finishRestrictedRequest();
+      }
+    );
+    return task;
+  }
+
+  private finishRestrictedRequest(): void {
+    const next = this.restrictedRequestQueue.shift();
+    if (!next) {
+      this.restrictedRequestActive = false;
+      return;
+    }
+    const task = this.runRestrictedRequest(
+      next.method,
+      next.params,
+      next.expectedChainId,
+      next.generation
+    );
+    void task.then(next.resolve, next.reject);
+  }
+
+  private async performRequest(
+    method: string,
+    params: unknown[] | undefined,
+    restricted: boolean,
+    expectedChainId: string | undefined,
+    generation: number
+  ): Promise<unknown> {
+    this.assertRequestGeneration(generation);
     // A paired session survives the wallet app being backgrounded or closed:
     // its socket dies within seconds, but the relay buffers channel traffic
     // for it and the wallet re-joins on foreground. So "not CONNECTED" is not
@@ -356,6 +604,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
         return this.connectionManager.getAccounts();
       }
       const joined = await this.connectionManager.ensureChannelJoined();
+      this.assertRequestGeneration(generation);
       if (!joined) {
         throw new Error('Not connected to QRL Wallet');
       }
@@ -368,6 +617,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
         id,
         method,
         params,
+        expectedChainId,
         resolve,
         reject,
         timestamp: Date.now(),
@@ -377,10 +627,10 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
 
       // Timeout for request
       const timeout = setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id);
-          reject(new Error(`Request timeout: ${method} (${REQUEST_TIMEOUT_MS}ms)`));
-        }
+        const timedOut = this.pendingRequests.get(id);
+        if (!timedOut) return;
+        this.pendingRequests.delete(id);
+        timedOut.reject(new Error(`Request timeout: ${method} (${REQUEST_TIMEOUT_MS}ms)`));
       }, REQUEST_TIMEOUT_MS);
 
       // Wrap resolve/reject to clear timeout + the persisted in-flight record
@@ -399,17 +649,24 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
 
       // Persist approval-bound requests so a same-device return redirect
       // (which reloads this page) cannot orphan the wallet's answer.
-      if (RESTRICTED_METHODS.has(method)) {
-        this.persistInflight(id, method);
+      if (restricted) {
+        this.persistInflight(id, method, expectedChainId);
       }
 
       // Send to wallet
-      const sent = this.connectionManager.sendJsonRpc({
-        jsonrpc: '2.0',
-        id,
-        method,
-        params,
-      });
+      let sent: Promise<void>;
+      try {
+        sent = this.connectionManager.sendJsonRpc({
+          jsonrpc: '2.0',
+          id,
+          method,
+          params,
+        });
+      } catch (err) {
+        this.pendingRequests.delete(id);
+        pending.reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
 
       // If the send never reaches the relay, fail fast instead of holding
       // the caller for the full request timeout.
@@ -447,7 +704,7 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   private shouldRedirectToWallet(method: string): boolean {
     return (
       this.options.walletRedirectOnRequest !== false &&
-      RESTRICTED_METHODS.has(method) &&
+      classifyRpcMethod(method) === 'restricted' &&
       method !== 'qrl_requestAccounts' &&
       isMobileBrowser() &&
       !this.connectionManager.isWalletPresent()
@@ -491,9 +748,9 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
     }
   }
 
-  private persistInflight(id: string | number, method: string): void {
+  private persistInflight(id: string | number, method: string, expectedChainId?: string): void {
     const records = this.readInflight().filter((r) => r.id !== id);
-    records.push({ id, method, ts: Date.now() });
+    records.push({ id, method, ts: Date.now(), expectedChainId });
     this.writeInflight(records);
   }
 
@@ -580,17 +837,22 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    * reconnecting to an existing session.
    */
   async newConnection(): Promise<string> {
-    // Reject pending requests
-    for (const [, pending] of this.pendingRequests) {
-      pending.reject(new Error('Connection reset'));
+    if (this.lifecycleTransition) {
+      throw new Error('Connection lifecycle transition is already in progress');
     }
-    this.pendingRequests.clear();
+    this.lifecycleTransition = 'reset';
+    this.cancelAllRequests(new Error('Connection reset'));
     this.clearAllInflight();
 
-    // Await so the outbound TERMINATE has time to land on the relay
-    // before we rotate the socket. Wallet side sees instant disconnect.
-    await this.connectionManager.resetForNewChannel();
-    return this.getConnectionURI();
+    try {
+      // Await so the outbound TERMINATE has time to land on the relay
+      // before we rotate the socket. Wallet side sees instant disconnect.
+      await this.connectionManager.resetForNewChannel();
+      this.setupResumeListeners();
+      return await this.connectionManager.getConnectionURI();
+    } finally {
+      this.lifecycleTransition = null;
+    }
   }
 
   /**
@@ -599,14 +861,22 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
    * elapsed - the wallet gets an instant disconnect instead of landing in
    * its stale-session grace period.
    */
-  async disconnect(): Promise<void> {
-    // Reject all pending requests
-    for (const [, pending] of this.pendingRequests) {
-      pending.reject(new Error('Disconnected'));
+  disconnect(): Promise<void> {
+    if (this.disconnectInFlight) return this.disconnectInFlight;
+    if (this.lifecycleTransition) {
+      return Promise.reject(new Error('Connection lifecycle transition is already in progress'));
     }
-    this.pendingRequests.clear();
+    this.lifecycleTransition = 'disconnect';
+    this.cancelAllRequests(new Error('Disconnected'));
     this.clearAllInflight();
     this.teardownResumeListeners();
-    await this.connectionManager.disconnect();
+    const task = Promise.resolve()
+      .then(() => this.connectionManager.disconnect())
+      .finally(() => {
+        this.lifecycleTransition = null;
+        if (this.disconnectInFlight === task) this.disconnectInFlight = null;
+      });
+    this.disconnectInFlight = task;
+    return task;
   }
 }

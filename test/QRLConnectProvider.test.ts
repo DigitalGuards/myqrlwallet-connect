@@ -55,7 +55,8 @@ class MockConnectionManager extends EventEmitter {
   ensureChannelJoined = vi.fn().mockResolvedValue(false);
   hasStoredSession = vi.fn().mockReturnValue(false);
   reconnect = vi.fn().mockResolvedValue(false);
-  disconnect = vi.fn();
+  resetForNewChannel = vi.fn().mockResolvedValue(undefined);
+  disconnect = vi.fn().mockResolvedValue(undefined);
 }
 
 vi.mock('../src/ConnectionManager.js', () => ({
@@ -105,6 +106,56 @@ describe('QRLConnectProvider', () => {
       expect(uri).toBe('qrlconnect://?channelId=mock');
       expect(mockCM.getConnectionURI).toHaveBeenCalledOnce();
     });
+
+    it('should cancel active and queued approvals before rotating the channel', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+
+      const active = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1', value: '0x0' }],
+      });
+      const queued = provider.request({
+        method: 'qrl_signMessage',
+        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+      });
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
+
+      await provider.getConnectionURI();
+
+      await expect(active).rejects.toThrow('Connection reset');
+      await expect(queued).rejects.toThrow('Connection reset');
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
+
+      // Once the replacement pairing is ready, a fresh approval owns the
+      // serial slot and no request from the retired wallet crosses into it.
+      const fresh = provider.request({
+        method: 'qrl_signMessage',
+        params: ['Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', '0x02'],
+      });
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
+      const sent = mockCM.sendJsonRpc.mock.calls[1][0];
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, result: '0xsigned' });
+      await expect(fresh).resolves.toBe('0xsigned');
+    });
+
+    it('should reject concurrent URI rotations', async () => {
+      let finishRotation!: (uri: string) => void;
+      mockCM.getConnectionURI.mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finishRotation = resolve;
+          })
+      );
+
+      const first = provider.getConnectionURI();
+      await expect(provider.getConnectionURI()).rejects.toThrow(
+        'Connection lifecycle transition is already in progress'
+      );
+      expect(mockCM.getConnectionURI).toHaveBeenCalledOnce();
+
+      finishRotation('qrlconnect://?channelId=replacement');
+      await expect(first).resolves.toBe('qrlconnect://?channelId=replacement');
+    });
   });
 
   describe('request - local methods', () => {
@@ -135,6 +186,18 @@ describe('QRLConnectProvider', () => {
       );
     });
 
+    it.each(['qrl_sendRawTransaction', 'qrl_signArbitraryPayload', 'wallet_signArbitraryPayload'])(
+      'should fail closed for signing or broadcast method %s',
+      async (method) => {
+        mockCM.status = ConnectionStatus.CONNECTED;
+
+        await expect(provider.request({ method, params: ['0xdeadbeef'] })).rejects.toThrow(
+          `Unsupported method: ${method}`
+        );
+        expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+      }
+    );
+
     it('should send JSON-RPC to wallet when connected', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
@@ -163,6 +226,24 @@ describe('QRLConnectProvider', () => {
       expect(result).toBe('0x1000');
     });
 
+    it('should snapshot unrestricted params before caller mutation', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      const params = [{ to: 'Q1111', data: '0x01' }, 'latest'];
+
+      const requestPromise = provider.request({ method: 'qrl_call', params });
+      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      params[0].data = '0x02';
+      params.push('mutated');
+
+      expect(sentRequest.params).toEqual([{ to: 'Q1111', data: '0x01' }, 'latest']);
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: sentRequest.id,
+        result: '0xresult',
+      });
+      await expect(requestPromise).resolves.toBe('0xresult');
+    });
+
     it('should reject on error response', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
@@ -179,6 +260,232 @@ describe('QRLConnectProvider', () => {
       });
 
       await expect(requestPromise).rejects.toThrow('User rejected');
+    });
+
+    it('should serialize approval-bound requests by request id', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+
+      const first = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1111', value: '0x0' }],
+      });
+      const second = provider.request({
+        method: 'qrl_signMessage',
+        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+      });
+
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
+      const firstWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: firstWire.id,
+        result: '0xhash',
+      });
+      await expect(first).resolves.toBe('0xhash');
+
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
+      });
+      const secondWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      expect(secondWire.method).toBe('qrl_signMessage');
+      expect(secondWire.id).not.toBe(firstWire.id);
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: secondWire.id,
+        result: { signature: '0xsig' },
+      });
+      await expect(second).resolves.toEqual({ signature: '0xsig' });
+    });
+
+    it('should reject a false-success chain switch response', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.chainId = '0x1';
+
+      const switched = provider.request({
+        method: 'wallet_switchQrlChain',
+        params: [{ chainId: '0x539' }],
+      });
+      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: null });
+
+      await expect(switched).rejects.toThrow('did not switch to requested chain 0x539');
+    });
+
+    it('should accept a chain switch only after wallet state reflects the target', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.chainId = '0x539';
+
+      const switched = provider.request({
+        method: 'wallet_switchQrlChain',
+        params: [{ chainId: '0x0539' }],
+      });
+      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: null });
+
+      await expect(switched).resolves.toBeNull();
+    });
+
+    it('should bind the chain-switch postcondition before caller params can change', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.chainId = '0x1';
+      const params = [{ chainId: '0x539' }];
+
+      const switched = provider.request({ method: 'wallet_switchQrlChain', params });
+      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      params[0].chainId = '0x1';
+      expect(wire.params).toEqual([{ chainId: '0x539' }]);
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: null });
+
+      await expect(switched).rejects.toThrow('did not switch to requested chain 0x539');
+    });
+
+    it('should settle and advance the restricted queue after switch params are mutated', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.chainId = '0x539';
+      const params = [{ chainId: '0x539' }];
+
+      const switched = provider.request({ method: 'wallet_switchQrlChain', params });
+      const next = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1111', value: '0x0' }],
+      });
+      const switchWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      params[0].chainId = 'malformed-after-send';
+
+      expect(() =>
+        mockCM.emit('jsonrpc_response', {
+          jsonrpc: '2.0',
+          id: switchWire.id,
+          result: null,
+        })
+      ).not.toThrow();
+      await expect(switched).resolves.toBeNull();
+
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
+      });
+      const nextWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: nextWire.id,
+        result: '0xhash',
+      });
+      await expect(next).resolves.toBe('0xhash');
+    });
+
+    it('should clean up and advance the restricted queue after a synchronous send failure', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.sendJsonRpc.mockImplementationOnce(() => {
+        throw new Error('session changed before send');
+      });
+
+      const failed = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1111', value: '0x0' }],
+      });
+      const next = provider.request({
+        method: 'qrl_signMessage',
+        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+      });
+
+      await expect(failed).rejects.toThrow('session changed before send');
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
+      });
+      const nextWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: nextWire.id,
+        result: { signature: '0xsig' },
+      });
+      await expect(next).resolves.toEqual({ signature: '0xsig' });
+    });
+
+    it('should reject unsafe nested typed data before sending it to the wallet', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      const nestedArrayType = `uint8${'[]'.repeat(14)}`;
+
+      await expect(
+        provider.request({
+          method: 'qrl_signTypedData',
+          params: [
+            'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            {
+              types: {
+                QRLDomain: [{ name: 'name', type: 'string' }],
+                Payload: [{ name: 'values', type: nestedArrayType }],
+              },
+              primaryType: 'Payload',
+              domain: { name: 'Security test' },
+              message: { values: [] },
+            },
+          ],
+        })
+      ).rejects.toThrow('type nesting too deep');
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+    });
+
+    it('should enforce current Q-address and message-size rules before signing', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+
+      await expect(
+        provider.request({ method: 'qrl_signMessage', params: ['Q1234', '0x00'] })
+      ).rejects.toThrow('valid Q-address signer');
+      await expect(
+        provider.request({
+          method: 'qrl_signMessage',
+          params: [
+            'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            `0x${'00'.repeat(16 * 1024 + 1)}`,
+          ],
+        })
+      ).rejects.toThrow('bounded 0x-prefixed bytes');
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+    });
+
+    it('snapshots queued typed data before caller-owned objects can be mutated', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      const first = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1111', value: '0x0' }],
+      });
+      const payload = {
+        types: {
+          QRLDomain: [{ name: 'name', type: 'string' }],
+          Payload: [{ name: 'values', type: 'uint8[]' }],
+        },
+        primaryType: 'Payload',
+        domain: { name: 'Security test' },
+        message: { values: [1] },
+      };
+      const second = provider.request({
+        method: 'qrl_signTypedData',
+        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', payload],
+      });
+      payload.message.values = new Array(300).fill(7);
+
+      const firstWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: firstWire.id,
+        result: '0xhash',
+      });
+      await expect(first).resolves.toBe('0xhash');
+
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
+      });
+      const secondWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      expect(secondWire.params).toEqual([
+        'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        expect.objectContaining({ message: { values: [1] } }),
+      ]);
+      mockCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: secondWire.id,
+        result: { signature: '0xsig' },
+      });
+      await expect(second).resolves.toEqual({ signature: '0xsig' });
     });
   });
 
@@ -297,8 +604,13 @@ describe('QRLConnectProvider', () => {
       });
       expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
 
-      mockCM.emit('wallet_info', { accounts: ['Q1234'], chainId: '0x0' });
-      await expect(requestPromise).resolves.toEqual(['Q1234']);
+      mockCM.emit('wallet_info', {
+        accounts: ['Q1111111111111111111111111111111111111111'],
+        chainId: '0x0',
+      });
+      await expect(requestPromise).resolves.toEqual([
+        'Q1111111111111111111111111111111111111111',
+      ]);
     });
 
     it('should not redirect when walletRedirectOnRequest is false', async () => {
@@ -390,7 +702,7 @@ describe('QRLConnectProvider', () => {
       cm.status = ConnectionStatus.CONNECTED;
       const requestPromise = p.request({
         method: 'qrl_signMessage',
-        params: ['Q1', '0x00'],
+        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
       });
       const sentRequest = cm.sendJsonRpc.mock.calls[0][0];
       expect(store.has(INFLIGHT_KEY)).toBe(true);
@@ -399,6 +711,42 @@ describe('QRLConnectProvider', () => {
       await requestPromise;
       expect(store.has(INFLIGHT_KEY)).toBe(false);
       await p.disconnect();
+    });
+
+    it('does not emit a false-success late chain-switch response', async () => {
+      store.set(
+        INFLIGHT_KEY,
+        JSON.stringify([
+          {
+            id: 'old-switch',
+            method: 'wallet_switchQrlChain',
+            expectedChainId: '0x539',
+            ts: Date.now(),
+          },
+        ])
+      );
+      const reloaded = new QRLConnectProvider(defaultOptions);
+      const reloadedCM = latestMockCM;
+      reloadedCM.chainId = '0x1';
+      const late = vi.fn();
+      reloaded.on('late_response', late);
+
+      reloadedCM.emit('jsonrpc_response', {
+        jsonrpc: '2.0',
+        id: 'old-switch',
+        result: null,
+      });
+
+      expect(late).toHaveBeenCalledWith({
+        id: 'old-switch',
+        method: 'wallet_switchQrlChain',
+        error: {
+          code: -32000,
+          message: 'Wallet reported success but did not switch to requested chain 0x539',
+        },
+      });
+      expect(store.has(INFLIGHT_KEY)).toBe(false);
+      await reloaded.disconnect();
     });
   });
 
@@ -463,6 +811,26 @@ describe('QRLConnectProvider', () => {
 
       await expect(promise).rejects.toThrow('Session terminated by wallet');
     });
+
+    it('should reject approval requests that were queued but never sent', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+
+      const active = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1', value: '0x0' }],
+      });
+      const queued = provider.request({
+        method: 'qrl_signMessage',
+        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+      });
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
+
+      mockCM.emit('session_terminated');
+
+      await expect(active).rejects.toThrow('Session terminated by wallet');
+      await expect(queued).rejects.toThrow('Session terminated by wallet');
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
+    });
   });
 
   describe('wallet_info', () => {
@@ -474,12 +842,12 @@ describe('QRLConnectProvider', () => {
       });
 
       mockCM.emit('wallet_info', {
-        accounts: ['Q1234abcd'],
+        accounts: ['Q1111111111111111111111111111111111111111'],
         chainId: '0x0',
       });
 
       const result = await requestPromise;
-      expect(result).toEqual(['Q1234abcd']);
+      expect(result).toEqual(['Q1111111111111111111111111111111111111111']);
     });
   });
 
@@ -493,6 +861,50 @@ describe('QRLConnectProvider', () => {
 
       await expect(promise).rejects.toThrow('Disconnected');
       expect(mockCM.disconnect).toHaveBeenCalled();
+    });
+
+    it('should cancel a request that has not reached the pending map while rejoining', async () => {
+      mockCM.status = ConnectionStatus.WAITING;
+      let finishJoin!: (joined: boolean) => void;
+      mockCM.ensureChannelJoined.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishJoin = resolve;
+          })
+      );
+
+      const request = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ to: 'Q1111', value: '0x0' }],
+      });
+      await vi.waitFor(() => {
+        expect(mockCM.ensureChannelJoined).toHaveBeenCalledOnce();
+      });
+
+      const disconnect = provider.disconnect();
+      finishJoin(true);
+
+      await expect(request).rejects.toThrow('Disconnected');
+      await disconnect;
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+    });
+
+    it('should reject new requests until an explicit disconnect finishes', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      let finishDisconnect!: () => void;
+      mockCM.disconnect.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishDisconnect = resolve;
+          })
+      );
+
+      const disconnect = provider.disconnect();
+      await expect(provider.request({ method: 'qrl_blockNumber' })).rejects.toThrow('Disconnected');
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+
+      finishDisconnect();
+      await disconnect;
     });
   });
 

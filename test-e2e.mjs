@@ -31,8 +31,8 @@ import {
   SCHEME_TAG_TYPED,
   SCHEME_VERSION_MSG,
   SCHEME_VERSION_TYPED,
-  verifyMessage,
-  verifyTypedData,
+  verifyMessageForSigner,
+  verifyTypedDataForSigner,
 } from './dist/index.mjs';
 import * as mldsa from '@theqrl/mldsa87';
 import { newWalletFromExtendedSeed } from '@theqrl/wallet.js';
@@ -48,7 +48,8 @@ const TEST_PORT = 3001;
 const RELAY_URL = `http://localhost:${TEST_PORT}`;
 const RELAY_PATH = '/relay';
 
-const WALLET_ADDRESS = 'Q208318ecd68f26726CE7C54b29CaBA94584969B6';
+// Current Q + 40 hex address derived from descriptor || ML-DSA public key.
+const WALLET_ADDRESS = 'Q919e248e9bc56e8d1f255841d6c92d9bd892e33a';
 const TEST_TX_HASH =
   '0x3e306b5a5a37532e1734503f7d2427a86f2c992fbe471f5be403b9f734e661c5';
 
@@ -59,6 +60,7 @@ const TEST_TX_HASH =
  */
 const E2E_HEX_SEED =
   '0x0100005bb4c0cea35e758d19a93923d014e41615e7d3d35076c9b659b880156b5c37bc3a6ccf3d3b7beaef012c4ff930fcb270';
+const WALLET_DESCRIPTOR = E2E_HEX_SEED.slice(0, 8);
 
 function signE2E(digest, ctxTag) {
   const wallet = newWalletFromExtendedSeed(E2E_HEX_SEED);
@@ -304,6 +306,7 @@ async function run() {
     const msgResult = {
       signature: bytesToHex(msgSig.signature),
       publicKey: bytesToHex(msgSig.publicKey),
+      descriptor: WALLET_DESCRIPTOR,
       signer: WALLET_ADDRESS,
       digest: bytesToHex(msgDigest),
       schemeVersion: SCHEME_VERSION_MSG,
@@ -323,15 +326,17 @@ async function run() {
     );
     const msgRpcResult = await msgRpcPromise;
     if (
-      !verifyMessage({
+      !verifyMessageForSigner({
+        expectedSigner: WALLET_ADDRESS,
+        descriptor: msgRpcResult.descriptor,
         signature: msgRpcResult.signature,
         publicKey: msgRpcResult.publicKey,
         messageBytes: MSG_HEX,
       })
     ) {
-      throw new Error('dApp verifyMessage rejected a valid signature');
+      throw new Error('dApp bound message verification rejected a valid signature');
     }
-    console.log('    dApp verifyMessage() returned true');
+    console.log('    dApp verifyMessageForSigner() returned true');
 
     console.log('13. dApp: firing qrl_signTypedData via provider.request()');
     const TYPED_PAYLOAD = {
@@ -367,6 +372,7 @@ async function run() {
     const typedResult = {
       signature: bytesToHex(typedSig.signature),
       publicKey: bytesToHex(typedSig.publicKey),
+      descriptor: WALLET_DESCRIPTOR,
       signer: WALLET_ADDRESS,
       digest: bytesToHex(typedDigest),
       schemeVersion: SCHEME_VERSION_TYPED,
@@ -387,15 +393,17 @@ async function run() {
     );
     const typedRpcResult = await typedRpcPromise;
     if (
-      !verifyTypedData({
+      !verifyTypedDataForSigner({
+        expectedSigner: WALLET_ADDRESS,
+        descriptor: typedRpcResult.descriptor,
         signature: typedRpcResult.signature,
         publicKey: typedRpcResult.publicKey,
         payload: TYPED_PAYLOAD,
       })
     ) {
-      throw new Error('dApp verifyTypedData rejected a valid signature');
+      throw new Error('dApp bound typed-data verification rejected a valid signature');
     }
-    console.log('    dApp verifyTypedData() returned true');
+    console.log('    dApp verifyTypedDataForSigner() returned true');
 
     console.log('14. Wallet: leaving the relay channel (app backgrounded/closed)');
     const sawWalletLeave = new Promise((resolve) => {
@@ -522,8 +530,8 @@ async function run() {
     console.log('   - SYNACK / ACK handshake over relay');
     console.log('   - ORIGINATOR_INFO / WALLET_INFO metadata exchange');
     console.log('   - qrl_sendTransaction request/response round-trip');
-    console.log('   - qrl_signMessage round-trip with local verifyMessage');
-    console.log('   - qrl_signTypedData round-trip with local verifyTypedData');
+    console.log('   - qrl_signMessage round-trip with signer-bound local verification');
+    console.log('   - qrl_signTypedData round-trip with signer-bound local verification');
     console.log('   - offline-wallet request buffered by relay + resolved on re-join');
   } catch (err) {
     console.error('\n❌ E2E TEST FAILED:', err.message);

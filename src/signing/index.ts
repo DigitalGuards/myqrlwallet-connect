@@ -19,6 +19,7 @@ export {
   hashStruct,
   encodeField,
   computeTypedDataDigest,
+  TYPED_DATA_LIMITS,
   type TypedDataPayload,
   type TypeMap,
   type StructDef,
@@ -28,10 +29,21 @@ export {
 } from './typedData.js';
 
 export {
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
   verifyMessage,
+  verifyMessageSignature,
+  verifyMessageForSigner,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
   verifyTypedData,
+  verifyTypedDataSignature,
+  verifyTypedDataForSigner,
+  ML_DSA_DESCRIPTOR_BYTES,
+  ML_DSA_87_PUBLIC_KEY_BYTES,
+  ML_DSA_87_SIGNATURE_BYTES,
   type VerifyMessageParams,
+  type VerifyMessageForSignerParams,
   type VerifyTypedDataParams,
+  type VerifyTypedDataForSignerParams,
 } from './verify.js';
 
 export { bytesToHex, hexToBytes, concatBytes, concatBytesArr } from './bytes.js';

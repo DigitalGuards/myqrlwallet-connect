@@ -43,6 +43,19 @@ describe('KeyExchange v2', () => {
       expect(wallet.areKeysExchanged()).toBe(true);
     });
 
+    it('snapshots the public key returned for QR generation', async () => {
+      const exposedPk = dapp.initiate();
+      const qrPk = exposedPk.slice();
+      exposedPk.fill(0);
+
+      const synack = await wallet.receiveQR(CID, qrPk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
+
+      expect(dapp.areKeysExchanged()).toBe(true);
+      expect(wallet.areKeysExchanged()).toBe(true);
+    });
+
     it('is bidirectionally encrypted after handshake', async () => {
       const pk = dapp.initiate();
       const synack = await wallet.receiveQR(CID, pk);
@@ -87,6 +100,7 @@ describe('KeyExchange v2', () => {
       const lostAck = await dapp.onSynAck(CID, synack);
       expect(lostAck).not.toBeNull();
       expect(wallet.areKeysExchanged()).toBe(false);
+      lostAck!.c1 = 'mutated-by-consumer';
 
       // Wallet retransmits the identical SYNACK on rejoin. The dApp ignores
       // it as a duplicate but exposes the cached ACK for the manager to
@@ -94,10 +108,13 @@ describe('KeyExchange v2', () => {
       const dup = await dapp.onSynAck(CID, synack);
       expect(dup).toBeNull();
       const cached = dapp.getLastAck();
-      expect(cached).toEqual(lostAck);
+      expect(cached?.c1).not.toBe('mutated-by-consumer');
+      const cachedBytes = cached!.c1;
+      cached!.c1 = 'second-consumer-mutation';
+      expect(dapp.getLastAck()?.c1).toBe(cachedBytes);
 
       // The re-sent cached ACK finalizes the wallet side.
-      await wallet.onAck(cached!);
+      await wallet.onAck(dapp.getLastAck()!);
       expect(wallet.areKeysExchanged()).toBe(true);
     });
 
@@ -141,6 +158,26 @@ describe('KeyExchange v2', () => {
       ctBytes[0] ^= 1;
       const mutated = btoa(String.fromCharCode(...ctBytes));
       await expect(dapp.onSynAck(CID, { ...synack, ct: mutated })).rejects.toThrow();
+      expect(dapp.areKeysExchanged()).toBe(false);
+      expect(dapp.getSession()).toBeNull();
+      // The consumed handshake generation is retired. A later valid frame
+      // cannot revive the provisional key material.
+      await expect(dapp.onSynAck(CID, synack)).resolves.toBeNull();
+    });
+
+    it('retires the responder session after a tampered ACK', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      const c1Bytes = Uint8Array.from(atob(ack!.c1), (c) => c.charCodeAt(0));
+      c1Bytes[0] ^= 1;
+      const tampered = { ...ack!, c1: btoa(String.fromCharCode(...c1Bytes)) };
+
+      await expect(wallet.onAck(tampered)).rejects.toThrow();
+      expect(wallet.areKeysExchanged()).toBe(false);
+      expect(wallet.getSession()).toBeNull();
+      await expect(wallet.onAck(ack!)).resolves.toBeUndefined();
+      expect(wallet.areKeysExchanged()).toBe(false);
     });
   });
 
@@ -204,6 +241,48 @@ describe('KeyExchange v2', () => {
       expect(await restoredWallet.decryptMessage(m2)).toBe('{"m":2}');
       const m3 = await restoredWallet.encryptMessage('{"r":3}');
       expect(await restoredDapp.decryptMessage(m3)).toBe('{"r":3}');
+    });
+
+    it('rejects exhausted send and receive counters before cryptographic use', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
+
+      const dappPersisted = (await dapp.exportPersisted())!;
+      dappPersisted.sendSeq = Number.MAX_SAFE_INTEGER;
+      const exhaustedSender = new KeyExchange(
+        true,
+        await KeyExchange.sessionFromPersisted(dappPersisted)
+      );
+      await expect(exhaustedSender.encryptMessage('must not seal')).rejects.toThrow(
+        'send counter exhausted'
+      );
+
+      const walletPersisted = (await wallet.exportPersisted())!;
+      walletPersisted.recvSeq = Number.MAX_SAFE_INTEGER;
+      const exhaustedReceiver = new KeyExchange(
+        false,
+        await KeyExchange.sessionFromPersisted(walletPersisted)
+      );
+      await expect(exhaustedReceiver.decryptMessage('AA==')).rejects.toThrow(
+        'receive counter exhausted'
+      );
+    });
+
+    it('does not expose mutable references to live session counters or AAD', async () => {
+      const pk = dapp.initiate();
+      const synack = await wallet.receiveQR(CID, pk);
+      const ack = await dapp.onSynAck(CID, synack);
+      await wallet.onAck(ack!);
+
+      const exposed = dapp.getSession()!;
+      exposed.sendSeq = 0;
+      exposed.htx.fill(0);
+
+      const ciphertext = await dapp.encryptMessage('still-bound');
+      await expect(wallet.decryptMessage(ciphertext)).resolves.toBe('still-bound');
+      expect(dapp.getSession()!.sendSeq).toBe(2);
     });
   });
 

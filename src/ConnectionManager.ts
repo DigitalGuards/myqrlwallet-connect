@@ -18,10 +18,12 @@ import {
   SESSION_TTL_MS,
   WALLET_UNRESPONSIVE_MS,
   RECONNECT_WALLET_PROBE_MS,
+  isCurrentQrlAddress,
 } from './config.js';
 import { cidFromString, generateConnectionURI } from './utils/qrUri.js';
 import { toBase64 } from './PQCrypto.js';
 import { randomUuid } from './crypto/primitives.js';
+import { getBrowserLockManager, getBrowserStorage, SessionOwnership } from './SessionOwnership.js';
 import { log, warn, error as logError } from './utils/logger.js';
 import {
   type DAppMetadata,
@@ -45,8 +47,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+function isCurrentQrlAddressArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every(isCurrentQrlAddress);
 }
 
 function isRelayMessage(v: unknown): v is RelayMessage {
@@ -93,10 +95,12 @@ function parsePersistedKex(v: unknown): PersistedSession | null {
     typeof sendDir !== 'string' ||
     typeof recvDir !== 'string' ||
     typeof sendSeq !== 'number' ||
-    !Number.isInteger(sendSeq) ||
+    !Number.isSafeInteger(sendSeq) ||
+    sendSeq >= Number.MAX_SAFE_INTEGER ||
     sendSeq < 0 ||
     typeof recvSeq !== 'number' ||
-    !Number.isInteger(recvSeq) ||
+    !Number.isSafeInteger(recvSeq) ||
+    recvSeq >= Number.MAX_SAFE_INTEGER ||
     recvSeq < 0
   ) {
     return null;
@@ -115,11 +119,10 @@ function parseDAppMetadata(v: unknown): DAppMetadata | null {
 /**
  * Validate raw localStorage JSON into a DAppSession, or null if malformed.
  *
- * Only version 3 is accepted. v2 sessions persisted the AEAD counters at
- * sparse checkpoints (handshake + wallet_info), so a restored v2 session
- * could resume with a stale sendSeq and reuse an AES-256-GCM nonce under the
- * same key. v3 checkpoints the counters on every seal/open; older records
- * fail closed into a fresh pairing.
+ * Only version 4 is accepted. v2 sessions used sparse counter checkpoints.
+ * v3 checkpointed every seal/open but had no cross-tab ownership and ignored
+ * storage write failures. Neither older format can prove that its counters
+ * are safe to resume, so both fail closed into a fresh pairing.
  */
 function parseStoredSession(raw: string): DAppSession | null {
   let v: unknown;
@@ -128,14 +131,14 @@ function parseStoredSession(raw: string): DAppSession | null {
   } catch {
     return null;
   }
-  if (!isRecord(v) || v.version !== 3) return null;
+  if (!isRecord(v) || v.version !== 4) return null;
   if (typeof v.channelId !== 'string' || typeof v.chainId !== 'string') return null;
   if (typeof v.createdAt !== 'number' || typeof v.lastActivity !== 'number') return null;
   const keyExchange = parsePersistedKex(v.keyExchange);
   const dappMetadata = parseDAppMetadata(v.dappMetadata);
-  if (!keyExchange || !dappMetadata || !isStringArray(v.connectedAccounts)) return null;
+  if (!keyExchange || !dappMetadata || !isCurrentQrlAddressArray(v.connectedAccounts)) return null;
   return {
-    version: 3,
+    version: 4,
     channelId: v.channelId,
     keyExchange,
     dappMetadata,
@@ -166,6 +169,14 @@ interface ConnectionManagerEvents {
   error: (error: Error) => void;
 }
 
+/** Immutable identity for work that belongs to one channel/key/socket tuple. */
+interface SessionWorkContext {
+  generation: number;
+  channelId: string;
+  keyExchange: KeyExchange;
+  socketClient: SocketClient;
+}
+
 export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private socketClient: SocketClient;
   private keyExchange: KeyExchange | null = null;
@@ -184,6 +195,13 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   private pendingRestore: DAppSession | null = null;
   private messageQueue: Promise<void> = Promise.resolve();
   private outboundQueue: Promise<void> = Promise.resolve();
+  private persistenceQueue: Promise<void> = Promise.resolve();
+  private readonly storage: Storage | null;
+  private readonly persistenceEnabled: boolean;
+  private readonly sessionOwnership: SessionOwnership | null;
+  private persistenceBroken = false;
+  private sessionCreatedAt = Date.now();
+  private sessionGeneration = 0;
   private consecutiveDecryptFailures = 0;
   private static MAX_RECONNECT_FAILURES = 5;
   // Nonces derive from the recv counter and there is no gap tolerance, so a
@@ -205,6 +223,25 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     this.chainId = options.chainId ?? '0x0';
     this.storageKey = options.storageKey ?? `${STORAGE_KEY_PREFIX}:session`;
 
+    this.storage = getBrowserStorage();
+    const lockManager = getBrowserLockManager();
+    this.persistenceEnabled = this.storage !== null && lockManager !== null;
+    this.sessionOwnership =
+      this.persistenceEnabled && lockManager
+        ? new SessionOwnership(this.storageKey, lockManager)
+        : null;
+
+    // Restoring a shared key without an atomic cross-tab lock can reuse an
+    // AEAD nonce. On browsers without Web Locks, keep the session in memory
+    // for this page only and drop any older persistent record.
+    if (this.storage && !this.persistenceEnabled) {
+      warn(
+        'ConnectionManager',
+        'Web Locks unavailable; disabling persisted sessions for AEAD safety'
+      );
+      this.removeStoredSession();
+    }
+
     const stored = this.readStoredSession();
     if (stored) {
       this.channelId = stored.channelId;
@@ -212,6 +249,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       this.chainId = stored.chainId;
       this.dappMetadata = stored.dappMetadata;
       this.pendingRestore = stored;
+      this.sessionCreatedAt = stored.createdAt;
       log('ConnectionManager', `Found persisted session for channel ${this.channelId}`);
     } else {
       this.channelId = randomUuid();
@@ -224,13 +262,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   // ── Setup ──────────────────────────────────────────────────
 
   private setupSocketListeners(): void {
-    this.socketClient.on('connected', () => {
-      if (this.status === ConnectionStatus.RECONNECTING) {
-        this.failedReconnects = 0;
-      }
-    });
+    const socketClient = this.socketClient;
+    const isCurrentSocket = (): boolean => this.socketClient === socketClient;
 
-    this.socketClient.on('reconnected', (result) => {
+    socketClient.on('reconnected', (result) => {
+      if (!isCurrentSocket()) return;
       // The re-join ack tells us, fresh, whether the channel was explicitly
       // terminated and whether the wallet is still present. The preceding
       // 'disconnected' cleared walletPresent, so without re-deriving it here
@@ -238,7 +274,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       // a healthy session (and a tombstone would be ignored on auto-reconnect).
       if (result?.terminated) {
         log('ConnectionManager', 'Channel terminated, observed on auto-reconnect');
-        this.handleSessionTerminated();
+        this.handleSessionTerminated(true);
         return;
       }
       if (result) {
@@ -263,26 +299,37 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
     });
 
-    this.socketClient.on('disconnected', () => {
+    socketClient.on('disconnected', () => {
+      if (!isCurrentSocket()) return;
       this.walletPresent = false;
-      if (this.status === ConnectionStatus.CONNECTED) {
+      if (
+        this.keyExchange?.areKeysExchanged() &&
+        (this.status === ConnectionStatus.CONNECTED ||
+          this.status === ConnectionStatus.RECONNECTING ||
+          this.status === ConnectionStatus.WAITING)
+      ) {
         this.setStatus(ConnectionStatus.RECONNECTING);
         this.failedReconnects++;
-        if (this.failedReconnects >= ConnectionManager.MAX_RECONNECT_FAILURES) {
+        if (this.failedReconnects === ConnectionManager.MAX_RECONNECT_FAILURES) {
           this.emit('connection_lost');
         }
       }
     });
 
-    this.socketClient.on('message', (data: RelayMessage) => {
-      this.enqueueRelayMessage(data);
+    socketClient.on('message', (data: RelayMessage) => {
+      if (!isCurrentSocket()) return;
+      const context = this.captureSessionWorkContext();
+      if (context?.socketClient !== socketClient) return;
+      this.enqueueRelayMessage(data, context);
     });
 
-    this.socketClient.on('error', (err) => {
+    socketClient.on('error', (err) => {
+      if (!isCurrentSocket()) return;
       this.emit('error', err);
     });
 
-    this.socketClient.on('participants_changed', (data) => {
+    socketClient.on('participants_changed', (data) => {
+      if (!isCurrentSocket()) return;
       if (data.event === 'join' && data.clientType === 'wallet') {
         this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
@@ -297,7 +344,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       // not a transient drop. Treat it as definitive: drop the session.
       if (data.event === 'close') {
         log('ConnectionManager', 'Wallet closed the channel (explicit terminate)');
-        this.handleSessionTerminated();
+        this.handleSessionTerminated(true);
         return;
       }
       if (data.event === 'disconnect' || data.event === 'leave') {
@@ -317,20 +364,24 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   private setupKeyExchangeListeners(): void {
-    if (!this.keyExchange) return;
-    this.keyExchange.on('keys_exchanged', () => {
+    const keyExchange = this.keyExchange;
+    const generation = this.sessionGeneration;
+    if (!keyExchange) return;
+    keyExchange.on('keys_exchanged', () => {
+      if (this.keyExchange !== keyExchange || this.sessionGeneration !== generation) return;
       log('ConnectionManager', 'Key exchange complete');
       this.clearReconnectProbe();
       this.setStatus(ConnectionStatus.CONNECTED);
       this.walletPresent = true;
       this.failedReconnects = 0;
-      void this.persistSession();
       void this.sendEncrypted({
         type: MessageType.ORIGINATOR_INFO,
         originatorInfo: {
           ...this.dappMetadata,
           chainId: this.chainId,
         },
+      }).catch((err: unknown) => {
+        logError('ConnectionManager', 'Failed to send originator info:', err);
       });
     });
   }
@@ -342,34 +393,62 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * Returns a `qrlconnect://?q=…` URI safe for QR-rendering or deep-link.
    */
   async getConnectionURI(retryOnConflict = true): Promise<string> {
+    const acquisitionGeneration = this.sessionGeneration;
+    if (!(await this.acquireSessionOwnership())) {
+      throw new Error('This QRL Connect session is active in another browser tab');
+    }
+    if (this.sessionGeneration !== acquisitionGeneration) {
+      throw new Error('QRL Connect session changed while browser-tab ownership was pending');
+    }
+
+    // A fresh QR is a new cryptographic generation. Retire the prior transport
+    // and queues first so delayed acknowledgements or queued plaintext cannot
+    // cross into the replacement channel.
+    this.invalidateSessionWork();
+    this.socketClient.leaveChannel();
+    this.socketClient.disconnect();
+    this.socketClient = new SocketClient(this.relayUrl, 'dapp');
+    this.setupSocketListeners();
+
     this.setStatus(ConnectionStatus.CONNECTING);
     this.clearReconnectProbe();
     this.pendingRestore = null;
     this.walletPresent = false;
     this.consecutiveDecryptFailures = 0;
-
-    if (this.keyExchange) {
-      this.keyExchange.reset();
-    } else {
-      this.keyExchange = new KeyExchange(true);
-      this.setupKeyExchangeListeners();
+    try {
+      this.removeStoredSessionOrThrow();
+    } catch (err) {
+      this.setStatus(ConnectionStatus.DISCONNECTED);
+      // A stale v4 record may still be present and this path has not created a
+      // relay tombstone. Retain ownership so no second tab can restore that
+      // counter stream while this page remains alive.
+      throw err;
     }
+    this.persistenceBroken = false;
+    this.sessionCreatedAt = Date.now();
+
+    this.keyExchange = new KeyExchange(true);
+    this.setupKeyExchangeListeners();
     const pk = this.keyExchange.initiate();
 
     // Always rotate the channel id on fresh QR generation so that relay
     // buffers and participant lists from a prior pairing cannot leak in.
     this.channelId = randomUuid();
+    const context = this.captureSessionWorkContext();
+    if (!context) throw new Error('Failed to initialize QRL Connect session');
 
     // v2 protocol: upload the KEM public key to the relay before joining
     // so the relay can bind it to the channel and serve it back to the
     // wallet on its join_channel ack. The wallet verifies it against the
     // fingerprint carried in the QR - the PK itself is no longer in the QR.
-    this.socketClient.setPublicKey(toBase64(pk));
+    context.socketClient.setPublicKey(toBase64(pk));
 
-    this.socketClient.connect();
+    context.socketClient.connect();
     try {
-      await this.socketClient.joinChannel(this.channelId);
+      await context.socketClient.joinChannel(context.channelId);
+      this.assertSessionWorkCurrent(context);
     } catch (err) {
+      if (!this.isSessionWorkCurrent(context)) throw err;
       if (retryOnConflict && this.isDappParticipantConflictError(err)) {
         warn(
           'ConnectionManager',
@@ -378,18 +457,27 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
         this.channelId = randomUuid();
         return this.getConnectionURI(false);
       }
+      // A failed initial join is terminal for this pairing attempt. Stop the
+      // Socket.IO retry loop and clear its channel so it cannot auto-rejoin as
+      // a ghost participant after the caller has already received an error.
+      this.invalidateSessionWork();
+      this.keyExchange = null;
+      context.socketClient.leaveChannel();
+      context.socketClient.disconnect();
       this.setStatus(ConnectionStatus.DISCONNECTED);
+      await this.releaseSessionOwnership();
       throw err;
     }
 
     this.setStatus(ConnectionStatus.WAITING);
 
     const uri = await generateConnectionURI(
-      cidFromString(this.channelId),
+      cidFromString(context.channelId),
       pk,
       this.relayUrl === DEFAULT_RELAY_URL ? undefined : this.relayUrl
     );
-    log('ConnectionManager', `Generated v2 connection URI for channel ${this.channelId}`);
+    this.assertSessionWorkCurrent(context);
+    log('ConnectionManager', `Generated v2 connection URI for channel ${context.channelId}`);
     return uri;
   }
 
@@ -411,20 +499,89 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
   }
 
   private async reconnectNow(): Promise<boolean> {
+    // A successfully hydrated session already owns its key/counter stream.
+    // Redundant reconnect calls must not re-read storage or release ownership
+    // if that read fails transiently.
+    if (this.keyExchange?.areKeysExchanged()) return true;
     if (!this.pendingRestore) return false;
 
+    const acquisitionGeneration = this.sessionGeneration;
+    if (!(await this.acquireSessionOwnership())) {
+      this.setStatus(ConnectionStatus.DISCONNECTED);
+      return false;
+    }
+    // resetForNewChannel(), getConnectionURI(), or disconnect() may have
+    // retired this restore while Web Locks was deciding ownership. The newer
+    // lifecycle owns the acquired lock, so the stale restore must return
+    // without releasing it out from under that work.
+    if (this.sessionGeneration !== acquisitionGeneration) return false;
+
+    // The constructor may have read this record while another tab still held
+    // the lock and advanced its counters. Refresh only after ownership is ours.
+    const latest = this.readStoredSession();
+    if (!latest) {
+      this.pendingRestore = null;
+      this.connectedAccounts = [];
+      const storageInvalidated = this.clearSession();
+      if (storageInvalidated) {
+        await this.releaseSessionOwnership();
+      } else {
+        this.emit(
+          'error',
+          new Error('Unable to invalidate stored session; retaining browser-tab ownership')
+        );
+      }
+      this.setStatus(ConnectionStatus.DISCONNECTED);
+      return false;
+    }
+    this.pendingRestore = latest;
+    this.channelId = latest.channelId;
+    this.connectedAccounts = latest.connectedAccounts;
+    this.chainId = latest.chainId;
+    this.dappMetadata = latest.dappMetadata;
+    this.sessionCreatedAt = latest.createdAt;
+
+    this.invalidateSessionWork();
+    const restoreGeneration = this.sessionGeneration;
+    const restoreChannelId = this.channelId;
+    const restoreSocketClient = this.socketClient;
     this.setStatus(ConnectionStatus.RECONNECTING);
     this.walletPresent = false;
     this.consecutiveDecryptFailures = 0;
 
     try {
       const session = await KeyExchange.sessionFromPersisted(this.pendingRestore.keyExchange);
+      if (
+        this.sessionGeneration !== restoreGeneration ||
+        this.channelId !== restoreChannelId ||
+        this.socketClient !== restoreSocketClient
+      ) {
+        return false;
+      }
       this.keyExchange = new KeyExchange(true, session);
+      this.pendingRestore = null;
       this.setupKeyExchangeListeners();
     } catch (err) {
+      if (
+        this.sessionGeneration !== restoreGeneration ||
+        this.channelId !== restoreChannelId ||
+        this.socketClient !== restoreSocketClient
+      ) {
+        return false;
+      }
       logError('ConnectionManager', 'Failed to hydrate persisted session:', err);
-      this.clearSession();
+      const storageInvalidated = this.clearSession();
       this.pendingRestore = null;
+      this.connectedAccounts = [];
+      this.keyExchange = null;
+      if (storageInvalidated) {
+        await this.releaseSessionOwnership();
+      } else {
+        this.emit(
+          'error',
+          new Error('Unable to invalidate stored session; retaining browser-tab ownership')
+        );
+      }
       this.setStatus(ConnectionStatus.DISCONNECTED);
       return false;
     }
@@ -440,17 +597,20 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * that the caller has reset walletPresent + set RECONNECTING status.
    */
   private async joinAndSettle(): Promise<boolean> {
-    this.socketClient.connect();
+    const context = this.captureSessionWorkContext();
+    if (!context) return false;
+    context.socketClient.connect();
     try {
-      const { bufferedMessages, participants, terminated } = await this.socketClient.joinChannel(
-        this.channelId
+      const { bufferedMessages, participants, terminated } = await context.socketClient.joinChannel(
+        context.channelId
       );
+      if (!this.isSessionWorkCurrent(context)) return false;
 
       // The channel was explicitly closed (wallet/app forgot us). Drop the
       // stored session instead of waiting on a wallet that will never return.
       if (terminated) {
         log('ConnectionManager', 'Stored session was terminated by the wallet; dropping it');
-        this.handleSessionTerminated();
+        this.handleSessionTerminated(true);
         return false;
       }
 
@@ -461,9 +621,10 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
 
       for (const msg of bufferedMessages) {
-        this.enqueueRelayMessage(msg);
+        this.enqueueRelayMessage(msg, context);
       }
       await this.messageQueue;
+      if (!this.isSessionWorkCurrent(context)) return false;
 
       if (this.keyExchange?.areKeysExchanged() && this.walletPresent) {
         this.clearReconnectProbe();
@@ -476,6 +637,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
       return true;
     } catch (err) {
+      if (!this.isSessionWorkCurrent(context)) return false;
       logError('ConnectionManager', 'Reconnect failed:', err);
       this.setStatus(ConnectionStatus.DISCONNECTED);
       return false;
@@ -556,10 +718,8 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * join ack reported a tombstone). Clear local state and surface
    * DISCONNECTED so the consumer drops to a fresh-pairing UI.
    */
-  private handleSessionTerminated(): void {
-    // Fail in-flight requests before the status flip so consumers observing
-    // 'disconnect' never see them still pending.
-    this.emit('session_terminated');
+  private handleSessionTerminated(relayRetired: boolean): void {
+    this.invalidateSessionWork();
     this.clearReconnectProbe();
     this.clearUnresponsiveTimer();
     this.walletPresent = false;
@@ -574,7 +734,23 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // terminated channel, but a lingering joined socket is a needless resource.
     this.socketClient.leaveChannel();
     this.socketClient.disconnect();
-    this.clearSession();
+    const storageInvalidated = this.clearSession();
+    if (storageInvalidated) {
+      void this.releaseSessionOwnership();
+    } else {
+      // Relay tombstones are bounded, in-memory liveness aids. They cannot
+      // substitute for invalidating the durable browser record. Keep the Web
+      // Lock for this page lifetime rather than expose stale counters to a tab.
+      this.emit(
+        'error',
+        new Error('Unable to invalidate stored session; retaining browser-tab ownership')
+      );
+    }
+    if (!relayRetired) warn('ConnectionManager', 'Relay channel termination was not confirmed');
+    // Fail in-flight requests before the status flip so consumers observing
+    // 'disconnect' never see them still pending. Internal teardown happens
+    // first so a listener cannot revive state that this method then clears.
+    this.emit('session_terminated');
     this.setStatus(ConnectionStatus.DISCONNECTED);
   }
 
@@ -634,7 +810,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     return this.status;
   }
   getAccounts(): string[] {
-    return this.connectedAccounts;
+    return [...this.connectedAccounts];
   }
   getChainId(): string {
     return this.chainId;
@@ -645,9 +821,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   /** Check (sync) if a persisted session exists and has not expired. */
   hasStoredSession(): boolean {
-    if (typeof localStorage === 'undefined') return false;
+    if (!this.persistenceEnabled || !this.storage) return false;
     try {
-      const raw = localStorage.getItem(this.storageKey);
+      const raw = this.storage.getItem(this.storageKey);
       if (!raw) return false;
       const session = parseStoredSession(raw);
       if (!session) return false;
@@ -683,18 +859,39 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     await this.flushTerminate();
 
+    const hadRelayChannel = this.socketClient.getChannelId() !== null;
+    let relayRetired = false;
+    try {
+      relayRetired = await this.socketClient.closeChannel();
+    } catch (err) {
+      logError('ConnectionManager', 'Failed to tombstone reset channel:', err);
+    }
+
+    this.invalidateSessionWork();
     this.socketClient.leaveChannel();
     this.socketClient.disconnect();
-    this.clearSession();
+    const storageInvalidated = this.clearSession();
     this.connectedAccounts = [];
     this.pendingRestore = null;
     this.channelId = randomUuid();
     this.keyExchange = null;
+    this.persistenceBroken = false;
+    this.sessionCreatedAt = Date.now();
 
     this.socketClient = new SocketClient(this.relayUrl, 'dapp');
     this.setupSocketListeners();
 
     this.setStatus(ConnectionStatus.DISCONNECTED);
+    if (hadRelayChannel && !relayRetired) {
+      warn('ConnectionManager', 'Reset channel termination was not confirmed');
+    }
+    if (!storageInvalidated) {
+      const error = new Error(
+        'Unable to invalidate stored session; retaining browser-tab ownership'
+      );
+      this.emit('error', error);
+      throw error;
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -704,21 +901,41 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     await this.flushTerminate();
 
+    const hadRelayChannel = this.socketClient.getChannelId() !== null;
+    let relayRetired = false;
+    try {
+      relayRetired = await this.socketClient.closeChannel();
+    } catch (err) {
+      logError('ConnectionManager', 'Failed to tombstone disconnected channel:', err);
+    }
+
+    this.invalidateSessionWork();
     this.socketClient.leaveChannel();
     this.socketClient.disconnect();
-    this.setStatus(ConnectionStatus.DISCONNECTED);
-    this.clearSession();
+    const storageInvalidated = this.clearSession();
     this.connectedAccounts = [];
     // Fully terminate the session: without clearing these, a later
     // visibilitychange/online resume() would re-open the socket and re-join
     // the channel after an explicit disconnect.
     this.pendingRestore = null;
     this.keyExchange = null;
+    if (storageInvalidated) await this.releaseSessionOwnership();
+    this.setStatus(ConnectionStatus.DISCONNECTED);
+    if (hadRelayChannel && !relayRetired) {
+      warn('ConnectionManager', 'Disconnected channel termination was not confirmed');
+    }
+    if (!storageInvalidated) {
+      const error = new Error(
+        'Unable to invalidate stored session; retaining browser-tab ownership'
+      );
+      this.emit('error', error);
+      throw error;
+    }
   }
 
   // ── Internals ──────────────────────────────────────────────
 
-  private enqueueRelayMessage(data: unknown): void {
+  private enqueueRelayMessage(data: unknown, context: SessionWorkContext): void {
     // Single validation funnel for both live socket messages and relay-buffered
     // backlog: nothing past this point handles an unshaped envelope.
     if (!isRelayMessage(data)) {
@@ -729,13 +946,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // malformed JSON) does not leave the queue in a rejected state and
     // silently starve every subsequent message on the channel.
     this.messageQueue = this.messageQueue
-      .then(() => this.handleRelayMessage(data))
+      .then(() => this.handleRelayMessage(data, context))
       .catch((err: unknown) => {
         logError('ConnectionManager', 'messageQueue handler error:', err);
       });
   }
 
-  private async handleRelayMessage(data: RelayMessage): Promise<void> {
+  private async handleRelayMessage(data: RelayMessage, context: SessionWorkContext): Promise<void> {
+    if (!this.isSessionWorkCurrent(context)) return;
     if (data.clientType === 'wallet') {
       this.walletPresent = true;
       this.clearReconnectProbe();
@@ -750,12 +968,15 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     if (isRecord(message)) {
       if (message.type === KeyExchangeMessageType.SYNACK) {
         if (typeof message.ct === 'string' && typeof message.c0 === 'string') {
-          await this.handleSynAck({
-            type: KeyExchangeMessageType.SYNACK,
-            ct: message.ct,
-            c0: message.c0,
-            v: typeof message.v === 'number' ? message.v : 0,
-          });
+          await this.handleSynAck(
+            {
+              type: KeyExchangeMessageType.SYNACK,
+              ct: message.ct,
+              c0: message.c0,
+              v: typeof message.v === 'number' ? message.v : 0,
+            },
+            context
+          );
         } else {
           warn('ConnectionManager', 'Dropping malformed SYNACK');
         }
@@ -770,31 +991,39 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       }
     }
 
-    if (typeof message === 'string' && this.keyExchange?.areKeysExchanged()) {
+    if (typeof message === 'string' && context.keyExchange.areKeysExchanged()) {
       // The failure counter is scoped STRICTLY to the AEAD open. JSON.parse
       // errors or a throwing consumer listener reached via
       // handleDecryptedMessage happen after recvSeq advanced and say nothing
       // about stream health, so they must not count toward a teardown.
       let decrypted: string;
       try {
-        decrypted = await this.keyExchange.decryptMessage(message);
+        decrypted = await context.keyExchange.decryptMessage(message);
       } catch (err) {
+        if (!this.isSessionWorkCurrent(context)) return;
         logError('ConnectionManager', 'Failed to decrypt message:', err);
         this.consecutiveDecryptFailures++;
         if (this.consecutiveDecryptFailures >= ConnectionManager.MAX_DECRYPT_FAILURES) {
-          await this.teardownDesyncedSession();
+          await this.teardownDesyncedSession(context);
         }
         return;
       }
+      if (!this.isSessionWorkCurrent(context)) return;
       this.consecutiveDecryptFailures = 0;
       try {
         // The AEAD counters advanced; checkpoint them before acting on the
         // plaintext so a reload cannot restore a stale recvSeq and reopen a
         // replay window for ciphertexts the relay has already delivered.
-        await this.persistSession();
+        await this.persistSession(context);
+      } catch (err) {
+        await this.teardownPersistenceFailedSession(err, context);
+        return;
+      }
+      if (!this.isSessionWorkCurrent(context)) return;
+      try {
         const parsed: unknown = JSON.parse(decrypted);
         if (isRecord(parsed)) {
-          this.handleDecryptedMessage(parsed);
+          await this.handleDecryptedMessage(parsed, context);
         } else {
           warn('ConnectionManager', 'Dropping non-object decrypted payload');
         }
@@ -813,48 +1042,89 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * wallet learns the pairing is dead even if it only re-joins later, then
    * clear local state and surface the standard terminated teardown.
    */
-  private async teardownDesyncedSession(): Promise<void> {
+  private async teardownDesyncedSession(context: SessionWorkContext): Promise<void> {
+    if (!this.isSessionWorkCurrent(context)) return;
     warn('ConnectionManager', 'AEAD stream desynced beyond recovery; terminating session');
-    await this.socketClient.closeChannel();
-    this.handleSessionTerminated();
+    let relayRetired = false;
+    try {
+      relayRetired = await context.socketClient.closeChannel();
+    } catch (err) {
+      logError('ConnectionManager', 'Failed to tombstone desynced channel:', err);
+    }
+    if (!this.isSessionWorkCurrent(context)) return;
+    this.handleSessionTerminated(relayRetired);
   }
 
-  private async handleSynAck(msg: SynAckMessage): Promise<void> {
-    if (!this.keyExchange) return;
+  private async teardownPersistenceFailedSession(
+    cause: unknown,
+    context = this.captureSessionWorkContext(),
+    reason = 'AEAD counter persistence failed; terminating session before further use'
+  ): Promise<void> {
+    if (!context || !this.isSessionWorkCurrent(context)) return;
+    logError('ConnectionManager', `${reason}:`, cause);
+    let relayRetired = false;
+    try {
+      relayRetired = await context.socketClient.closeChannel();
+    } catch (err) {
+      logError('ConnectionManager', 'Failed to tombstone unusable channel:', err);
+    }
+    if (!this.isSessionWorkCurrent(context)) return;
+    this.handleSessionTerminated(relayRetired);
+  }
+
+  private async handleSynAck(msg: SynAckMessage, context: SessionWorkContext): Promise<void> {
+    if (!this.isSessionWorkCurrent(context)) return;
     this.setStatus(ConnectionStatus.KEY_EXCHANGE);
 
     let response: AckMessage | null;
     try {
-      response = await this.keyExchange.onSynAck(cidFromString(this.channelId), msg);
+      response = await context.keyExchange.onSynAck(cidFromString(context.channelId), msg);
     } catch (err) {
+      if (!this.isSessionWorkCurrent(context)) return;
       const e = err instanceof Error ? err : new Error(String(err));
       logError('ConnectionManager', 'SYNACK processing failed:', e);
       this.emit('error', e);
+      let relayRetired = false;
+      try {
+        relayRetired = await context.socketClient.closeChannel();
+      } catch (closeError) {
+        logError('ConnectionManager', 'Failed to tombstone rejected handshake:', closeError);
+      }
+      if (this.isSessionWorkCurrent(context)) this.handleSessionTerminated(relayRetired);
       return;
     }
+    if (!this.isSessionWorkCurrent(context)) return;
     if (response) {
-      this.sendPlaintext(response);
+      this.sendPlaintext(response, context);
       return;
     }
     // Duplicate SYNACK: the wallet re-sent it because it never saw our ACK
     // (its socket flapped right after SYNACK). Re-send the cached ACK so the
     // wallet can finalize; the bytes are deterministic and the wallet's
     // onAck is idempotent.
-    const cachedAck = this.keyExchange.getLastAck();
-    if (this.keyExchange.areKeysExchanged() && cachedAck) {
+    const cachedAck = context.keyExchange.getLastAck();
+    if (context.keyExchange.areKeysExchanged() && cachedAck) {
       log('ConnectionManager', 'Duplicate SYNACK after handshake; re-sending cached ACK');
-      this.sendPlaintext(cachedAck);
+      this.sendPlaintext(cachedAck, context);
     }
   }
 
-  private handleDecryptedMessage(msg: Record<string, unknown>): void {
+  private async handleDecryptedMessage(
+    msg: Record<string, unknown>,
+    context: SessionWorkContext
+  ): Promise<void> {
+    if (!this.isSessionWorkCurrent(context)) return;
     this.clearUnresponsiveTimer();
 
     const type = typeof msg.type === 'string' ? msg.type : '';
 
     switch (MESSAGE_TYPE_BY_VALUE[type]) {
       case MessageType.WALLET_INFO: {
-        const nextAccounts = isStringArray(msg.accounts) ? msg.accounts : [];
+        if (!isCurrentQrlAddressArray(msg.accounts)) {
+          warn('ConnectionManager', 'Dropping wallet info with malformed account addresses');
+          break;
+        }
+        const nextAccounts = msg.accounts;
         const nextChainId =
           typeof msg.chainId === 'string' && msg.chainId ? msg.chainId : this.chainId;
         const accountsChanged = !this.areArraysEqual(this.connectedAccounts, nextAccounts);
@@ -862,12 +1132,14 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
         this.connectedAccounts = nextAccounts;
         this.chainId = nextChainId;
-        void this.persistSession();
+        void this.persistSession(context).catch((err: unknown) => {
+          void this.teardownPersistenceFailedSession(err, context);
+        });
         this.emit('wallet_info', {
-          accounts: this.connectedAccounts,
+          accounts: [...this.connectedAccounts],
           chainId: this.chainId,
         });
-        if (accountsChanged) this.emit('accounts_changed', this.connectedAccounts);
+        if (accountsChanged) this.emit('accounts_changed', [...this.connectedAccounts]);
         if (chainChanged) this.emit('chain_changed', this.chainId);
         break;
       }
@@ -884,10 +1156,15 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
       case MessageType.TERMINATE: {
         log('ConnectionManager', 'Received terminate from wallet');
-        this.emit('session_terminated');
-        // fire-and-forget here: we received the wallet's TERMINATE, we
-        // don't need to round-trip another one back at them.
-        void this.disconnect();
+        // Also create the durable relay tombstone. If localStorage cannot be
+        // invalidated, a later reload is still unable to resume this channel.
+        let relayRetired = false;
+        try {
+          relayRetired = await context.socketClient.closeChannel();
+        } catch (err) {
+          logError('ConnectionManager', 'Failed to tombstone terminated channel:', err);
+        }
+        if (this.isSessionWorkCurrent(context)) this.handleSessionTerminated(relayRetired);
         break;
       }
 
@@ -896,10 +1173,11 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
   }
 
-  private sendPlaintext(message: object): void {
-    this.socketClient
+  private sendPlaintext(message: object, context = this.captureSessionWorkContext()): void {
+    if (!context || !this.isSessionWorkCurrent(context)) return;
+    context.socketClient
       .sendMessage({
-        id: this.channelId,
+        id: context.channelId,
         clientType: 'dapp',
         message,
       })
@@ -917,7 +1195,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
    * already prevented by the synchronous seq reservation in KeyExchange.)
    */
   private sendEncrypted(message: object): Promise<void> {
-    const task = this.outboundQueue.then(() => this.sendEncryptedNow(message));
+    const context = this.captureSessionWorkContext();
+    if (!context) return Promise.reject(new Error('sendEncrypted: not connected'));
+    const task = this.outboundQueue.then(() => this.sendEncryptedNow(message, context));
     // Keep the chain alive after a failed send; the failure still propagates
     // to this task's caller.
     this.outboundQueue = task.then(
@@ -927,22 +1207,42 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     return task;
   }
 
-  private async sendEncryptedNow(message: object): Promise<void> {
-    if (!this.keyExchange?.areKeysExchanged()) {
+  private async sendEncryptedNow(message: object, context: SessionWorkContext): Promise<void> {
+    if (!context.keyExchange.areKeysExchanged()) {
       throw new Error('sendEncrypted: not connected');
     }
-    const encrypted = await this.keyExchange.encryptMessage(JSON.stringify(message));
+    this.assertSessionWorkCurrent(context);
+    const encrypted = await context.keyExchange.encryptMessage(JSON.stringify(message));
+    this.assertSessionWorkCurrent(context);
     // Checkpoint the advanced sendSeq BEFORE the ciphertext can reach the
     // relay. If we crash in between, the stored counter is ahead (the wallet
     // drops the gap and the session dies cleanly); persisting after the send
     // could leave it behind, and a restored stale sendSeq would reuse an
     // AES-256-GCM nonce under the same key.
-    await this.persistSession();
-    await this.socketClient.sendMessage({
-      id: this.channelId,
-      clientType: 'dapp',
-      message: encrypted,
-    });
+    try {
+      await this.persistSession(context);
+    } catch (err) {
+      await this.teardownPersistenceFailedSession(err, context);
+      throw err;
+    }
+    this.assertSessionWorkCurrent(context);
+    try {
+      await context.socketClient.sendMessage({
+        id: context.channelId,
+        clientType: 'dapp',
+        message: encrypted,
+      });
+    } catch (err) {
+      // The ciphertext may have reached the relay even when its acknowledgement
+      // was lost. Its sequence number cannot be retried, and continuing would
+      // create a permanent gap, so retire this generation immediately.
+      await this.teardownPersistenceFailedSession(
+        err,
+        context,
+        'Relay send outcome unknown; terminating session before further use'
+      );
+      throw err;
+    }
   }
 
   private startUnresponsiveTimer(): void {
@@ -979,44 +1279,117 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
   // ── Persistence ────────────────────────────────────────────
 
-  private async persistSession(): Promise<void> {
-    if (typeof localStorage === 'undefined') return;
-    if (!this.keyExchange) return;
-    const persistedKex = await this.keyExchange.exportPersisted();
-    if (!persistedKex) return;
+  private invalidateSessionWork(): void {
+    this.sessionGeneration++;
+    // Advance the generation before wiping the retired handshake so stale
+    // async continuations fail their context check. reset() zeroizes any
+    // live ML-KEM secret-key buffer held by a pre-SYNACK KeyExchange.
+    this.keyExchange?.reset();
+    // New work must never queue behind a promise owned by the retired session.
+    // Existing tasks retain their old generation and fail their context checks.
+    this.messageQueue = Promise.resolve();
+    this.outboundQueue = Promise.resolve();
+    this.persistenceQueue = Promise.resolve();
+  }
+
+  private captureSessionWorkContext(): SessionWorkContext | null {
+    if (!this.keyExchange) return null;
+    return {
+      generation: this.sessionGeneration,
+      channelId: this.channelId,
+      keyExchange: this.keyExchange,
+      socketClient: this.socketClient,
+    };
+  }
+
+  private isSessionWorkCurrent(context: SessionWorkContext): boolean {
+    return (
+      context.generation === this.sessionGeneration &&
+      context.channelId === this.channelId &&
+      context.keyExchange === this.keyExchange &&
+      context.socketClient === this.socketClient
+    );
+  }
+
+  private assertSessionWorkCurrent(context: SessionWorkContext): void {
+    if (!this.isSessionWorkCurrent(context)) {
+      throw new Error('QRL Connect session changed while encrypted work was pending');
+    }
+  }
+
+  private async acquireSessionOwnership(): Promise<boolean> {
+    if (!this.persistenceEnabled) return true;
+    if (!this.sessionOwnership) return false;
+    return this.sessionOwnership.acquire();
+  }
+
+  private async releaseSessionOwnership(): Promise<void> {
+    await this.sessionOwnership?.release();
+  }
+
+  private persistSession(context: SessionWorkContext): Promise<void> {
+    const task = this.persistenceQueue.then(() => this.persistSessionNow(context));
+    this.persistenceQueue = task.then(
+      () => undefined,
+      () => undefined
+    );
+    return task;
+  }
+
+  private async persistSessionNow(context: SessionWorkContext): Promise<void> {
+    this.assertSessionWorkCurrent(context);
+    if (!this.persistenceEnabled || !this.storage) return;
+    if (!this.sessionOwnership?.isOwned()) {
+      throw new Error('Cannot persist AEAD counters without browser-tab ownership');
+    }
+    if (this.persistenceBroken) {
+      throw new Error('AEAD counter persistence is unavailable');
+    }
+    const persistedKex = await context.keyExchange.exportPersisted();
+    if (!persistedKex) throw new Error('Cannot export established AEAD session');
+    // exportPersisted() crosses a WebCrypto await. A disconnect or fresh
+    // pairing may have retired this generation and released its lock while the
+    // export was in flight; never resurrect or overwrite state afterward.
+    this.assertSessionWorkCurrent(context);
+    if (!this.sessionOwnership?.isOwned()) {
+      throw new Error('Browser-tab ownership changed while persisting AEAD counters');
+    }
 
     const session: DAppSession = {
-      version: 3,
-      channelId: this.channelId,
+      version: 4,
+      channelId: context.channelId,
       keyExchange: persistedKex,
       dappMetadata: this.dappMetadata,
       connectedAccounts: this.connectedAccounts,
       chainId: this.chainId,
-      createdAt: this.pendingRestore?.createdAt ?? Date.now(),
+      createdAt: this.sessionCreatedAt,
       lastActivity: Date.now(),
     };
 
     try {
-      localStorage.setItem(this.storageKey, JSON.stringify(session));
+      this.storage.setItem(this.storageKey, JSON.stringify(session));
     } catch (err) {
-      warn('ConnectionManager', 'localStorage.setItem failed:', err);
+      this.persistenceBroken = true;
+      this.removeStoredSession();
+      logError('ConnectionManager', 'Failed to persist AEAD counters:', err);
+      throw new Error('Failed to persist AEAD counters');
     }
   }
 
   private readStoredSession(): DAppSession | null {
-    if (typeof localStorage === 'undefined') return null;
+    if (!this.persistenceEnabled || !this.storage) return null;
     try {
-      const raw = localStorage.getItem(this.storageKey);
+      const raw = this.storage.getItem(this.storageKey);
       if (!raw) return null;
       const session = parseStoredSession(raw);
       if (!session) {
-        // Legacy (pre-v3) or malformed record: clear to force a fresh pairing.
+        // Legacy (pre-v4) or malformed record: clear to force a fresh pairing.
         log('ConnectionManager', 'Dropping legacy or malformed session from storage');
-        localStorage.removeItem(this.storageKey);
+        this.removeStoredSession();
         return null;
       }
       if (Date.now() - session.createdAt > SESSION_TTL_MS) {
-        localStorage.removeItem(this.storageKey);
+        this.removeStoredSession();
         return null;
       }
       return session;
@@ -1025,8 +1398,38 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     }
   }
 
-  private clearSession(): void {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.removeItem(this.storageKey);
+  private removeStoredSession(): boolean {
+    if (!this.storage) return true;
+    try {
+      this.storage.removeItem(this.storageKey);
+      return true;
+    } catch (removeError) {
+      // Some storage wrappers can reject deletion while still permitting an
+      // overwrite. Replacing the record with an invalid version is equally
+      // safe: the next constructor cannot hydrate the retired AEAD stream.
+      try {
+        this.storage.setItem(this.storageKey, '{"version":0}');
+        warn('ConnectionManager', 'localStorage.removeItem failed; invalidated record instead');
+        return true;
+      } catch (overwriteError) {
+        warn(
+          'ConnectionManager',
+          'Unable to invalidate persisted session:',
+          removeError,
+          overwriteError
+        );
+        return false;
+      }
+    }
+  }
+
+  private removeStoredSessionOrThrow(): void {
+    if (!this.removeStoredSession()) {
+      throw new Error('Unable to clear the previous persisted AEAD session');
+    }
+  }
+
+  private clearSession(): boolean {
+    return this.removeStoredSession();
   }
 }

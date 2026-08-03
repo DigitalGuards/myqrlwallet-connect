@@ -5,6 +5,49 @@ All notable changes to `@qrlwallet/connect` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- RPC forwarding now uses closed, module-private allowlists. Raw transaction
+  broadcast, removed signing methods, and unknown future signing methods fail
+  before the relay round trip, even if a consumer mutates the exported method
+  discovery sets.
+- Approval-bound RPC calls are serialized by request id. A second signing,
+  transaction, or chain-management request is sent only after the first one is
+  answered or rejected. Params are snapshotted at the provider boundary, and a
+  lifecycle generation barrier cancels requests still waiting for a channel
+  rejoin when the session is reset, lost, terminated, or disconnected.
+- Authenticated and restored account lists must use the current Q + 40 hex
+  address format. They are returned and emitted as copies so consumer mutation
+  cannot rewrite the provider's internal authorization state.
+- `wallet_switchQrlChain` resolves only when the wallet's reported chain state
+  matches the requested chain id. A bare success response on the old chain is
+  rejected.
+- Typed-data encoding now has deterministic limits for type count, graph and
+  array depth, array length, dynamic bytes, field count, and encoded values.
+  Prototype-sensitive identifiers are rejected before hashing.
+- Message and typed-data signing validate the current 41-character Q-address
+  format locally. Opaque signed messages are capped at 16 KiB before relay use.
+- New bound verification helpers validate the ML-DSA signature and derive the
+  expected current Q + 40 hex signer from the exact 3-byte descriptor and
+  2592-byte public key. Explicitly named key-only helpers are available, and
+  their older ambiguous names remain as deprecated aliases for compatibility.
+- Persisted AEAD sessions require an exclusive Web Lock. Only one tab can own
+  a key/counter stream, counters are refreshed after lock acquisition, and a
+  persistence failure tombstones the relay channel before any ciphertext or
+  decrypted plaintext can proceed. Browsers without Web Locks use memory-only
+  sessions. The stored dApp session format moves to v4 and older records force
+  a one-time fresh pairing.
+- Handshake authentication failures retire and tombstone the pairing, and
+  abandoned generations zeroize live ML-KEM secret keys. AEAD counter
+  exhaustion is rejected before cryptographic use. Relay sends and joins have
+  bounded acknowledgement windows. Relay tombstones require an explicit close
+  confirmation, while browser-tab ownership is released only after the durable
+  local session record is invalidated.
+- Patched vulnerable development-only transitive dependencies and pinned the
+  audited esbuild release used by the build and test toolchain.
+
 ## [3.2.0] - 2026-07-09
 
 ### Added

@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   RESTRICTED_METHODS,
   UNRESTRICTED_METHODS,
+  EXPLICITLY_UNSUPPORTED_METHODS,
+  classifyRpcMethod,
+  isCurrentQrlAddress,
   DEFAULT_RELAY_URL,
   RELAY_PATH,
   PROTOCOL_VERSION,
@@ -70,7 +73,41 @@ describe('config', () => {
     });
   });
 
+  describe('RPC policy', () => {
+    it('classifies methods with closed allowlists', () => {
+      expect(classifyRpcMethod('qrl_sendTransaction')).toBe('restricted');
+      expect(classifyRpcMethod('qrl_getBalance')).toBe('unrestricted');
+      expect(classifyRpcMethod('qrl_sendRawTransaction')).toBe('unsupported');
+      expect(classifyRpcMethod('qrl_signFuturePayload')).toBe('unsupported');
+      expect(classifyRpcMethod('wallet_signFuturePayload')).toBe('unsupported');
+    });
+
+    it('keeps explicitly unsafe methods out of both positive allowlists', () => {
+      for (const method of EXPLICITLY_UNSUPPORTED_METHODS) {
+        expect(RESTRICTED_METHODS.has(method)).toBe(false);
+        expect(UNRESTRICTED_METHODS.has(method)).toBe(false);
+        expect(classifyRpcMethod(method)).toBe('unsupported');
+      }
+    });
+
+    it('does not let consumers mutate the provider authorization policy', () => {
+      const publicSnapshot = RESTRICTED_METHODS as Set<string>;
+      publicSnapshot.add('qrl_sendRawTransaction');
+      try {
+        expect(classifyRpcMethod('qrl_sendRawTransaction')).toBe('unsupported');
+      } finally {
+        publicSnapshot.delete('qrl_sendRawTransaction');
+      }
+    });
+  });
+
   describe('constants', () => {
+    it('keeps address validation on the current Q plus 40 hex format', () => {
+      expect(isCurrentQrlAddress(`Q${'a'.repeat(40)}`)).toBe(true);
+      expect(isCurrentQrlAddress(`Q${'a'.repeat(64)}`)).toBe(false);
+      expect(isCurrentQrlAddress(`0x${'a'.repeat(40)}`)).toBe(false);
+    });
+
     it('should have valid relay URL', () => {
       expect(DEFAULT_RELAY_URL).toBe('https://qrlwallet.com');
     });

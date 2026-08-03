@@ -10,14 +10,23 @@ import { RELAY_PATH } from './config.js';
 // up before giving up. Without this the caller's await hangs forever if
 // the relay is unreachable (socket.io retries internally, but our
 // pendingJoin only resolves on `connect`).
-const PENDING_JOIN_TIMEOUT_MS = 20000;
+export const PENDING_JOIN_TIMEOUT_MS = 20_000;
 // Bounded window for awaiting a relay ack before the caller is allowed to
 // tear the socket down. socket.io buffers emits and disconnect() drops
 // anything unflushed, so a fire-and-forget close_channel would race the
 // teardown and the tombstone could never land. Mirrors the wallet side.
 const SEND_FLUSH_TIMEOUT_MS = 600;
+// A normal relay message has already consumed and checkpointed an AEAD
+// sequence number by the time it reaches this layer. An acknowledgement that
+// never arrives must therefore settle as an ambiguous failure instead of
+// pinning ConnectionManager's outbound queue forever.
+export const MESSAGE_ACK_TIMEOUT_MS = 15_000;
 import { log, warn, error as logError } from './utils/logger.js';
 import type { RelayMessage } from './types.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 interface SocketClientEvents {
   message: (data: RelayMessage) => void;
@@ -50,6 +59,16 @@ export interface JoinResult {
   terminated: boolean;
 }
 
+interface PendingSend {
+  timer: ReturnType<typeof setTimeout>;
+  reject: (error: Error) => void;
+}
+
+interface PendingJoinAttempt {
+  timer: ReturnType<typeof setTimeout>;
+  reject: (error: Error) => void;
+}
+
 export class SocketClient extends EventEmitter<SocketClientEvents> {
   private socket: Socket | null = null;
   private relayUrl: string;
@@ -67,6 +86,8 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
     reject: (error: Error) => void;
     watchdog: ReturnType<typeof setTimeout>;
   } | null = null;
+  private pendingSends = new Set<PendingSend>();
+  private pendingJoinAttempts = new Set<PendingJoinAttempt>();
 
   constructor(relayUrl: string, clientType: 'dapp' | 'wallet') {
     super();
@@ -136,6 +157,12 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
 
     this.socket.on('disconnect', (reason) => {
       log('Socket', `Disconnected: ${reason}`);
+      this.rejectPendingJoinAttempts(
+        new Error(`Socket disconnected before join acknowledgement: ${reason}`)
+      );
+      this.rejectPendingSends(
+        new Error(`Socket disconnected before relay acknowledgement: ${reason}`)
+      );
       this.emit('disconnected', reason);
     });
 
@@ -224,6 +251,18 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
     // socket.io's own `reconnectionAttempts: Infinity` means no amount of
     // connect_error events will ever abort from its side.
     const watchdog = setTimeout(() => {
+      if (this.channelId === channelId) {
+        this.channelId = null;
+        // This initial/deferred join has failed terminally. Stop socket.io's
+        // infinite reconnect loop so it cannot leave an idle relay transport
+        // behind after the caller has abandoned the pairing attempt.
+        const socket = this.socket;
+        if (socket) {
+          socket.removeAllListeners();
+          socket.disconnect();
+          if (this.socket === socket) this.socket = null;
+        }
+      }
       this.settlePendingJoin(channelId, {
         error: new Error(`joinChannel timed out after ${PENDING_JOIN_TIMEOUT_MS}ms`),
       });
@@ -242,10 +281,44 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
 
   private joinChannelNow(channelId: string): Promise<JoinResult> {
     return new Promise((resolve, reject) => {
-      if (!this.socket?.connected) {
+      const socket = this.socket;
+      if (!socket?.connected) {
         reject(new Error('Socket not connected'));
         return;
       }
+
+      let settled = false;
+      const abandonJoin = (): void => {
+        if (this.channelId !== channelId) return;
+        // The join outcome is ambiguous when its acknowledgement is lost. The
+        // leave is ordered after join_channel on this socket, so it retires a
+        // late server-side join before future code can mistake channelId for a
+        // confirmed membership.
+        if (socket.connected) socket.emit('leave_channel', { channelId });
+        this.channelId = null;
+      };
+      const finish = (outcome: { result: JoinResult } | { error: Error }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(pending.timer);
+        this.pendingJoinAttempts.delete(pending);
+        if ('result' in outcome) resolve(outcome.result);
+        else reject(outcome.error);
+      };
+      const pending: PendingJoinAttempt = {
+        timer: setTimeout(() => {
+          abandonJoin();
+          finish({
+            error: new Error(
+              `joinChannel acknowledgement timed out after ${PENDING_JOIN_TIMEOUT_MS}ms`
+            ),
+          });
+        }, PENDING_JOIN_TIMEOUT_MS),
+        reject: (error: Error) => {
+          finish({ error });
+        },
+      };
+      this.pendingJoinAttempts.add(pending);
 
       const payload: {
         channelId: string;
@@ -256,32 +329,42 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
         payload.publicKey = this.publicKeyBase64;
       }
 
-      this.socket.emit(
-        'join_channel',
-        payload,
-        (response: {
-          success: boolean;
-          error?: string;
-          bufferedMessages?: unknown[];
-          channelPublicKey?: string | null;
-          participants?: string[];
-          terminated?: boolean;
-        }) => {
-          if (response.success) {
-            log('Socket', `Joined channel ${channelId}`);
-            resolve({
-              bufferedMessages: response.bufferedMessages ?? [],
-              channelPublicKey: response.channelPublicKey ?? null,
-              participants: response.participants ?? [],
-              terminated: response.terminated === true,
-            });
-          } else {
-            logError('Socket', `Failed to join channel: ${response.error}`);
-            reject(new Error(response.error ?? 'Failed to join channel'));
-          }
+      socket.emit('join_channel', payload, (response: unknown) => {
+        if (!isRecord(response)) {
+          abandonJoin();
+          finish({ error: new Error('Relay returned a malformed join acknowledgement') });
+          return;
         }
-      );
+        if (response.success === true) {
+          log('Socket', `Joined channel ${channelId}`);
+          finish({
+            result: {
+              bufferedMessages: Array.isArray(response.bufferedMessages)
+                ? response.bufferedMessages
+                : [],
+              channelPublicKey:
+                typeof response.channelPublicKey === 'string' ? response.channelPublicKey : null,
+              participants: Array.isArray(response.participants)
+                ? response.participants.filter(
+                    (participant): participant is string => typeof participant === 'string'
+                  )
+                : [],
+              terminated: response.terminated === true,
+            },
+          });
+        } else {
+          const relayError =
+            typeof response.error === 'string' ? response.error : 'Failed to join channel';
+          logError('Socket', `Failed to join channel: ${relayError}`);
+          abandonJoin();
+          finish({ error: new Error(relayError) });
+        }
+      });
     });
+  }
+
+  private rejectPendingJoinAttempts(error: Error): void {
+    for (const pending of [...this.pendingJoinAttempts]) pending.reject(error);
   }
 
   /**
@@ -289,24 +372,54 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    */
   sendMessage(data: RelayMessage): Promise<{ success: boolean; buffered: boolean }> {
     return new Promise((resolve, reject) => {
-      if (!this.socket?.connected) {
+      const socket = this.socket;
+      if (!socket?.connected) {
         reject(new Error('Socket not connected'));
         return;
       }
 
       const dataWithSeq = { ...data, seq: this.seq++ };
-      this.socket.emit(
+      let settled = false;
+      const finish = (
+        outcome: { result: { success: true; buffered: boolean } } | { error: Error }
+      ): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(pending.timer);
+        this.pendingSends.delete(pending);
+        if ('result' in outcome) resolve(outcome.result);
+        else reject(outcome.error);
+      };
+      const pending: PendingSend = {
+        timer: setTimeout(() => {
+          finish({
+            error: new Error(
+              `Relay message acknowledgement timed out after ${MESSAGE_ACK_TIMEOUT_MS}ms`
+            ),
+          });
+        }, MESSAGE_ACK_TIMEOUT_MS),
+        reject: (error: Error) => {
+          finish({ error });
+        },
+      };
+      this.pendingSends.add(pending);
+
+      socket.emit(
         'message',
         dataWithSeq,
         (response: { success: boolean; buffered: boolean; error?: string }) => {
           if (response?.success) {
-            resolve({ success: true, buffered: response.buffered });
+            finish({ result: { success: true, buffered: response.buffered } });
           } else {
-            reject(new Error(response?.error ?? 'Failed to send message'));
+            finish({ error: new Error(response?.error ?? 'Failed to send message') });
           }
         }
       );
     });
+  }
+
+  private rejectPendingSends(error: Error): void {
+    for (const pending of [...this.pendingSends]) pending.reject(error);
   }
 
   /**
@@ -314,22 +427,24 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * flush window. Lets a caller await transmission before tearing the
    * socket down.
    */
-  private flushEmit(event: string, payload: object): Promise<void> {
+  private flushEmit(event: string, payload: object): Promise<boolean> {
     return new Promise((resolve) => {
       if (!this.socket?.connected) {
-        resolve();
+        resolve(false);
         return;
       }
       let settled = false;
-      const done = (): void => {
+      const done = (confirmed: boolean): void => {
         if (settled) return;
         settled = true;
-        resolve();
+        resolve(confirmed);
       };
-      const timer = setTimeout(done, SEND_FLUSH_TIMEOUT_MS);
-      this.socket.emit(event, payload, () => {
+      const timer = setTimeout(() => {
+        done(false);
+      }, SEND_FLUSH_TIMEOUT_MS);
+      this.socket.emit(event, payload, (response: unknown) => {
         clearTimeout(timer);
-        done();
+        done(isRecord(response) && response.success === true && response.terminated === true);
       });
     });
   }
@@ -341,7 +456,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
    * peer could not open it). Resolves once the close is flushed or the
    * bounded window elapses, so the caller can safely disconnect afterwards.
    */
-  closeChannel(): Promise<void> {
+  closeChannel(): Promise<boolean> {
     const channelId = this.channelId;
     this.channelId = null;
     if (this.pendingJoin) {
@@ -349,7 +464,8 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
       this.pendingJoin.reject(new Error('Channel closed before join completed'));
       this.pendingJoin = null;
     }
-    if (!this.socket?.connected || !channelId) return Promise.resolve();
+    this.rejectPendingJoinAttempts(new Error('Channel closed before join completed'));
+    if (!this.socket?.connected || !channelId) return Promise.resolve(false);
     return this.flushEmit('close_channel', { channelId });
   }
 
@@ -362,6 +478,7 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
       this.pendingJoin.reject(new Error('Channel left before join completed'));
       this.pendingJoin = null;
     }
+    this.rejectPendingJoinAttempts(new Error('Channel left before join completed'));
     if (this.socket?.connected && this.channelId) {
       this.socket.emit('leave_channel', { channelId: this.channelId });
     }
@@ -377,8 +494,10 @@ export class SocketClient extends EventEmitter<SocketClientEvents> {
       this.pendingJoin.reject(new Error('Socket disconnected before join completed'));
       this.pendingJoin = null;
     }
+    this.rejectPendingJoinAttempts(new Error('Socket disconnected before join completed'));
     this.channelId = null;
     this.seq = 0;
+    this.rejectPendingSends(new Error('Socket disconnected before relay acknowledgement'));
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.disconnect();

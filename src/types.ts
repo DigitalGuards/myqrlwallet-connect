@@ -21,11 +21,11 @@ export interface DAppMetadata {
  * the ML-KEM keypair is ephemeral and zeroized after the handshake.
  * Re-pair (generate a new QR) to rotate the session key.
  *
- * v3 checkpoints the AEAD counters on every seal/open. v2 records (sparse
- * checkpoints, stale-counter nonce-reuse risk on restore) are dropped.
+ * v4 checkpoints every seal/open and requires exclusive browser-tab
+ * ownership. Older records cannot prove both invariants and are dropped.
  */
 export interface DAppSession {
-  version: 3;
+  version: 4;
   channelId: string;
   keyExchange: PersistedSession;
   dappMetadata: DAppMetadata;
@@ -40,6 +40,8 @@ export interface PendingRequest {
   id: string | number;
   method: string;
   params?: unknown[] | undefined;
+  /** Immutable postcondition captured before caller-owned params can change. */
+  expectedChainId?: string | undefined;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timestamp: number;
@@ -144,20 +146,38 @@ export interface EIP6963ProviderInfoOverride {
  * Rich response object returned by both `qrl_signMessage` and
  * `qrl_signTypedData`. The signature alone is not enough to verify since
  * ML-DSA-87 public keys cannot be recovered from a signature, so the
- * wallet always returns the public key explicitly. Stateless verifiers
- * (e.g. the SDK's `verifyMessage` / `verifyTypedData`) need every field.
+ * wallet always returns the public key explicitly. Stateless verifiers need
+ * the original payload plus the signature fields below.
  */
 export interface QrlSignedResult {
-  /** 0x-hex of the 4595-byte ML-DSA-87 signature. */
+  /** 0x-hex of the 4627-byte ML-DSA-87 signature. */
   signature: string;
   /** 0x-hex of the 2592-byte ML-DSA-87 public key. */
   publicKey: string;
-  /** 41-char checksummed Q-address derived from `publicKey`. */
+  /**
+   * 0x-hex of the 3-byte wallet descriptor used to derive `signer`.
+   * Optional while older wallet builds are upgraded; bound verification
+   * requires it.
+   */
+  descriptor?: string;
+  /** Current 41-character checksummed Q-address derived from descriptor + key. */
   signer: string;
   /** 0x-hex of the 64-byte SHAKE256 digest that was signed. */
   digest: string;
   /** Scheme tag: 'QRL-SIGN-MSG-v1' or 'QRL-SIGN-TYPED-v1'. */
   schemeVersion: string;
+}
+
+/** A current wallet response whose descriptor can be signer-bound. */
+export interface QrlSignedResultWithDescriptor extends QrlSignedResult {
+  descriptor: string;
+}
+
+/** Narrow a legacy-compatible response to one with a valid ML-DSA descriptor. */
+export function hasSigningDescriptor(
+  result: QrlSignedResult
+): result is QrlSignedResultWithDescriptor {
+  return typeof result.descriptor === 'string' && /^0x01[0-9a-fA-F]{4}$/.test(result.descriptor);
 }
 
 /**

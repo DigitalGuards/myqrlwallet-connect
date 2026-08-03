@@ -146,14 +146,21 @@ The main class. Creates a connection manager and EIP-1193 provider.
 **Require user approval:**
 `qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_addQrlChain`, `wallet_switchQrlChain`
 
-`qrl_signMessage` and `qrl_signTypedData` (v3.0.0) replace the Ethereum-flavored `personal_sign` / `qrl_sign` / `qrl_signTypedData_v3` / `qrl_signTypedData_v4`. Both use SHAKE256 + native ML-DSA-87 ctx and return a rich `{ signature, publicKey, signer, digest, schemeVersion }` object; verify locally with `verifyMessage` / `verifyTypedData` exported from this package.
+`qrl_signMessage` and `qrl_signTypedData` (v3.0.0) replace the Ethereum-flavored `personal_sign` / `qrl_sign` / `qrl_signTypedData_v3` / `qrl_signTypedData_v4`. Both use SHAKE256 + native ML-DSA-87 ctx and return a rich `{ signature, publicKey, descriptor, signer, digest, schemeVersion }` object. For authentication, verify locally with `verifyMessageForSigner` / `verifyTypedDataForSigner`, which bind the public key and 3-byte ML-DSA descriptor to the expected current Q + 40 hex address. The lower-level `verifyMessageSignature` / `verifyTypedDataSignature` helpers verify only the supplied key and signature; they do not prove that the key belongs to a claimed signer. The old `verifyMessage` / `verifyTypedData` names remain as deprecated aliases. `descriptor` remains optional in the response type for older-wallet compatibility; bound verification fails closed when it is absent, and `hasSigningDescriptor` can narrow the response type.
+
+Approval-bound calls are serialized. Unknown methods and direct node mutation
+surfaces such as `qrl_sendRawTransaction` are rejected locally.
 
 **Auto-proxied (no approval needed):**
-`qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_blockNumber`, `qrl_chainId`, `qrl_getTransactionReceipt`, and 30+ more read-only methods.
+`qrl_getBalance`, `qrl_call`, `qrl_estimateGas`, `qrl_blockNumber`, `qrl_chainId`, `qrl_getTransactionReceipt`, and other explicitly allowlisted query/filter methods.
 
 ## Sessions
 
-Sessions persist in `localStorage` for 7 days. When a user returns to your dApp, the SDK can automatically reconnect without requiring a new QR scan.
+Sessions persist in `localStorage` for 7 days. When a user returns to your dApp, the SDK can automatically reconnect without requiring a new QR scan. An exclusive Web Lock gives one browser tab ownership of the persisted key and AEAD counters. A second tab cannot restore or use that stream. Browsers without Web Locks use a memory-only session and require a fresh pairing after reload.
+
+Malformed handshake frames and ambiguous relay acknowledgements retire the
+affected pairing. A fresh QR starts a new key, channel, and request generation;
+pending work from the prior wallet is rejected locally.
 
 A paired session also survives the wallet app being backgrounded or closed. On the same device at most one of the two apps is ever foregrounded, so the wallet's socket being absent is the normal steady state of a mobile flow, not an error:
 
@@ -240,7 +247,7 @@ The example connects to the production relay at `wss://qrlwallet.com/relay` by d
 - Ciphertext tampering is detected exclusively at the AES-GCM tag;
   ML-KEM's implicit rejection is NOT used for authentication
 - PIN or biometric authentication required for every transaction
-- dApp URL is displayed to the user before connecting
+- dApp name and URL are displayed as unverified, dApp-supplied metadata
 - Unknown RPC methods are rejected with `-32601`
 
 ## License

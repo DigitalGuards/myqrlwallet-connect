@@ -54,8 +54,9 @@ const txHash = await provider.request({
 
 Sign opaque bytes (off-chain auth challenges, ownership proofs, anything without internal structure). The wallet displays the message for approval, hashes it with SHAKE256, signs with ML-DSA-87, and returns a stateless-verifiable response object.
 
-`params[0]` is the signer Q-address (must equal the connected account).
-`params[1]` is the message as **strict 0x-hex bytes**. The SDK does not accept bare UTF-8 strings here; the dApp UTF-8-encodes before sending so the wallet receives a single canonical form.
+`params[0]` is the signer Q-address (must equal the connected account and use
+the current `Q` + 40 hex character format).
+`params[1]` is the message as **strict 0x-hex bytes**, capped at 16 KiB. The SDK does not accept bare UTF-8 strings here; the dApp UTF-8-encodes before sending so the wallet receives a single canonical form.
 
 ```typescript
 const result = await provider.request({
@@ -66,16 +67,22 @@ const result = await provider.request({
   ],
 });
 // => {
-//   signature:     "0x...<4595-byte ML-DSA-87 signature>",
+//   signature:     "0x...<4627-byte ML-DSA-87 signature>",
 //   publicKey:     "0x...<2592-byte ML-DSA-87 public key>",
+//   descriptor:    "0x010000", // exact 3-byte ML-DSA wallet descriptor
 //   signer:        "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
 //   digest:        "0x...<64-byte SHAKE256 digest>",
 //   schemeVersion: "QRL-SIGN-MSG-v1"
 // }
 
-// Verify locally (no relay round-trip):
-import { verifyMessage } from "@qrlwallet/connect";
-const ok = verifyMessage({
+// Verify the signature and signer binding locally (no relay round-trip):
+import { hasSigningDescriptor, verifyMessageForSigner } from "@qrlwallet/connect";
+if (!hasSigningDescriptor(result)) {
+  throw new Error("This wallet response cannot be bound to its claimed signer");
+}
+const ok = verifyMessageForSigner({
+  expectedSigner: "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
+  descriptor: result.descriptor,
   signature: result.signature,
   publicKey: result.publicKey,
   messageBytes: "0x48656c6c6f2c20514f4c21",
@@ -126,18 +133,31 @@ const result = await provider.request({
   ],
 });
 // => {
-//   signature, publicKey, signer, digest,
+//   signature, publicKey, descriptor, signer, digest,
 //   schemeVersion: "QRL-SIGN-TYPED-v1",
 //   domain:        { name: "zondscan.com" }
 // }
 
-import { verifyTypedData } from "@qrlwallet/connect";
-const ok = verifyTypedData({
+import { hasSigningDescriptor, verifyTypedDataForSigner } from "@qrlwallet/connect";
+if (!hasSigningDescriptor(result)) {
+  throw new Error("This wallet response cannot be bound to its claimed signer");
+}
+const ok = verifyTypedDataForSigner({
+  expectedSigner: "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
+  descriptor: result.descriptor,
   signature: result.signature,
   publicKey: result.publicKey,
   payload, // same payload the dApp sent
 });
 ```
+
+The lower-level `verifyMessageSignature` and `verifyTypedDataSignature`
+helpers verify a signature against the public key supplied by the caller. They
+do not bind that key to `result.signer`, so they are not sufficient on their
+own for account authentication or authorization. The old `verifyMessage` and
+`verifyTypedData` names remain as deprecated aliases. Bound verification
+returns `false` when an older wallet response omits `descriptor`; request a
+new signature after the wallet is upgraded.
 
 Digest pipeline:
 
@@ -150,6 +170,12 @@ digest      = SHAKE256(SCHEME_TAG_TYPED || domainHash || messageHash, 64)
 
 Type system mirrors EIP-712: `address`, `bool`, `string`, `bytes`, `uintN` / `intN` (N ∈ multiples of 8, 8 ≤ N ≤ 256), `bytesN` (1 ≤ N ≤ 32), arrays `T[]` and `T[N]`, struct references. `uint64` and wider must be passed as strings or 0x-hex; JS `number` literals above the safe-integer range are rejected.
 
+The SDK applies deterministic resource limits before forwarding typed data:
+32 struct types, 32 fields per struct, 256 total fields, 12 levels each for
+type graphs and array types, 256 items per array, 2,048 encoded values, and
+16 KiB per dynamic string or bytes field. Identifier names are canonical and
+prototype-sensitive names are rejected.
+
 ### Removed in v3.0.0
 
 The Ethereum-flavored signing methods are no longer supported. A dApp that still calls them via `@qrlwallet/connect@^3` will get a "method not supported" error before the relay round-trip:
@@ -159,6 +185,13 @@ The Ethereum-flavored signing methods are no longer supported. A dApp that still
 - `qrl_signTypedData_v3` / `qrl_signTypedData_v4` → replaced by `qrl_signTypedData` (single canonical version, no `_v3`/`_v4`)
 
 Old signatures produced before the upgrade cannot be reproduced and aren't verifiable by the new helpers.
+
+### Explicitly unsupported node mutation methods
+
+`qrl_sendRawTransaction` is not an unrestricted method. QRL Connect does not
+act as a public transaction broadcaster, and the method has no wallet-owned
+approval or signing step. It is rejected locally along with unknown future
+signing methods.
 
 ### wallet_addQrlChain
 
@@ -190,11 +223,16 @@ await provider.request({
 // => null
 ```
 
+The SDK verifies the wallet's reported chain state before resolving this call.
+A success response while the wallet remains on the previous chain is rejected.
+
 ---
 
 ## Unrestricted Methods (no approval needed)
 
-These are read-only calls that return data without user interaction. They're proxied through the wallet's RPC connection.
+These explicitly allowlisted calls do not sign or broadcast transactions. They
+are proxied through the wallet's RPC connection without user interaction;
+filter methods may create or remove node-side filter state.
 
 ### qrl_chainId
 
@@ -335,16 +373,6 @@ const logs = await provider.request({
 // => [{ logIndex: "0x0", blockNumber: "0x233", topics: [...], ... }]
 ```
 
-### qrl_feeHistory
-
-```typescript
-const feeHistory = await provider.request({
-  method: "qrl_feeHistory",
-  params: ["0x3", "latest", [10, 50]],
-});
-// => { oldestBlock: "0x17185", baseFeePerGas: ["0x7", ...], gasUsedRatio: [...] }
-```
-
 ### web3_clientVersion
 
 ```typescript
@@ -375,7 +403,6 @@ const accounts = await provider.request({ method: "qrl_accounts", params: [] });
 | `qrl_call` | Execute call without tx |
 | `qrl_chainId` | Current chain ID |
 | `qrl_estimateGas` | Estimate gas for tx |
-| `qrl_feeHistory` | Fee history |
 | `qrl_gasPrice` | Current gas price |
 | `qrl_getBalance` | Account balance |
 | `qrl_getBlockByHash` | Block by hash |
@@ -386,7 +413,6 @@ const accounts = await provider.request({ method: "qrl_accounts", params: [] });
 | `qrl_getFilterChanges` | Poll filter changes |
 | `qrl_getFilterLogs` | Get filter logs |
 | `qrl_getLogs` | Get logs by filter |
-| `qrl_getProof` | Merkle proof |
 | `qrl_getStorageAt` | Storage at position |
 | `qrl_getTransactionByBlockHashAndIndex` | Tx by block hash + index |
 | `qrl_getTransactionByBlockNumberAndIndex` | Tx by block number + index |
@@ -396,9 +422,6 @@ const accounts = await provider.request({ method: "qrl_accounts", params: [] });
 | `qrl_newBlockFilter` | Create block filter |
 | `qrl_newFilter` | Create log filter |
 | `qrl_newPendingTransactionFilter` | Create pending tx filter |
-| `qrl_sendRawTransaction` | Send signed tx |
-| `qrl_subscribe` | Subscribe to events |
 | `qrl_syncing` | Sync status |
 | `qrl_uninstallFilter` | Remove filter |
-| `qrl_unsubscribe` | Unsubscribe |
 | `web3_clientVersion` | Client version |
