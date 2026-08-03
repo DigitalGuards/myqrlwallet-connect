@@ -1,12 +1,12 @@
 /**
- * Post-quantum handshake (v2).
+ * Post-quantum handshake (v3).
  *
  * Flow:
  *    dApp                                  relay                 wallet
  *    ────────────────────────────────────────────────────────────────────
- *    initiate() → (pk, sk)
- *    QR(cid, pk) rendered                                        scan QR
- *                                                                receiveQR(cid, pk)
+ *    initiate() → (pk, sk, cap)
+ *    QR(cid, fp, cap) rendered                                  scan QR
+ *                                                                receiveQR(cid, pk, cap)
  *                                                                → SYNACK{ct, c0}
  *                                            ◄── SYNACK ─────── send
  *    onSynAck(cid, SYNACK)
@@ -27,6 +27,8 @@ import {
   deriveAeadKey,
   exportRawAeadKey,
   fromBase64,
+  fromBase64Exact,
+  generatePairingCapability,
   importRawAeadKey,
   kemDecaps,
   kemEncaps,
@@ -37,7 +39,7 @@ import {
   transcriptHash,
   zeroize,
 } from './PQCrypto.js';
-import { PROTOCOL_VERSION } from './config.js';
+import { PAIRING_CAPABILITY_LEN, PROTOCOL_VERSION } from './config.js';
 import { KeyExchangeMessageType } from './types.js';
 import { log, warn } from './utils/logger.js';
 
@@ -46,8 +48,13 @@ const textDecoder = new TextDecoder();
 
 const HELLO_WALLET = textEncoder.encode('hello/wallet/v1');
 const HELLO_DAPP = textEncoder.encode('hello/dapp/v1');
+const AES_GCM_TAG_LEN = 16;
+
+export const SYNACK_C0_LEN = HELLO_WALLET.length + AES_GCM_TAG_LEN;
+export const ACK_C1_LEN = HELLO_DAPP.length + AES_GCM_TAG_LEN;
 
 export interface Session {
+  protocolVersion: 3;
   cid: Uint8Array;
   key: CryptoKey;
   htx: Uint8Array;
@@ -59,6 +66,7 @@ export interface Session {
 
 /** Wire-safe persisted form for localStorage. */
 export interface PersistedSession {
+  protocolVersion: 3;
   cid: string;
   kAeadRaw: string;
   htx: string;
@@ -83,19 +91,37 @@ export interface AckMessage {
 
 export type KeyExchangeMessage = SynAckMessage | AckMessage;
 
+export interface InitiatedKeyExchange {
+  publicKey: Uint8Array;
+  capability: Uint8Array;
+}
+
 interface KeyExchangeEvents {
   keys_exchanged: () => void;
   step_change: (step: KeyExchangeMessageType) => void;
 }
 
+function snapshotSession(session: Session): Session {
+  return {
+    ...session,
+    cid: session.cid.slice(),
+    htx: session.htx.slice(),
+    sendDir: session.sendDir.slice(),
+    recvDir: session.recvDir.slice(),
+  };
+}
+
 export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   private isOriginator: boolean;
   private keypair: Keypair | null = null;
+  private capability: Uint8Array | null = null;
   private session: Session | null = null;
   private step: KeyExchangeMessageType = KeyExchangeMessageType.SYN;
   private awaitingSynAck = false;
   private awaitingAck = false;
+  private awaitingAckDelivery = false;
   private keysExchanged = false;
+  private stateGeneration = 0;
   // The ACK we produced for the current handshake. A wallet that lost its
   // transport right after sending SYNACK re-sends the identical SYNACK on
   // rejoin; we answer with this cached ACK so the handshake converges
@@ -108,7 +134,10 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     super();
     this.isOriginator = isOriginator;
     if (restored) {
-      this.session = restored;
+      if (restored.protocolVersion !== PROTOCOL_VERSION) {
+        throw new Error('KeyExchange: cannot restore a pre-v3 session');
+      }
+      this.session = snapshotSession(restored);
       this.keysExchanged = true;
       this.step = KeyExchangeMessageType.ACK;
       log('KeyExchange', 'Hydrated from persisted session');
@@ -117,18 +146,24 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
 
   /**
    * Originator (dApp) side: begin a fresh handshake by generating an
-   * ephemeral ML-KEM-768 keypair. Returns pk to embed in the QR URI.
+   * ephemeral ML-KEM-768 keypair and a fresh 32-byte pairing capability.
+   * Both returned arrays are copies; the originator retains its own secret
+   * capability until the handshake succeeds or is retired.
    */
-  initiate(): Uint8Array {
+  initiate(): InitiatedKeyExchange {
     if (!this.isOriginator) {
       throw new Error('KeyExchange: responder cannot initiate');
     }
     this.resetInternal(false);
     this.keypair = kemKeygen();
+    this.capability = generatePairingCapability();
     this.step = KeyExchangeMessageType.SYN;
     this.awaitingSynAck = true;
     this.emit('step_change', this.step);
-    return this.keypair.pk;
+    return {
+      publicKey: this.keypair.pk.slice(),
+      capability: this.capability.slice(),
+    };
   }
 
   /**
@@ -141,97 +176,166 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
       warn('KeyExchange', 'Responder received SYNACK - ignoring');
       return null;
     }
-    if (!this.awaitingSynAck || !this.keypair) {
+    if (!this.awaitingSynAck || !this.keypair || !this.capability) {
       return null;
     }
     this.awaitingSynAck = false;
-
-    const ct = fromBase64(msg.ct);
-    const c0 = fromBase64(msg.c0);
-    if (ct.length !== ML_KEM_768_CT_LEN) {
-      throw new Error(`KeyExchange: bad ct length ${ct.length}`);
-    }
-
-    const ss = kemDecaps(this.keypair.sk, ct);
-    const htx = await transcriptHash(cid, this.keypair.pk, ct);
-    const key = await deriveAeadKey(ss, htx);
-
-    let hello: Uint8Array;
+    const stableCid = cid.slice();
+    const keypair = this.keypair;
+    const capability = this.capability;
+    const generation = this.stateGeneration;
+    let ss: Uint8Array | null = null;
     try {
-      hello = await open(key, DIR_WALLET_TX, 0, htx, c0);
-    } catch {
-      throw new Error(
-        'KeyExchange: wallet hello AEAD tag failed (tampered SYNACK, wrong QR, or protocol mismatch)'
-      );
+      if (msg.v !== PROTOCOL_VERSION) {
+        throw new Error(`KeyExchange: expected protocol v${PROTOCOL_VERSION}`);
+      }
+      const ct = fromBase64Exact(msg.ct, ML_KEM_768_CT_LEN, 'SYNACK ciphertext');
+      const c0 = fromBase64Exact(msg.c0, SYNACK_C0_LEN, 'SYNACK wallet hello');
+
+      ss = kemDecaps(keypair.sk, ct);
+      const htx = await transcriptHash(stableCid, keypair.pk, ct, capability);
+      const key = await deriveAeadKey(ss, htx, capability);
+
+      let hello: Uint8Array | null = null;
+      try {
+        try {
+          hello = await open(key, DIR_WALLET_TX, 0, htx, c0);
+        } catch {
+          throw new Error(
+            'KeyExchange: wallet hello AEAD tag failed (tampered SYNACK, wrong QR, or protocol mismatch)'
+          );
+        }
+        if (!constantTimeEquals(hello, HELLO_WALLET)) {
+          throw new Error('KeyExchange: wallet hello mismatch');
+        }
+      } finally {
+        if (hello) zeroize(hello);
+      }
+
+      if (this.stateGeneration !== generation || this.keypair !== keypair) {
+        throw new Error('KeyExchange: handshake generation changed');
+      }
+
+      const c1 = await seal(key, DIR_DAPP_TX, 0, htx, HELLO_DAPP);
+
+      if (this.stateGeneration !== generation || this.keypair !== keypair) {
+        throw new Error('KeyExchange: handshake generation changed');
+      }
+
+      zeroize(keypair.sk);
+      if (this.keypair === keypair) this.keypair = null;
+      zeroize(capability);
+      if (this.capability === capability) this.capability = null;
+      this.session = {
+        protocolVersion: PROTOCOL_VERSION,
+        cid: stableCid,
+        key,
+        htx,
+        sendDir: DIR_DAPP_TX.slice(),
+        recvDir: DIR_WALLET_TX.slice(),
+        sendSeq: 1,
+        recvSeq: 1,
+      };
+      const ack: AckMessage = {
+        type: KeyExchangeMessageType.ACK,
+        c1: toBase64(c1),
+        v: PROTOCOL_VERSION,
+      };
+      this.lastAck = { ...ack };
+      // The key is only provisional until ConnectionManager receives the
+      // relay acknowledgement for this ACK. Publishing completion earlier
+      // could send encrypted application data before the wallet has any
+      // chance to authenticate the dApp side of the handshake.
+      this.awaitingAckDelivery = true;
+      return ack;
+    } catch (error) {
+      // A consumed handshake frame cannot be retried safely. Drop all derived
+      // state and wipe the KEM secret so a bad first SYNACK cannot strand a
+      // half-live pairing or retain secret material until garbage collection.
+      if (this.stateGeneration === generation) this.resetInternal(false);
+      throw error;
+    } finally {
+      if (ss) zeroize(ss);
     }
-    if (!constantTimeEquals(hello, HELLO_WALLET)) {
-      throw new Error('KeyExchange: wallet hello mismatch');
+  }
+
+  /**
+   * Originator: publish completion only after the relay acknowledged ACK.
+   * This is deliberately separate from onSynAck() so transport ambiguity
+   * cannot leave a live or persistable one-sided session.
+   */
+  confirmOriginatorAckDelivered(): void {
+    if (!this.isOriginator) {
+      throw new Error('KeyExchange: responder cannot confirm originator ACK delivery');
     }
-
-    zeroize(ss);
-    zeroize(this.keypair.sk);
-    this.keypair = null;
-
-    const c1 = await seal(key, DIR_DAPP_TX, 0, htx, HELLO_DAPP);
-
-    this.session = {
-      cid,
-      key,
-      htx,
-      sendDir: DIR_DAPP_TX,
-      recvDir: DIR_WALLET_TX,
-      sendSeq: 1,
-      recvSeq: 1,
-    };
+    if (this.keysExchanged) return;
+    if (!this.awaitingAckDelivery || !this.session || !this.lastAck) {
+      throw new Error('KeyExchange: no provisional originator session to confirm');
+    }
+    this.awaitingAckDelivery = false;
     this.keysExchanged = true;
     this.step = KeyExchangeMessageType.ACK;
     this.emit('keys_exchanged');
     this.emit('step_change', this.step);
-
-    const ack: AckMessage = {
-      type: KeyExchangeMessageType.ACK,
-      c1: toBase64(c1),
-      v: PROTOCOL_VERSION,
-    };
-    this.lastAck = ack;
-    return ack;
   }
 
   /**
    * Responder (wallet) side: begin handshake from a scanned QR.
    * Returns the SYNACK wire message to emit on the relay.
    */
-  async receiveQR(cid: Uint8Array, pk: Uint8Array): Promise<SynAckMessage> {
+  async receiveQR(cid: Uint8Array, pk: Uint8Array, capability: Uint8Array): Promise<SynAckMessage> {
     if (this.isOriginator) {
       throw new Error('KeyExchange: originator cannot consume a QR');
     }
     this.resetInternal(false);
+    const generation = this.stateGeneration;
+    const stableCid = cid.slice();
+    const stablePk = pk.slice();
+    if (capability.length !== PAIRING_CAPABILITY_LEN) {
+      throw new Error(`KeyExchange: capability must be ${PAIRING_CAPABILITY_LEN} bytes`);
+    }
+    const stableCapability = capability.slice();
 
-    const { ct, ss } = kemEncaps(pk);
-    const htx = await transcriptHash(cid, pk, ct);
-    const key = await deriveAeadKey(ss, htx);
-    const c0 = await seal(key, DIR_WALLET_TX, 0, htx, HELLO_WALLET);
-    zeroize(ss);
+    let ss: Uint8Array | null = null;
+    try {
+      const encapsulated = kemEncaps(stablePk);
+      const { ct } = encapsulated;
+      ss = encapsulated.ss;
+      const htx = await transcriptHash(stableCid, stablePk, ct, stableCapability);
+      const key = await deriveAeadKey(ss, htx, stableCapability);
+      const c0 = await seal(key, DIR_WALLET_TX, 0, htx, HELLO_WALLET);
 
-    this.session = {
-      cid,
-      key,
-      htx,
-      sendDir: DIR_WALLET_TX,
-      recvDir: DIR_DAPP_TX,
-      sendSeq: 1,
-      recvSeq: 1,
-    };
-    this.awaitingAck = true;
-    this.step = KeyExchangeMessageType.SYNACK;
-    this.emit('step_change', this.step);
+      if (this.stateGeneration !== generation) {
+        throw new Error('KeyExchange: handshake generation changed');
+      }
 
-    return {
-      type: KeyExchangeMessageType.SYNACK,
-      ct: toBase64(ct),
-      c0: toBase64(c0),
-      v: PROTOCOL_VERSION,
-    };
+      this.session = {
+        protocolVersion: PROTOCOL_VERSION,
+        cid: stableCid,
+        key,
+        htx,
+        sendDir: DIR_WALLET_TX.slice(),
+        recvDir: DIR_DAPP_TX.slice(),
+        sendSeq: 1,
+        recvSeq: 1,
+      };
+      this.awaitingAck = true;
+      this.step = KeyExchangeMessageType.SYNACK;
+      this.emit('step_change', this.step);
+
+      return {
+        type: KeyExchangeMessageType.SYNACK,
+        ct: toBase64(ct),
+        c0: toBase64(c0),
+        v: PROTOCOL_VERSION,
+      };
+    } catch (error) {
+      if (this.stateGeneration === generation) this.resetInternal(false);
+      throw error;
+    } finally {
+      if (ss) zeroize(ss);
+      zeroize(stableCapability);
+    }
   }
 
   /**
@@ -250,26 +354,47 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
       throw new Error('KeyExchange: onAck called without a session');
     }
     this.awaitingAck = false;
+    const session = this.session;
+    const generation = this.stateGeneration;
 
-    const c1 = fromBase64(msg.c1);
-    let hello: Uint8Array;
     try {
-      hello = await open(this.session.key, DIR_DAPP_TX, 0, this.session.htx, c1);
-    } catch {
-      throw new Error('KeyExchange: dApp hello AEAD tag failed');
-    }
-    if (!constantTimeEquals(hello, HELLO_DAPP)) {
-      throw new Error('KeyExchange: dApp hello mismatch');
-    }
+      if (msg.v !== PROTOCOL_VERSION) {
+        throw new Error(`KeyExchange: expected protocol v${PROTOCOL_VERSION}`);
+      }
+      const c1 = fromBase64Exact(msg.c1, ACK_C1_LEN, 'ACK dApp hello');
+      let hello: Uint8Array | null = null;
+      try {
+        try {
+          hello = await open(session.key, DIR_DAPP_TX, 0, session.htx, c1);
+        } catch {
+          throw new Error('KeyExchange: dApp hello AEAD tag failed');
+        }
+        if (!constantTimeEquals(hello, HELLO_DAPP)) {
+          throw new Error('KeyExchange: dApp hello mismatch');
+        }
+      } finally {
+        if (hello) zeroize(hello);
+      }
+      if (this.stateGeneration !== generation || this.session !== session) {
+        throw new Error('KeyExchange: handshake generation changed');
+      }
 
-    this.keysExchanged = true;
-    this.step = KeyExchangeMessageType.ACK;
-    this.emit('keys_exchanged');
+      this.keysExchanged = true;
+      this.step = KeyExchangeMessageType.ACK;
+      this.emit('keys_exchanged');
+    } catch (error) {
+      // Symmetric fail-closed behavior: once an ACK frame has been consumed,
+      // authentication failure retires the provisional session.
+      if (this.stateGeneration === generation) this.resetInternal(false);
+      throw error;
+    }
   }
 
   /** Encrypt a string for the counterparty. Returns base64. */
   async encryptMessage(data: string): Promise<string> {
-    if (!this.session) {
+    const session = this.session;
+    const generation = this.stateGeneration;
+    if (!session) {
       throw new Error('KeyExchange: cannot encrypt - session not established');
     }
     // Reserve the sequence number SYNCHRONOUSLY, before the first await.
@@ -280,27 +405,44 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     // which the receiver's contiguous-seq check drops (fail closed).
     // ConnectionManager additionally serializes sends on an outbound queue
     // so ordering is preserved end-to-end.
-    const seq = this.session.sendSeq++;
+    if (session.sendSeq >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('KeyExchange: send counter exhausted');
+    }
+    const seq = session.sendSeq++;
     const pt = textEncoder.encode(data);
-    const ct = await seal(this.session.key, this.session.sendDir, seq, this.session.htx, pt);
-    return toBase64(ct);
+    try {
+      const ct = await seal(session.key, session.sendDir, seq, session.htx, pt);
+      if (this.stateGeneration !== generation || this.session !== session) {
+        throw new Error('KeyExchange: session changed while encrypting');
+      }
+      return toBase64(ct);
+    } finally {
+      zeroize(pt);
+    }
   }
 
   /** Decrypt a base64 ciphertext from the counterparty. */
   async decryptMessage(b64: string): Promise<string> {
-    if (!this.session) {
+    const session = this.session;
+    const generation = this.stateGeneration;
+    if (!session) {
       throw new Error('KeyExchange: cannot decrypt - session not established');
     }
+    if (session.recvSeq >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('KeyExchange: receive counter exhausted');
+    }
     const ct = fromBase64(b64);
-    const pt = await open(
-      this.session.key,
-      this.session.recvDir,
-      this.session.recvSeq,
-      this.session.htx,
-      ct
-    );
-    this.session.recvSeq++;
-    return textDecoder.decode(pt);
+    let pt: Uint8Array | null = null;
+    try {
+      pt = await open(session.key, session.recvDir, session.recvSeq, session.htx, ct);
+      if (this.stateGeneration !== generation || this.session !== session) {
+        throw new Error('KeyExchange: session changed while decrypting');
+      }
+      session.recvSeq++;
+      return textDecoder.decode(pt);
+    } finally {
+      if (pt) zeroize(pt);
+    }
   }
 
   /** Reset all state for a fresh handshake. Zeroes any live secret-key buffer. */
@@ -309,14 +451,20 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
   }
 
   private resetInternal(emit: boolean): void {
+    this.stateGeneration++;
     if (this.keypair) {
       zeroize(this.keypair.sk);
       this.keypair = null;
+    }
+    if (this.capability) {
+      zeroize(this.capability);
+      this.capability = null;
     }
     this.session = null;
     this.keysExchanged = false;
     this.awaitingSynAck = false;
     this.awaitingAck = false;
+    this.awaitingAckDelivery = false;
     this.lastAck = null;
     this.step = KeyExchangeMessageType.SYN;
     if (emit) this.emit('step_change', this.step);
@@ -328,11 +476,11 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
 
   /** The ACK produced for the current handshake, for duplicate-SYNACK replies. */
   getLastAck(): AckMessage | null {
-    return this.lastAck;
+    return this.lastAck ? { ...this.lastAck } : null;
   }
 
   getSession(): Session | null {
-    return this.session;
+    return this.session ? snapshotSession(this.session) : null;
   }
 
   getCurrentStep(): KeyExchangeMessageType {
@@ -341,27 +489,46 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
 
   /** Export the current session as a JSON-safe persisted record. */
   async exportPersisted(): Promise<PersistedSession | null> {
-    if (!this.session) return null;
-    return {
-      cid: toBase64(this.session.cid),
-      kAeadRaw: toBase64(await exportRawAeadKey(this.session.key)),
-      htx: toBase64(this.session.htx),
-      sendDir: toBase64(this.session.sendDir),
-      recvDir: toBase64(this.session.recvDir),
-      sendSeq: this.session.sendSeq,
-      recvSeq: this.session.recvSeq,
-    };
+    const session = this.session;
+    const generation = this.stateGeneration;
+    if (!session || !this.keysExchanged) return null;
+    const kAeadRaw = await exportRawAeadKey(session.key);
+    try {
+      if (this.stateGeneration !== generation || this.session !== session) return null;
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        cid: toBase64(session.cid),
+        kAeadRaw: toBase64(kAeadRaw),
+        htx: toBase64(session.htx),
+        sendDir: toBase64(session.sendDir),
+        recvDir: toBase64(session.recvDir),
+        sendSeq: session.sendSeq,
+        recvSeq: session.recvSeq,
+      };
+    } finally {
+      zeroize(kAeadRaw);
+    }
   }
 
   /** Rehydrate a Session from its persisted form. */
   static async sessionFromPersisted(p: PersistedSession): Promise<Session> {
-    const key = await importRawAeadKey(fromBase64(p.kAeadRaw));
+    if (p.protocolVersion !== PROTOCOL_VERSION) {
+      throw new Error('KeyExchange: cannot hydrate a pre-v3 session');
+    }
+    const kAeadRaw = fromBase64Exact(p.kAeadRaw, 32, 'persisted AEAD key');
+    let key: CryptoKey;
+    try {
+      key = await importRawAeadKey(kAeadRaw);
+    } finally {
+      zeroize(kAeadRaw);
+    }
     return {
-      cid: fromBase64(p.cid),
+      protocolVersion: PROTOCOL_VERSION,
+      cid: fromBase64Exact(p.cid, 16, 'persisted channel id'),
       key,
-      htx: fromBase64(p.htx),
-      sendDir: fromBase64(p.sendDir),
-      recvDir: fromBase64(p.recvDir),
+      htx: fromBase64Exact(p.htx, 32, 'persisted transcript hash'),
+      sendDir: fromBase64Exact(p.sendDir, 4, 'persisted send direction'),
+      recvDir: fromBase64Exact(p.recvDir, 4, 'persisted receive direction'),
       sendSeq: p.sendSeq,
       recvSeq: p.recvSeq,
     };

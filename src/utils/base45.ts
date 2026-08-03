@@ -2,8 +2,8 @@
  * RFC 9285 Base45 codec.
  *
  * Matches the QR code alphanumeric mode alphabet, yielding roughly 33% denser
- * QR payloads than byte-mode base64. Used by the v2 QR URI format to pack a
- * 1208-byte PQP1 handshake blob into an alphanumeric QR.
+ * QR payloads than byte-mode base64. PQP3 uses it to keep the capability-
+ * bearing handshake blob compact enough for reliable QR scanning.
  */
 
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';

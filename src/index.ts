@@ -13,8 +13,16 @@ export {
   type EIP6963ProviderInfoOverride,
   type ProviderEvents,
   type RelayMessage,
+  type QrlSigningSchemeVersion,
+  type QrlSigningResult,
   type QrlSignedResult,
+  type QrlSignedResultWithDescriptor,
+  type QrlSignedMessageResult,
   type QrlSignedTypedDataResult,
+  isQrlSignedResult,
+  isQrlSignedMessageResult,
+  isQrlSignedTypedDataResult,
+  hasSigningDescriptor,
   type QrlSignMessageParams,
   type QrlSignTypedDataParams,
   type QrlTypedDataPayload,
@@ -26,12 +34,22 @@ export {
 export {
   computeMessageDigest,
   computeTypedDataDigest,
+  TYPED_DATA_LIMITS,
   encodeType,
   typeHash,
   hashStruct,
   encodeField,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
   verifyMessage,
+  verifyMessageSignature,
+  verifyMessageForSigner,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
   verifyTypedData,
+  verifyTypedDataSignature,
+  verifyTypedDataForSigner,
+  ML_DSA_DESCRIPTOR_BYTES,
+  ML_DSA_87_PUBLIC_KEY_BYTES,
+  ML_DSA_87_SIGNATURE_BYTES,
   bytesToHex,
   hexToBytes,
   concatBytes,
@@ -47,12 +65,15 @@ export {
   type Domain,
   type Message,
   type VerifyMessageParams,
+  type VerifyMessageForSignerParams,
   type VerifyTypedDataParams,
+  type VerifyTypedDataForSignerParams,
 } from './signing/index.js';
 
 export {
   type PersistedSession,
   type Session,
+  type InitiatedKeyExchange,
   type AckMessage,
   type SynAckMessage,
 } from './KeyExchange.js';
@@ -66,15 +87,27 @@ export {
   computeFingerprint,
   fingerprintEquals,
   BLOB_LEN,
+  CAP_LEN,
   CID_LEN,
   FP_LEN,
+  MAX_CONNECTION_URI_LENGTH,
   type ParsedURI,
 } from './utils/qrUri.js';
 export { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 export {
   RESTRICTED_METHODS,
   UNRESTRICTED_METHODS,
+  EXPLICITLY_UNSUPPORTED_METHODS,
+  classifyRpcMethod,
+  isValidJsonRpcId,
+  isValidJsonRpcMethod,
+  normalizeRelayUrl,
+  type RpcMethodPolicy,
   DEFAULT_RELAY_URL,
+  MAX_JSON_RPC_ID_LENGTH,
+  MAX_JSON_RPC_METHOD_LENGTH,
+  MAX_RELAY_URL_LENGTH,
+  PAIRING_CAPABILITY_LEN,
   PROTOCOL_VERSION,
 } from './config.js';
 

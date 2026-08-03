@@ -12,15 +12,25 @@ type Listener = (...args: unknown[]) => void;
 class FakeProvider implements PairingProvider {
   uri = 'qrlconnect://pair?cid=first';
   mobile = false;
+  activeUris = new Set<string>();
   private readonly listeners = new Map<string, Set<Listener>>();
 
   getConnectionURI(): Promise<string> {
+    this.activeUris.clear();
+    this.activeUris.add(this.uri);
     return Promise.resolve(this.uri);
   }
 
   newConnection(): Promise<string> {
     this.uri = 'qrlconnect://pair?cid=rotated';
+    this.activeUris.clear();
+    this.activeUris.add(this.uri);
     return Promise.resolve(this.uri);
+  }
+
+  disconnect(): Promise<void> {
+    this.activeUris.clear();
+    return Promise.resolve();
   }
 
   isMobile(): boolean {
@@ -89,11 +99,43 @@ describe('showPairingModal', () => {
 
   it('resolves cancelled when the user dismisses the dialog', async () => {
     const provider = new FakeProvider();
+    const disconnect = vi.spyOn(provider, 'disconnect');
     const result = showPairingModal(provider);
     await flush();
+    const oldUri = provider.uri;
+    expect(provider.activeUris.has(oldUri)).toBe(true);
     findModal()?.dispatchEvent(new CustomEvent('qrl-cancel'));
     await expect(result).resolves.toBe('cancelled');
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(provider.activeUris.has(oldUri)).toBe(false);
     expect(findModal()).toBeNull();
+  });
+
+  it('waits for channel retirement before resolving cancellation', async () => {
+    const provider = new FakeProvider();
+    let finishRetirement!: () => void;
+    vi.spyOn(provider, 'disconnect').mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRetirement = () => {
+            provider.activeUris.clear();
+            resolve();
+          };
+        })
+    );
+    const settled = vi.fn();
+    const result = showPairingModal(provider);
+    void result.then(settled);
+    await flush();
+
+    findModal()?.dispatchEvent(new CustomEvent('qrl-cancel'));
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(findModal()).not.toBeNull();
+
+    finishRetirement();
+    await expect(result).resolves.toBe('cancelled');
+    expect(settled).toHaveBeenCalledWith('cancelled');
   });
 
   it('rotates the URI on qrl-new-connection', async () => {

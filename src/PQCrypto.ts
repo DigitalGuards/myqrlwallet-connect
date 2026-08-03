@@ -1,5 +1,5 @@
 /**
- * Post-quantum protocol composition for QRL Connect v2.
+ * Post-quantum protocol composition for QRL Connect v3.
  *
  * - KEM:  ML-KEM-768 (FIPS 203, NIST Level 3)
  * - KDF:  HKDF-SHA-256
@@ -10,10 +10,11 @@
  * module only composes them: transcript binding, nonce/AAD construction,
  * and the seal/open envelope.
  *
- * The session key is bound to the full handshake transcript
- * (LABEL || cid || pk || ct) so ML-KEM's malicious-peer unknown-key-share
- * vulnerabilities (Cremers-Dax-Naska; Fiedler-Gunther) cannot produce a
- * key agreement with inconsistent identities across sessions.
+ * The session key is bound to the full handshake transcript plus a 32-byte
+ * capability carried only in the QR/deep link. The capability is also the
+ * HKDF salt, so a relay that knows cid, pk, ct, and even a chosen shared
+ * secret cannot impersonate the wallet without possessing the out-of-band
+ * pairing URI.
  *
  * IMPORTANT: ml-kem decapsulation NEVER throws on tampered ciphertext; it
  * returns a pseudo-random shared secret via FIPS 203 implicit rejection.
@@ -32,14 +33,16 @@ import {
   mlkemDecaps,
   mlkemEncaps,
   mlkemKeygen,
+  randomBytes,
   sha256,
 } from './crypto/primitives.js';
+import { PAIRING_CAPABILITY_LEN } from './config.js';
 
 export { constantTimeEquals, type EncapsResult, type Keypair };
 
 const textEncoder = new TextEncoder();
 
-export const LABEL = textEncoder.encode('pq-pair/v1');
+export const LABEL = textEncoder.encode('pq-pair/v3');
 const LABEL_AEAD_SUFFIX = textEncoder.encode(' aead');
 
 export const DIR_DAPP_TX = new Uint8Array([0, 0, 0, 1]);
@@ -50,6 +53,16 @@ export const ML_KEM_768_SK_LEN = 2400;
 export const ML_KEM_768_CT_LEN = 1088;
 export const SHARED_SECRET_LEN = 32;
 export const AEAD_KEY_LEN = 32;
+
+function requireLength(name: string, value: Uint8Array, expected: number): void {
+  if (value.length !== expected) {
+    throw new Error(`PQCrypto: ${name} must be ${expected} bytes`);
+  }
+}
+
+export function generatePairingCapability(): Uint8Array {
+  return randomBytes(PAIRING_CAPABILITY_LEN);
+}
 
 export function kemKeygen(): Keypair {
   return mlkemKeygen();
@@ -66,14 +79,37 @@ export function kemDecaps(sk: Uint8Array, ct: Uint8Array): Uint8Array {
 export async function transcriptHash(
   cid: Uint8Array,
   pk: Uint8Array,
-  ct: Uint8Array
+  ct: Uint8Array,
+  capability: Uint8Array
 ): Promise<Uint8Array> {
-  return sha256(concat(LABEL, cid, pk, ct));
+  requireLength('cid', cid, 16);
+  requireLength('ML-KEM public key', pk, ML_KEM_768_PK_LEN);
+  requireLength('ML-KEM ciphertext', ct, ML_KEM_768_CT_LEN);
+  requireLength('pairing capability', capability, PAIRING_CAPABILITY_LEN);
+  const preimage = concat(LABEL, cid, pk, ct, capability);
+  try {
+    return await sha256(preimage);
+  } finally {
+    zeroize(preimage);
+  }
 }
 
-export async function deriveAeadKey(ss: Uint8Array, htx: Uint8Array): Promise<CryptoKey> {
+export async function deriveAeadKey(
+  ss: Uint8Array,
+  htx: Uint8Array,
+  capability: Uint8Array
+): Promise<CryptoKey> {
+  requireLength('shared secret', ss, SHARED_SECRET_LEN);
+  requireLength('transcript hash', htx, 32);
+  requireLength('pairing capability', capability, PAIRING_CAPABILITY_LEN);
   const info = concat(LABEL, LABEL_AEAD_SUFFIX, htx);
-  return hkdfAesGcmKey(ss, new Uint8Array(32), info);
+  const salt = capability.slice();
+  try {
+    return await hkdfAesGcmKey(ss, salt, info);
+  } finally {
+    zeroize(salt);
+    zeroize(info);
+  }
 }
 
 export async function importRawAeadKey(raw: Uint8Array): Promise<CryptoKey> {
@@ -154,6 +190,51 @@ export function toBase64(bytes: Uint8Array): string {
     bin += String.fromCharCode.apply(null, Array.from(slice));
   }
   return btoa(bin);
+}
+
+export function base64EncodedLength(decodedLength: number): number {
+  if (!Number.isSafeInteger(decodedLength) || decodedLength < 0) {
+    throw new Error('PQCrypto: decoded base64 length must be a non-negative safe integer');
+  }
+  return Math.ceil(decodedLength / 3) * 4;
+}
+
+const PADDED_BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Validate exact padded-base64 shape before decoding. The encoded-length
+ * comparison is the allocation bound; the re-encode check rejects non-canonical
+ * unused bits after a bounded decode.
+ */
+export function isCanonicalBase64OfLength(value: unknown, decodedLength: number): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length !== base64EncodedLength(decodedLength) ||
+    !PADDED_BASE64_RE.test(value)
+  ) {
+    return false;
+  }
+  let decoded: Uint8Array | null = null;
+  try {
+    decoded = fromBase64(value);
+    return decoded.length === decodedLength && toBase64(decoded) === value;
+  } catch {
+    return false;
+  } finally {
+    if (decoded) zeroize(decoded);
+  }
+}
+
+/** Decode only an exact, canonical, allocation-bounded base64 value. */
+export function fromBase64Exact(
+  value: string,
+  decodedLength: number,
+  fieldName = 'value'
+): Uint8Array {
+  if (!isCanonicalBase64OfLength(value, decodedLength)) {
+    throw new Error(`PQCrypto: ${fieldName} must encode exactly ${decodedLength} bytes`);
+  }
+  return fromBase64(value);
 }
 
 export function fromBase64(b64: string): Uint8Array {
