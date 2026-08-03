@@ -143,6 +143,7 @@ function hidePicker() {
 // own picker alongside any extension provider.
 let connectedAccount = null;
 let userDisconnected = false;
+let relayAccountRequest = null;
 let typedEdited = false; // becomes true once the user edits the typed-data box
 let activeProvider = null;       // The wallet provider currently in use.
 let activeProviderInfo = null;   // EIP-6963 info for the active wallet.
@@ -223,15 +224,66 @@ function showDisconnectedUI() {
   showPicker();
 }
 
+async function retireRelaySession(context) {
+  userDisconnected = true;
+  try {
+    await qrl.disconnect();
+    return true;
+  } catch (err) {
+    userDisconnected = false;
+    log(`${context}: ${err?.message ?? err}. The relay session is still active.`, 'error');
+    setStatus('red', 'Disconnect failed - retry required');
+    btnDisconnect.classList.remove('hidden');
+    return false;
+  }
+}
+
+async function authorizeRelayAccount() {
+  if (activeProvider !== qrl) return;
+
+  const cached = qrl.getAccounts();
+  if (cached.length === 1) {
+    showConnectedUI(cached, activeProviderInfo);
+    return;
+  }
+  if (relayAccountRequest) return relayAccountRequest;
+
+  const request = (async () => {
+    log('Requesting account authorization from MyQRLWallet...', 'info');
+    setStatus('yellow', 'Waiting for account approval...');
+    try {
+      const accounts = await qrl.request({ method: 'qrl_requestAccounts' });
+      if (activeProvider !== qrl) return;
+      if (!Array.isArray(accounts) || accounts.length !== 1) {
+        throw new Error('Wallet returned an invalid account list');
+      }
+      log(`Connected via MyQRLWallet: ${accounts[0]}`, 'success');
+      setStatus('green', 'Connected via MyQRLWallet');
+      showConnectedUI(accounts, activeProviderInfo);
+    } catch (err) {
+      if (activeProvider !== qrl) return;
+      log(`Account authorization failed: ${err?.message ?? err}`, 'error');
+      setStatus('red', 'Account authorization failed');
+      const retired = await retireRelaySession('Unable to retire the unauthorized session');
+      if (retired) showDisconnectedUI();
+    }
+  })();
+
+  relayAccountRequest = request;
+  try {
+    await request;
+  } finally {
+    if (relayAccountRequest === request) relayAccountRequest = null;
+  }
+}
+
 // ─── SDK event wiring (relay flow) ───────────────────────
 qrl.on('connect', ({ chainId }) => {
   log(`Wallet connected (chainId: ${chainId})`, 'success');
   updateStatus(ConnectionStatus.CONNECTED);
-  // Re-emit on auto-reconnect: accounts didn't change, but UI should refresh.
-  const cached = qrl.getAccounts();
-  if (cached.length > 0 && activeProvider === qrl) {
-    showConnectedUI(cached, activeProviderInfo);
-  }
+  // A fresh SDK 4 pairing is not authorized until the dApp explicitly asks.
+  // Cached reconnects resolve locally without another wallet prompt.
+  void authorizeRelayAccount();
 });
 
 qrl.on('disconnect', async ({ code, message }) => {
@@ -521,8 +573,8 @@ async function connectViaExtension(detail) {
 // ─── Switch wallet (re-open picker) ──────────────────────
 btnSwitchWallet.addEventListener('click', async () => {
   if (activeProvider === qrl) {
-    userDisconnected = true;
-    await qrl.disconnect();
+    const retired = await retireRelaySession('Unable to switch wallets');
+    if (!retired) return;
   }
   showDisconnectedUI();
   updateStatus(ConnectionStatus.DISCONNECTED);
@@ -563,8 +615,8 @@ btnNewConn.addEventListener('click', async () => {
 // ─── Disconnect ──────────────────────────────────────────
 btnDisconnect.addEventListener('click', async () => {
   if (activeProvider === qrl) {
-    userDisconnected = true;
-    await qrl.disconnect();
+    const retired = await retireRelaySession('Unable to disconnect');
+    if (!retired) return;
   }
   log('Disconnected', 'info');
   updateStatus(ConnectionStatus.DISCONNECTED);
