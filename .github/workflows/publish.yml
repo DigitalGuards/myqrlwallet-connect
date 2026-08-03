@@ -1,0 +1,229 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: Expected @qrlwallet/connect version from package.json
+        required: true
+        default: 4.0.0
+        type: string
+      ui_version:
+        description: Expected @qrlwallet/connect-ui version from ui/package.json
+        required: true
+        default: 0.2.0
+        type: string
+      confirmation:
+        description: Type publish-next to release both packages under the next tag
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: npm-next-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'publish-next'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out the audited source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install an OIDC-capable npm CLI
+        run: npm install --global npm@11.19.0
+
+      - name: Verify requested versions
+        env:
+          EXPECTED_SDK_VERSION: ${{ inputs.sdk_version }}
+          EXPECTED_UI_VERSION: ${{ inputs.ui_version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const sdk = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const ui = JSON.parse(fs.readFileSync('ui/package.json', 'utf8'));
+          const expectedRepository = 'git+https://github.com/DigitalGuards/myqrlwallet-connect.git';
+
+          if (sdk.name !== '@qrlwallet/connect' || sdk.version !== process.env.EXPECTED_SDK_VERSION) {
+            throw new Error('SDK name or version does not match the manual release input');
+          }
+          if (ui.name !== '@qrlwallet/connect-ui' || ui.version !== process.env.EXPECTED_UI_VERSION) {
+            throw new Error('UI name or version does not match the manual release input');
+          }
+          if (sdk.repository?.url !== expectedRepository || ui.repository?.url !== expectedRepository) {
+            throw new Error('Package repository metadata must match the publishing repository');
+          }
+          if (sdk.publishConfig?.access !== 'public' || ui.publishConfig?.access !== 'public') {
+            throw new Error('Both packages must explicitly declare public access');
+          }
+          NODE
+
+      - name: Install SDK dependencies
+        run: npm ci
+
+      - name: Validate SDK
+        run: |
+          npm run lint
+          npm run format:check
+          npm run typecheck
+          npm test
+          npm run build
+          npm run size
+          npm audit --audit-level=high
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Validate UI
+        working-directory: ui
+        run: |
+          npm run lint
+          npm run format:check
+          npm run typecheck
+          npm test
+          npm run build
+          npm audit --audit-level=high
+
+      - name: Pack exact release artifacts
+        id: packs
+        env:
+          EXPECTED_SDK_VERSION: ${{ inputs.sdk_version }}
+          EXPECTED_UI_VERSION: ${{ inputs.ui_version }}
+        run: |
+          set -euo pipefail
+          release_pack_dir="$RUNNER_TEMP/npm-packs"
+          mkdir -p "$release_pack_dir"
+          npm pack --json --pack-destination "$release_pack_dir" > "$RUNNER_TEMP/sdk-pack.json"
+          (
+            cd ui
+            npm pack --json --pack-destination "$release_pack_dir" > "$RUNNER_TEMP/ui-pack.json"
+          )
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          function record(packFile, expectedName, expectedVersion, prefix) {
+            const records = JSON.parse(fs.readFileSync(packFile, 'utf8'));
+            if (!Array.isArray(records) || records.length !== 1) {
+              throw new Error(`Expected one ${prefix} pack record`);
+            }
+            const record = records[0];
+            if (record.name !== expectedName || record.version !== expectedVersion) {
+              throw new Error(`${prefix} pack identity does not match the release input`);
+            }
+            if (!record.filename || !record.integrity) {
+              throw new Error(`${prefix} pack metadata is incomplete`);
+            }
+            fs.appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              `${prefix}_filename=${path.basename(record.filename)}\n${prefix}_integrity=${record.integrity}\n`,
+            );
+          }
+
+          record(
+            `${process.env.RUNNER_TEMP}/sdk-pack.json`,
+            '@qrlwallet/connect',
+            process.env.EXPECTED_SDK_VERSION,
+            'sdk',
+          );
+          record(
+            `${process.env.RUNNER_TEMP}/ui-pack.json`,
+            '@qrlwallet/connect-ui',
+            process.env.EXPECTED_UI_VERSION,
+            'ui',
+          );
+          NODE
+
+      - name: Refuse conflicting existing versions
+        id: registry
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+          SDK_INTEGRITY: ${{ steps.packs.outputs.sdk_integrity }}
+          UI_VERSION: ${{ inputs.ui_version }}
+          UI_INTEGRITY: ${{ steps.packs.outputs.ui_integrity }}
+        run: |
+          set -euo pipefail
+
+          verify_registry_version() {
+            local package_name="$1"
+            local package_version="$2"
+            local local_integrity="$3"
+            local output_prefix="$4"
+            local remote_integrity
+
+            if remote_integrity="$(npm view "${package_name}@${package_version}" dist.integrity --json 2>/dev/null)"; then
+              remote_integrity="${remote_integrity#\"}"
+              remote_integrity="${remote_integrity%\"}"
+              if [[ "$remote_integrity" != "$local_integrity" ]]; then
+                echo "${package_name}@${package_version} already exists with different integrity" >&2
+                exit 1
+              fi
+              printf '%s_exists=true\n' "$output_prefix" >> "$GITHUB_OUTPUT"
+            else
+              printf '%s_exists=false\n' "$output_prefix" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          verify_registry_version '@qrlwallet/connect' "$SDK_VERSION" "$SDK_INTEGRITY" sdk
+          verify_registry_version '@qrlwallet/connect-ui' "$UI_VERSION" "$UI_INTEGRITY" ui
+
+      - name: Publish SDK under next
+        if: steps.registry.outputs.sdk_exists != 'true'
+        env:
+          TARBALL: ${{ runner.temp }}/npm-packs/${{ steps.packs.outputs.sdk_filename }}
+        run: npm publish "$TARBALL" --access public --tag next
+
+      - name: Publish UI under next
+        if: steps.registry.outputs.ui_exists != 'true'
+        env:
+          TARBALL: ${{ runner.temp }}/npm-packs/${{ steps.packs.outputs.ui_filename }}
+        run: npm publish "$TARBALL" --access public --tag next
+
+      - name: Verify registry release
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+          SDK_INTEGRITY: ${{ steps.packs.outputs.sdk_integrity }}
+          UI_VERSION: ${{ inputs.ui_version }}
+          UI_INTEGRITY: ${{ steps.packs.outputs.ui_integrity }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+
+          function npmView(spec, field) {
+            return execFileSync('npm', ['view', spec, field, '--json'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim().replace(/^"|"$/g, '');
+          }
+
+          function verify(name, version, integrity) {
+            const publishedIntegrity = npmView(`${name}@${version}`, 'dist.integrity');
+            const taggedVersion = npmView(`${name}@next`, 'version');
+            if (publishedIntegrity !== integrity) {
+              throw new Error(`${name}@${version} registry integrity mismatch`);
+            }
+            if (taggedVersion !== version) {
+              throw new Error(`${name} next tag does not point to ${version}`);
+            }
+          }
+
+          verify('@qrlwallet/connect', process.env.SDK_VERSION, process.env.SDK_INTEGRITY);
+          verify('@qrlwallet/connect-ui', process.env.UI_VERSION, process.env.UI_INTEGRITY);
+          NODE
