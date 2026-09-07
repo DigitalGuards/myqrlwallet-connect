@@ -1,109 +1,172 @@
-// Shadow-DOM stylesheet. Every color/shape decision is exposed as a CSS
-// custom property (set on the element or any ancestor) so dApps can theme
-// the modal without forking it; the defaults are the MyQRLWallet dark look.
+// Public theme properties inherit from the host page. Internal fallbacks keep
+// the shared charcoal, ember and champagne palette usable in any dApp.
 
 export const modalStyles = `
 :host {
-  --qrl-modal-accent: #f97316;
-  --qrl-modal-bg: #0f172a;
-  --qrl-modal-fg: #e2e8f0;
-  --qrl-modal-muted: #94a3b8;
-  --qrl-modal-link: #38bdf8;
-  --qrl-modal-border: rgba(148, 163, 184, 0.25);
-  --qrl-modal-radius: 12px;
-  --qrl-modal-backdrop: rgba(2, 6, 23, 0.8);
-  --qrl-modal-font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --qrl-modal-z: 2147483000;
+  --_qrl-accent: var(--qrl-modal-accent, hsl(24 96% 55%));
+  --_qrl-bg: var(--qrl-modal-bg, hsl(235 14% 6%));
+  --_qrl-fg: var(--qrl-modal-fg, hsl(36 20% 95%));
+  --_qrl-muted: var(--qrl-modal-muted, hsl(234 8% 64%));
+  --_qrl-link: var(--qrl-modal-link, hsl(38 45% 76%));
+  --_qrl-border: var(--qrl-modal-border, hsl(235 10% 15%));
+  --_qrl-radius: var(--qrl-modal-radius, 12px);
+  --_qrl-font: var(--qrl-modal-font, 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif);
+  --_qrl-heading-font: var(--qrl-modal-heading-font, 'Sora Variable', var(--_qrl-font));
+  font-family: var(--_qrl-font);
+  line-height: 1.5;
+  color-scheme: dark;
+}
+*, *::before, *::after {
+  box-sizing: border-box;
 }
 .backdrop {
   position: fixed;
   inset: 0;
-  z-index: var(--qrl-modal-z);
+  z-index: var(--qrl-modal-z, 2147483000);
   display: grid;
   place-items: center;
   padding: 16px;
-  background: var(--qrl-modal-backdrop);
+  background: var(--qrl-modal-backdrop, rgb(0 0 0 / 70%));
   backdrop-filter: blur(4px);
 }
 .card {
   width: 100%;
-  max-width: 24rem;
-  background: var(--qrl-modal-bg);
-  color: var(--qrl-modal-fg);
-  border: 1px solid var(--qrl-modal-border);
-  border-left: 2px solid var(--qrl-modal-accent);
-  border-radius: var(--qrl-modal-radius);
-  font-family: var(--qrl-modal-font);
-  padding: 20px;
-  box-sizing: border-box;
-  text-align: center;
+  max-width: var(--qrl-modal-width, 24rem);
+  max-height: calc(100svh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  background: var(--_qrl-bg);
+  color: var(--_qrl-fg);
+  border: 1px solid var(--_qrl-border);
+  border-radius: var(--_qrl-radius);
+  box-shadow: 0 24px 64px -16px rgb(0 0 0 / 65%);
+  text-align: left;
   outline: none;
 }
+.header {
+  padding: 24px 24px 20px;
+  border-bottom: 1px solid var(--_qrl-border);
+}
+.header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.brand-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  color: var(--_qrl-accent);
+  background: color-mix(in srgb, var(--_qrl-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--_qrl-accent) 20%, transparent);
+  border-radius: 8px;
+}
+.brand-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+.close {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--_qrl-muted);
+  cursor: pointer;
+}
+.close:hover {
+  color: var(--_qrl-fg);
+  background: color-mix(in srgb, var(--_qrl-fg) 6%, transparent);
+}
 h2 {
-  margin: 0 0 6px;
-  font-size: 1.125rem;
-  font-weight: 700;
+  margin: 0 0 8px;
+  font-family: var(--_qrl-heading-font);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.025em;
 }
 .sub {
-  margin: 0 0 12px;
-  font-size: 0.75rem;
-  color: var(--qrl-modal-muted);
+  margin: 0;
+  font-size: 14px;
+  color: var(--_qrl-muted);
   line-height: 1.5;
 }
 .sub a {
-  color: var(--qrl-modal-link);
+  color: var(--_qrl-link);
   text-decoration: none;
+  text-underline-offset: 3px;
 }
 .sub a:hover {
   text-decoration: underline;
 }
+.body {
+  padding: 24px;
+}
 .qr {
   display: grid;
   place-items: center;
-  margin: 0 auto 12px;
-  width: 240px;
-  min-height: 240px;
+  margin: 0 auto 16px;
+  width: min(100%, 256px);
+  aspect-ratio: 1;
   background: #ffffff;
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 8px;
-  color: #334155;
-  font-size: 0.8rem;
+  color: #262626;
+  font-size: 13px;
 }
 .qr svg {
   display: block;
-  width: 240px;
-  height: 240px;
+  width: 100%;
+  height: auto;
 }
 .status {
-  margin: 0 0 12px;
-  font-size: 0.75rem;
-  color: var(--qrl-modal-muted);
+  margin: 0 0 20px;
+  font-size: 13px;
+  color: var(--_qrl-muted);
   min-height: 1em;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.status:empty {
+  display: none;
 }
 .actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 8px 10px;
-  font-size: 0.8125rem;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px;
+  font-size: 13px;
   font-weight: 500;
-  color: var(--qrl-modal-fg);
-  background: transparent;
-  border: 1px solid var(--qrl-modal-border);
+  line-height: 1.5;
+  color: var(--_qrl-fg);
+  background: color-mix(in srgb, var(--_qrl-fg) 2%, transparent);
+  border: 1px solid var(--_qrl-border);
   border-radius: 8px;
   cursor: pointer;
   text-decoration: none;
+  text-align: center;
   font-family: inherit;
+  transition: border-color 160ms, background-color 160ms, color 160ms;
 }
 .btn:hover {
-  border-color: var(--qrl-modal-accent);
+  border-color: color-mix(in srgb, var(--_qrl-link) 40%, transparent);
+  background: color-mix(in srgb, var(--_qrl-link) 4%, transparent);
 }
 .btn.wide {
   grid-column: 1 / -1;
@@ -112,45 +175,61 @@ h2 {
   display: none;
 }
 .btn:focus-visible,
-.link:focus-visible {
-  outline: 2px solid var(--qrl-modal-accent);
-  outline-offset: 2px;
+.link:focus-visible,
+.close:focus-visible,
+.sub a:focus-visible {
+  outline: 2px solid var(--_qrl-accent);
+  outline-offset: 3px;
 }
 .hint {
-  margin: 0 0 12px;
-  font-size: 0.75rem;
+  margin: 0;
+  font-size: 12px;
   line-height: 1.6;
-  color: var(--qrl-modal-muted);
+  color: var(--_qrl-muted);
 }
 .links {
   display: flex;
-  justify-content: center;
-  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--_qrl-border);
 }
 .link {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  min-height: 36px;
   padding: 0;
   background: none;
   border: none;
   font: inherit;
-  font-size: 0.875rem;
-  color: var(--qrl-modal-link);
+  font-size: 13px;
+  color: var(--_qrl-link);
   cursor: pointer;
+  text-underline-offset: 3px;
+}
+.link.cancel {
+  color: var(--_qrl-muted);
 }
 .link:hover {
   text-decoration: underline;
 }
 .icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 .icon svg {
   display: block;
   width: 100%;
   height: 100%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
 }
 `;
 
@@ -169,3 +248,9 @@ export const ICON_COPY = iconSvg(
 export const ICON_REFRESH = iconSvg(
   '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'
 );
+
+export const ICON_WALLET = iconSvg(
+  '<path d="M20 8V5a2 2 0 0 0-2-2H5a3 3 0 0 0 0 6h15v4"/><path d="M3 6v12a2 2 0 0 0 2 2h15v-4"/><path d="M20 12h-4a2 2 0 0 0 0 4h4v-4Z"/>'
+);
+
+export const ICON_CLOSE = iconSvg('<path d="m18 6-12 12M6 6l12 12"/>');

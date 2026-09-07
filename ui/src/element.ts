@@ -14,7 +14,14 @@
 // side tells them apart by ingress channel.
 
 import { qrSvg } from './qr.js';
-import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_REFRESH, modalStyles } from './styles.js';
+import {
+  ICON_CLOSE,
+  ICON_COPY,
+  ICON_EXTERNAL_LINK,
+  ICON_REFRESH,
+  ICON_WALLET,
+  modalStyles,
+} from './styles.js';
 
 export const QRL_PAIRING_MODAL_TAG = 'qrl-pairing-modal';
 
@@ -69,18 +76,42 @@ export class QrlPairingModal extends HTMLElement {
     this.card.setAttribute('role', 'dialog');
     this.card.setAttribute('aria-modal', 'true');
     this.card.setAttribute('aria-labelledby', 'qrl-pairing-title');
+    this.card.setAttribute('aria-describedby', 'qrl-pairing-description');
     this.card.tabIndex = -1;
+
+    const header = document.createElement('div');
+    header.className = 'header';
+    const headerRow = document.createElement('div');
+    headerRow.className = 'header-row';
+    const brandIcon = document.createElement('div');
+    brandIcon.className = 'brand-icon';
+    brandIcon.setAttribute('aria-hidden', 'true');
+    brandIcon.append(makeIcon(ICON_WALLET));
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'close';
+    closeBtn.setAttribute('aria-label', 'Close pairing dialog');
+    closeBtn.append(makeIcon(ICON_CLOSE));
+    closeBtn.addEventListener('click', () => {
+      this.fire('qrl-cancel');
+    });
+    headerRow.append(brandIcon, closeBtn);
 
     this.titleEl = document.createElement('h2');
     this.titleEl.id = 'qrl-pairing-title';
 
     const sub = document.createElement('p');
     sub.className = 'sub';
-    sub.append('Scan with the mobile app, or open the web wallet. Get the apps at ');
+    sub.id = 'qrl-pairing-description';
+    sub.append('Scan with the mobile app or open a wallet below. Get the apps at ');
     this.walletLink = document.createElement('a');
     this.walletLink.target = '_blank';
     this.walletLink.rel = 'noreferrer';
     sub.append(this.walletLink);
+    header.append(headerRow, this.titleEl, sub);
+
+    const body = document.createElement('div');
+    body.className = 'body';
 
     this.qrBox = document.createElement('div');
     this.qrBox.className = 'qr';
@@ -121,7 +152,7 @@ export class QrlPairingModal extends HTMLElement {
     const hint = document.createElement('p');
     hint.className = 'hint';
     hint.textContent =
-      'No protocol handler? Copy the code and paste it under dApp Sessions in the desktop or web wallet.';
+      'You can also paste the code into dApp Sessions in the desktop or web wallet.';
 
     const links = document.createElement('div');
     links.className = 'links';
@@ -136,14 +167,15 @@ export class QrlPairingModal extends HTMLElement {
 
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
-    cancelBtn.className = 'link';
+    cancelBtn.className = 'link cancel';
     cancelBtn.textContent = 'Cancel';
     cancelBtn.addEventListener('click', () => {
       this.fire('qrl-cancel');
     });
 
     links.append(newBtn, cancelBtn);
-    this.card.append(this.titleEl, sub, this.qrBox, this.statusEl, actions, hint, links);
+    body.append(this.qrBox, this.statusEl, actions, hint);
+    this.card.append(header, body, links);
     backdrop.append(this.card);
     this.shadow.append(style, backdrop);
 

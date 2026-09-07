@@ -3,6 +3,14 @@ name: Publish npm packages
 on:
   workflow_dispatch:
     inputs:
+      package_scope:
+        description: Release both packages under next, or only the UI package under latest
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - ui
       sdk_version:
         description: Expected @qrlwallet/connect version from package.json
         required: true
@@ -14,7 +22,7 @@ on:
         default: 0.2.0
         type: string
       confirmation:
-        description: Type publish-next to release both packages under the next tag
+        description: Type publish-next for both packages, or publish-ui for the UI package
         required: true
         type: string
 
@@ -26,7 +34,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'publish-next'
+    if: github.ref == 'refs/heads/main' && inputs.package_scope != 'ui' && inputs.confirmation == 'publish-next'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -226,4 +234,98 @@ jobs:
 
           verify('@qrlwallet/connect', process.env.SDK_VERSION, process.env.SDK_INTEGRITY);
           verify('@qrlwallet/connect-ui', process.env.UI_VERSION, process.env.UI_INTEGRITY);
+          NODE
+
+  publish-ui:
+    if: github.ref == 'refs/heads/main' && inputs.package_scope == 'ui' && inputs.confirmation == 'publish-ui'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install an OIDC-capable npm CLI
+        run: npm install --global npm@11.19.0
+
+      - name: Verify the requested UI release
+        env:
+          EXPECTED_UI_VERSION: ${{ inputs.ui_version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const ui = JSON.parse(fs.readFileSync('ui/package.json', 'utf8'));
+          if (ui.name !== '@qrlwallet/connect-ui' || ui.version !== process.env.EXPECTED_UI_VERSION) {
+            throw new Error('UI package identity does not match the release input');
+          }
+          if (ui.repository?.url !== 'git+https://github.com/DigitalGuards/myqrlwallet-connect.git'
+            || ui.repository?.directory !== 'ui' || ui.publishConfig?.access !== 'public') {
+            throw new Error('UI package publishing metadata is invalid');
+          }
+          NODE
+
+      - name: Build SDK types for UI compatibility checks
+        run: npm ci && npm run build
+
+      - name: Validate UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run lint
+          npm run format:check
+          npm run typecheck
+          npm test
+          npm run build
+          npm audit --audit-level=high
+
+      - name: Publish the verified UI artifact under latest
+        working-directory: ui
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import path from 'node:path';
+
+          const npmView = (spec, field) => JSON.parse(execFileSync(
+            'npm', ['view', spec, field, '--json'],
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+          ));
+          const packs = JSON.parse(execFileSync(
+            'npm', ['pack', '--json', '--pack-destination', process.env.RUNNER_TEMP],
+            { encoding: 'utf8' },
+          ));
+          if (packs.length !== 1 || packs[0].name !== '@qrlwallet/connect-ui') {
+            throw new Error('Expected exactly one UI artifact');
+          }
+          const pack = packs[0];
+          const spec = `${pack.name}@${pack.version}`;
+          let existingIntegrity;
+          try {
+            existingIntegrity = npmView(spec, 'dist.integrity');
+          } catch (error) {
+            if (!error.stderr?.toString().includes('E404')) throw error;
+          }
+          if (existingIntegrity && existingIntegrity !== pack.integrity) {
+            throw new Error('UI version already exists with different integrity');
+          }
+          if (!existingIntegrity) {
+            const archive = path.join(process.env.RUNNER_TEMP, path.basename(pack.filename));
+            execFileSync('npm', ['publish', archive, '--access', 'public', '--tag', 'latest'], {
+              stdio: 'inherit',
+            });
+          }
+          if (npmView(spec, 'dist.integrity') !== pack.integrity
+            || npmView(`${pack.name}@latest`, 'version') !== pack.version) {
+            throw new Error('Published UI artifact or latest tag does not match the release');
+          }
           NODE

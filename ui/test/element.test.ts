@@ -169,6 +169,19 @@ describe('<qrl-pairing-modal>', () => {
     expect(cancelled).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the same cancellation event for the header close button', () => {
+    const el = mount({ uri: PAIR_URI });
+    const cancelled = vi.fn();
+    el.addEventListener('qrl-cancel', cancelled);
+    const close = shadow(el).querySelector<HTMLButtonElement>(
+      'button[aria-label="Close pairing dialog"]'
+    );
+    close?.click();
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(el.isConnected).toBe(true);
+    expect(el.uri).toBe(PAIR_URI);
+  });
+
   it('dispatches qrl-new-connection from the New connection action', () => {
     const el = mount({ uri: PAIR_URI });
     const rotated = vi.fn();
