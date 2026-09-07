@@ -2,7 +2,7 @@
 
 The MyQRLWallet pairing dialog as a framework-free web component, for dApps using [`@qrlwallet/connect`](https://github.com/DigitalGuards/myqrlwallet-connect). One import replaces the QR modal every dApp used to hand-copy.
 
-- `<qrl-pairing-modal>`: shadow-DOM custom element, themeable with CSS custom properties, dark MyQRLWallet look by default.
+- `<qrl-pairing-modal>`: shadow-DOM custom element with the MyQRLWallet charcoal, ember and champagne palette, themeable with CSS custom properties.
 - `showPairingModal(provider)`: one-line helper that wires the modal to a connect provider and resolves when pairing finishes.
 - Zero framework dependencies; works in React, Vue, Svelte and plain HTML alike. Only runtime dependency is the `qrcode` encoder.
 - Purely presentational: consumes only the SDK's public API and contains no cryptography. Keys, sessions and protocol live in `@qrlwallet/connect`.
@@ -47,14 +47,14 @@ relay expiry.
 
 ### Options
 
-| Option | Default | Meaning |
-|---|---|---|
-| `fresh` | `false` | Use the explicit `newConnection()` rotation entry point |
-| `walletName` | `"MyQRLWallet"` | Dialog title branding |
-| `walletUrl` | `https://myqrlwallet.com` | Get-the-wallet link under the title (app downloads; intentionally a different host than `webWalletUrl`) |
-| `webWalletUrl` | `https://qrlwallet.com` | Base URL for the "Open web wallet" action; pass `''` to hide it |
-| `container` | `document.body` | Mount point for the modal element |
-| `mobileRedirect` | `true` | On mobile browsers navigate straight to the `qrlconnect://` deep link instead of showing a QR |
+| Option           | Default                   | Meaning                                                                                                 |
+| ---------------- | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `fresh`          | `false`                   | Use the explicit `newConnection()` rotation entry point                                                 |
+| `walletName`     | `"MyQRLWallet"`           | Dialog title branding                                                                                   |
+| `walletUrl`      | `https://myqrlwallet.com` | Get-the-wallet link under the title (app downloads; intentionally a different host than `webWalletUrl`) |
+| `webWalletUrl`   | `https://qrlwallet.com`   | Base URL for the "Open web wallet" action; pass `''` to hide it                                         |
+| `container`      | `document.body`           | Mount point for the modal element                                                                       |
+| `mobileRedirect` | `true`                    | On mobile browsers navigate straight to the `qrlconnect://` deep link instead of showing a QR           |
 
 ## Using the element directly
 
@@ -67,13 +67,10 @@ defineQrlPairingModal();
 ```
 
 ```html
-<qrl-pairing-modal
-  uri="qrlconnect://pair?..."
-  status="waiting"
-></qrl-pairing-modal>
+<qrl-pairing-modal uri="qrlconnect://pair?..." status="waiting"></qrl-pairing-modal>
 ```
 
-Attributes: `uri`, `status`, `wallet-name`, `wallet-url`, `web-wallet-url` (absent = default web wallet, empty string = hide the action). Events (bubbling, composed): `qrl-new-connection` when the user asks for a fresh pairing, `qrl-cancel` when the dialog is dismissed (Cancel action, Escape, or backdrop click). When using the element directly, handle `qrl-cancel` by awaiting `provider.disconnect()` before removal. The element renders nothing outside its own box: mount and remove it to show and hide.
+Attributes: `uri`, `status`, `wallet-name`, `wallet-url`, `web-wallet-url` (absent = default web wallet, empty string = hide the action). Events (bubbling, composed): `qrl-new-connection` when the user asks for a fresh pairing, `qrl-cancel` when the dialog is dismissed (header close button, Cancel action, Escape, or backdrop click). When using the element directly, handle `qrl-cancel` by awaiting `provider.disconnect()` before removal. The element renders nothing outside its own box: mount and remove it to show and hide.
 
 ### The web-wallet handoff link
 
@@ -89,18 +86,33 @@ until its relay channel is paired, cancelled, rotated, or expired.
 
 Set CSS custom properties on the element or any ancestor:
 
-| Property | Default | Role |
-|---|---|---|
-| `--qrl-modal-accent` | `#f97316` | Left card border, hover + focus accents |
-| `--qrl-modal-bg` | `#0f172a` | Card background |
-| `--qrl-modal-fg` | `#e2e8f0` | Primary text |
-| `--qrl-modal-muted` | `#94a3b8` | Secondary text |
-| `--qrl-modal-link` | `#38bdf8` | Links and link-style buttons |
-| `--qrl-modal-border` | `rgba(148,163,184,.25)` | Card + button borders |
-| `--qrl-modal-radius` | `12px` | Card corner radius |
-| `--qrl-modal-backdrop` | `rgba(2,6,23,.8)` | Backdrop overlay |
-| `--qrl-modal-font` | system stack | Font family |
-| `--qrl-modal-z` | `2147483000` | Backdrop z-index |
+| Property                   | Default                                          | Role                                     |
+| -------------------------- | ------------------------------------------------ | ---------------------------------------- |
+| `--qrl-modal-accent`       | `hsl(24 96% 55%)`                                | Ember wallet icon and keyboard focus     |
+| `--qrl-modal-bg`           | `hsl(235 14% 6%)`                                | Charcoal card background                 |
+| `--qrl-modal-fg`           | `hsl(36 20% 95%)`                                | Warm primary text                        |
+| `--qrl-modal-muted`        | `hsl(234 8% 64%)`                                | Secondary text                           |
+| `--qrl-modal-link`         | `hsl(38 45% 76%)`                                | Champagne links and button hover accents |
+| `--qrl-modal-border`       | `hsl(235 10% 15%)`                               | Card, section and button borders         |
+| `--qrl-modal-radius`       | `12px`                                           | Card corner radius                       |
+| `--qrl-modal-backdrop`     | `rgb(0 0 0 / 70%)`                               | Backdrop overlay                         |
+| `--qrl-modal-font`         | Instrument Sans Variable, then system sans-serif | Body font family                         |
+| `--qrl-modal-heading-font` | Sora Variable, then body font                    | Heading font family                      |
+| `--qrl-modal-width`        | `24rem`                                          | Maximum dialog width                     |
+| `--qrl-modal-z`            | `2147483000`                                     | Backdrop z-index                         |
+
+Fonts use the host page's installed font faces and fall back to system fonts. The kit makes no font requests. On short screens, the dialog scrolls within the viewport and keeps its actions reachable. QR codes retain black modules on a white background in every theme.
+
+The public properties inherit from ancestors as well as accepting element overrides:
+
+```css
+:root {
+  --qrl-modal-bg: hsl(var(--popover));
+  --qrl-modal-fg: hsl(var(--foreground));
+  --qrl-modal-link: hsl(var(--identity-accent));
+  --qrl-modal-font: var(--font-sans);
+}
+```
 
 ## Accessibility
 

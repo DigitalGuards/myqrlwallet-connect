@@ -1,6 +1,6 @@
 {
   "name": "@qrlwallet/connect-ui",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packageManager": "npm@10.9.8",
   "description": "Framework-agnostic pairing modal for @qrlwallet/connect: <qrl-pairing-modal> web component plus a one-line showPairingModal() helper",
   "main": "dist/index.js",
