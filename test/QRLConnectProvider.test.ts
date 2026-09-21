@@ -236,6 +236,72 @@ describe('QRLConnectProvider', () => {
   });
 
   describe('request - remote methods', () => {
+    it.each(['qrl_sendTransaction', 'qrl_signTransaction'])(
+      'preserves a matching explicit chain on %s',
+      async (method) => {
+        mockCM.status = ConnectionStatus.CONNECTED;
+        mockCM.chainId = '0x301825';
+        const tx = { from: authorizedAccount, to: recipientAccount, chainId: '0x301825' };
+        const pending = provider.request({ method, params: [tx] });
+        tx.chainId = '0x1';
+        const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+        expect(wire.params[0].chainId).toBe('0x301825');
+        mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: '0xtx' });
+        await expect(pending).resolves.toBe('0xtx');
+      }
+    );
+
+    it.each(['0x1', '0x0', '0x0301825', '3151909', 3151909, null, `0x${'1'.repeat(65)}`])(
+      'rejects a mismatching or malformed transaction chain %s before transport',
+      async (chainId) => {
+        mockCM.status = ConnectionStatus.CONNECTED;
+        mockCM.chainId = '0x301825';
+        await expect(
+          provider.request({
+            method: 'qrl_sendTransaction',
+            params: [{ from: authorizedAccount, to: recipientAccount, chainId }],
+          })
+        ).rejects.toThrow(/chainId/);
+        expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+      }
+    );
+
+    it('rechecks the declared chain after waiting behind another approval', async () => {
+      mockCM.status = ConnectionStatus.CONNECTED;
+      mockCM.chainId = '0x301825';
+      const first = provider.request({
+        method: 'qrl_signMessage',
+        params: [authorizedAccount, '0x00'],
+      });
+      const queued = provider.request({
+        method: 'qrl_sendTransaction',
+        params: [{ from: authorizedAccount, to: recipientAccount, chainId: '0x301825' }],
+      });
+      const rejected = expect(queued).rejects.toThrow('chainId does not match');
+      mockCM.chainId = '0x1';
+      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: '0xsigned' });
+      await first;
+      await rejected;
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
+    });
+
+    it('rechecks the declared chain after channel rejoin', async () => {
+      mockCM.status = ConnectionStatus.DISCONNECTED;
+      mockCM.chainId = '0x301825';
+      mockCM.ensureChannelJoined.mockImplementationOnce(() => {
+        mockCM.chainId = '0x1';
+        return Promise.resolve(true);
+      });
+      await expect(
+        provider.request({
+          method: 'qrl_signTransaction',
+          params: [{ from: authorizedAccount, to: recipientAccount, chainId: '0x301825' }],
+        })
+      ).rejects.toThrow('chainId does not match');
+      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+    });
+
     it.each([
       ['qrl_sendTransaction', [{ to: authorizedAccount, value: '0x0' }]],
       ['qrl_signTransaction', [{ from: authorizedAccount, to: authorizedAccount }]],
