@@ -93,12 +93,12 @@ function requestedSwitchChainId(params: unknown[] | undefined): string {
   return canonicalChainId(request.chainId);
 }
 
-const TRANSACTION_FIELDS = new Set(['from', 'to', 'value', 'gas', 'data']);
+const TRANSACTION_FIELDS = new Set(['from', 'to', 'value', 'gas', 'data', 'chainId']);
 const QRL_TRANSACTION_MAX_DATA_BYTES = 128 * 1024;
 const QRL_TRANSACTION_MAX_QUANTITY_HEX_DIGITS = 64;
 const RPC_QUANTITY_RE = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
 
-function validateRpcQuantity(value: unknown, field: 'value' | 'gas'): void {
+function validateRpcQuantity(value: unknown, field: 'value' | 'gas' | 'chainId'): void {
   if (field === 'gas' && typeof value === 'number') {
     if (Number.isSafeInteger(value) && value >= 0) return;
     throw new Error('transaction gas must be a non-negative safe integer');
@@ -113,12 +113,16 @@ function validateRpcQuantity(value: unknown, field: 'value' | 'gas'): void {
   if (field === 'gas' && BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('transaction gas exceeds the wallet safe-integer limit');
   }
+  if (field === 'chainId' && BigInt(value) === 0n) {
+    throw new Error('transaction chainId must be positive');
+  }
 }
 
 function validateTransactionRequest(
   method: string,
   params: unknown[] | undefined,
-  authorizedAccount: string
+  authorizedAccount: string,
+  currentChainId: string
 ): void {
   if (params?.length !== 1 || !isRecordObj(params[0])) {
     throw new Error(`${method} requires exactly one transaction object`);
@@ -137,6 +141,12 @@ function validateTransactionRequest(
   }
   if ('value' in tx) validateRpcQuantity(tx.value, 'value');
   if ('gas' in tx) validateRpcQuantity(tx.gas, 'gas');
+  if ('chainId' in tx) {
+    validateRpcQuantity(tx.chainId, 'chainId');
+    if (canonicalChainId(tx.chainId) !== canonicalChainId(currentChainId)) {
+      throw new Error('transaction chainId does not match the connected wallet');
+    }
+  }
   if (
     'data' in tx &&
     (typeof tx.data !== 'string' ||
@@ -169,7 +179,8 @@ function snapshotRequestParams(params: unknown[] | undefined): unknown[] | undef
 function validateRestrictedRequest(
   method: string,
   params: unknown[] | undefined,
-  authorizedAccounts: string[]
+  authorizedAccounts: string[],
+  currentChainId: string
 ): string | undefined {
   if (method === 'qrl_requestAccounts') {
     if (params !== undefined && params.length !== 0) {
@@ -185,7 +196,7 @@ function validateRestrictedRequest(
     throw new Error('No authorized account: call qrl_requestAccounts first');
   }
   if (method === 'qrl_sendTransaction' || method === 'qrl_signTransaction') {
-    validateTransactionRequest(method, params, authorizedAccount);
+    validateTransactionRequest(method, params, authorizedAccount, currentChainId);
     return undefined;
   }
   if (method === 'qrl_signMessage') {
@@ -629,7 +640,8 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       const expectedChainId = validateRestrictedRequest(
         method,
         stableParams,
-        this.connectionManager.getAccounts()
+        this.connectionManager.getAccounts(),
+        this.connectionManager.getChainId()
       );
       return this.enqueueRestrictedRequest(method, stableParams, expectedChainId, generation);
     }
@@ -726,6 +738,17 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
       if (!joined) {
         throw new Error('Not connected to QRL Wallet');
       }
+    }
+
+    // A queued approval or channel rejoin can observe a different authorized
+    // account or chain. Revalidate the immutable snapshot before transport.
+    if (restricted) {
+      validateRestrictedRequest(
+        method,
+        params,
+        this.connectionManager.getAccounts(),
+        this.connectionManager.getChainId()
+      );
     }
 
     if (this.requestCounter >= Number.MAX_SAFE_INTEGER) {

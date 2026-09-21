@@ -60,7 +60,11 @@ const txHash = await provider.request({
 ```
 
 Transaction params must be exactly `[tx]`. The only accepted fields are
-`from`, `to`, `value`, `gas`, and `data`; `from` and `to` are required.
+`from`, `to`, `value`, `gas`, `data`, and `chainId`; `from` and `to` are required.
+Optional `chainId` is a positive canonical `0x` quantity with at most 64 hex
+digits. It must match the connected wallet both when queued and immediately
+before transport, including after a channel rejoin. The wallet independently
+checks its live network at approval and signing.
 `value` is a canonical `0x` quantity with at most 64 hex digits. `gas` is the
 same, capped at `Number.MAX_SAFE_INTEGER`, or a non-negative safe integer.
 `data` is even-length `0x` bytes capped at 128 KiB. Unknown fields, contract
