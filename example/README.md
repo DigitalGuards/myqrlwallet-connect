@@ -27,18 +27,19 @@ A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also th
 
 - **SDK (`@qrlwallet/connect`)**: the npm package your dApp installs. Generates `qrlconnect://` URIs, runs the ML-KEM-768 handshake, and exposes an EIP-1193 `provider.request()` interface so your dApp talks to it like a browser-extension wallet.
 - **Relay**: a stateless Socket.IO message router in `myqrlwallet-backend/src/relay/`. Sees only ciphertext; buffers up to 50 messages for 5 min when the phone is backgrounded.
-- **Wallet**: signing, encryption, and approval UI all live inside the MyQRLWallet web app, reused by both the React Native WebView (mobile) and the Electron renderer (desktop); the native layers only do QR scanning / `qrlconnect://` deep-link handling.
+- **Wallet**: the web app supplies the approval UI. Mobile embeds it in a React Native WebView with a native bridge. The desktop app uses an isolated native signer, keeping its signing keys outside the renderer. Use a wallet release qualified for the connected network and address format.
 
-Full architectural details, RPC method list, and session/reconnect behavior live in the [repo CLAUDE.md](../CLAUDE.md) and [main README](../README.md). Per-method request/response examples are in [`docs/JSON-RPC-REFERENCE.md`](../docs/JSON-RPC-REFERENCE.md).
+Full architectural details, RPC method list, and session/reconnect behavior live in the [main README](../README.md). Per-method request/response examples are in [`docs/JSON-RPC-REFERENCE.md`](../docs/JSON-RPC-REFERENCE.md).
 
 ## What this example does
 
 - Generates a connection URI and renders it as a scannable QR code
 - Connects to a wallet via the relay and walks through the 3-step SYN/SYNACK/ACK handshake
-- Lets you call `qrl_sendTransaction`, `qrl_signMessage`, `qrl_signTypedData`, and a selection of read-only RPC methods
+- Lets you call `qrl_sendTransaction`, `qrl_signMessage`, and a selection of read-only RPC methods. Message verification binds the signature to the authorized 64-byte account. Amounts use exact decimal conversion and transactions include the connected chain ID.
+- The typed-data card demonstrates local rejection of unsupported 64-byte address fields. It sends no signing request. Its initial private-v3 example uses chain 3151909 and follows the connected wallet chain; the zero contract is a placeholder.
 - Streams every inbound/outbound event to an on-page log so you can see the protocol in action
 
-The relay URL is hardcoded to `https://qrlwallet.com` (production) via the `RELAY_URL` constant at the top of `main.js`. For local development against a backend on `http://localhost:3000`, edit that constant before running `npm run dev`.
+The relay defaults to `https://qrlwallet.com`. For local development, set `VITE_RELAY_URL` to your backend URL before running `npm run dev`. `VITE_WEB_WALLET_URL` selects the web wallet used by the pairing button.
 
 ## Running it locally
 
