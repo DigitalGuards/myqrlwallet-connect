@@ -2,12 +2,15 @@ import {
   QRLConnect,
   ConnectionStatus,
   QRL_CONNECT_PROVIDER_INFO,
-  verifyMessage,
-  verifyTypedData,
+  verifyMessageForSigner,
+  computeTypedDataDigest,
+  isCurrentQrlAddress,
   bytesToHex,
+  formatQrlAddressFingerprint,
   getAppStoreUrl,
 } from '@qrlwallet/connect';
 import QRCode from 'qrcode';
+import { canonicalChainId, makeTypedRejectionPayload, parseQuanta } from './demo-utils.js';
 
 // ─── Config ──────────────────────────────────────────────
 // Local dev override: set VITE_RELAY_URL before `vite` (e.g. via
@@ -48,13 +51,22 @@ const rpcResult       = $('rpc-result');
 const logArea         = $('log-area');
 
 // ─── Logger ──────────────────────────────────────────────
-function log(msg, type = '') {
+function log(msg, type = '', detail = '') {
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
   const time = new Date().toLocaleTimeString();
   entry.textContent = `[${time}] ${msg}`;
+  entry.title = detail;
   logArea.appendChild(entry);
   logArea.scrollTop = logArea.scrollHeight;
+}
+
+function accountForDisplay(account) {
+  return typeof account === 'string' ? formatQrlAddressFingerprint(account) : String(account);
+}
+
+function accountListForDisplay(accounts) {
+  return Array.isArray(accounts) ? accounts.map(accountForDisplay).join(', ') : '';
 }
 
 // ─── Status display ──────────────────────────────────────
@@ -142,6 +154,7 @@ function hidePicker() {
 // Constructing it triggers the EIP-6963 announce, so it shows up in our
 // own picker alongside any extension provider.
 let connectedAccount = null;
+let connectedChainId = null;
 let userDisconnected = false;
 let relayAccountRequest = null;
 let typedEdited = false; // becomes true once the user edits the typed-data box
@@ -177,10 +190,26 @@ window.dispatchEvent(new Event('eip6963:requestProvider'));
 
 // ─── Active-wallet UI helpers ────────────────────────────
 function showConnectedUI(accounts, providerInfo) {
+  if (!Array.isArray(accounts) || accounts.length !== 1 || !isCurrentQrlAddress(accounts[0])) {
+    showDisconnectedUI();
+    setStatus('red', 'Wallet returned an invalid QRL address');
+    return;
+  }
   connectedAccount = accounts?.[0] || null;
-  // Reflect the connected account as the StakeIntent staker (unless edited).
+  connectedChainId = null;
+  const provider = activeProvider;
+  const account = connectedAccount;
+  void provider.request({ method: 'qrl_chainId' }).then(chainId => {
+    if (activeProvider !== provider || connectedAccount !== account) return;
+    connectedChainId = canonicalChainId(chainId);
+    if (!typedEdited) refreshTypedPlaceholder();
+  }).catch(error => log(`Could not read wallet chain: ${error.message}`, 'error'));
+  // Reflect the connected account in the local typed-data probe unless edited.
   if (!typedEdited) refreshTypedPlaceholder();
-  accountAddr.textContent = connectedAccount;
+  accountAddr.textContent = connectedAccount
+    ? formatQrlAddressFingerprint(connectedAccount)
+    : 'Not connected';
+  accountAddr.title = connectedAccount || '';
   activeWalletEl.textContent = providerInfo
     ? `${providerInfo.name} (${providerInfo.rdns})`
     : '';
@@ -203,8 +232,19 @@ function showConnectedUI(accounts, providerInfo) {
   btnRpc.disabled = false;
 }
 
+accountAddr.addEventListener('click', async () => {
+  if (!connectedAccount) return;
+  try {
+    await navigator.clipboard.writeText(connectedAccount);
+    log('Connected account copied in full.', 'success');
+  } catch (err) {
+    log(`Account copy failed (${err.message}).`, 'error');
+  }
+});
+
 function showDisconnectedUI() {
   connectedAccount = null;
+  connectedChainId = null;
   activeProvider = null;
   activeProviderInfo = null;
   accountInfo.classList.add('hidden');
@@ -257,7 +297,11 @@ async function authorizeRelayAccount() {
       if (!Array.isArray(accounts) || accounts.length !== 1) {
         throw new Error('Wallet returned an invalid account list');
       }
-      log(`Connected via MyQRLWallet: ${accounts[0]}`, 'success');
+      log(
+        `Connected via MyQRLWallet: ${accountForDisplay(accounts[0])}`,
+        'success',
+        accounts[0],
+      );
       setStatus('green', 'Connected via MyQRLWallet');
       showConnectedUI(accounts, activeProviderInfo);
     } catch (err) {
@@ -337,13 +381,16 @@ qrl.on('disconnect', async ({ code, message }) => {
 
 qrl.on('accountsChanged', (accounts) => {
   if (activeProvider !== qrl) return;
-  log(`Accounts: ${accounts.join(', ')}`, 'success');
+  log(`Accounts: ${accountListForDisplay(accounts)}`, 'success', accounts.join(', '));
   showConnectedUI(accounts, activeProviderInfo);
 });
 
 qrl.on('chainChanged', (chainId) => {
   if (activeProvider !== qrl) return;
   log(`Chain changed: ${chainId}`, 'info');
+  connectedChainId = null;
+  try { connectedChainId = canonicalChainId(chainId); } catch { /* Next request rechecks the chain. */ }
+  if (!typedEdited) refreshTypedPlaceholder();
 });
 
 qrl.on('statusChanged', (status) => {
@@ -476,7 +523,11 @@ function wireExtensionProviderEvents(detail) {
 
   detail.provider.on('accountsChanged', (newAccounts) => {
     if (activeProvider !== detail.provider) return;
-    log(`[ext] accountsChanged: ${newAccounts.join(', ')}`, 'info');
+    log(
+      `[ext] accountsChanged: ${accountListForDisplay(newAccounts)}`,
+      'info',
+      newAccounts.join(', '),
+    );
     if (newAccounts.length === 0) {
       showDisconnectedUI();
       setStatus('red', 'Disconnected');
@@ -487,6 +538,9 @@ function wireExtensionProviderEvents(detail) {
   detail.provider.on('chainChanged', (chainId) => {
     if (activeProvider !== detail.provider) return;
     log(`[ext] chainChanged: ${chainId}`, 'info');
+    connectedChainId = null;
+    try { connectedChainId = canonicalChainId(chainId); } catch { /* Next request rechecks the chain. */ }
+    if (!typedEdited) refreshTypedPlaceholder();
   });
 }
 
@@ -548,7 +602,11 @@ async function connectViaExtension(detail) {
       showDisconnectedUI();
       return;
     }
-    log(`Connected via ${walletName}: ${accounts.join(', ')}`, 'success');
+    log(
+      `Connected via ${walletName}: ${accountListForDisplay(accounts)}`,
+      'success',
+      accounts.join(', '),
+    );
     setStatus('green', `Connected via ${walletName}`);
     showConnectedUI(accounts, detail.info);
 
@@ -668,17 +726,20 @@ btnSend.addEventListener('click', async () => {
   const to = $('tx-to').value.trim();
   const qrlAmount = $('tx-value').value.trim();
 
-  if (!to) { log('Enter a recipient address', 'error'); return; }
-  if (!qrlAmount || isNaN(Number(qrlAmount)) || Number(qrlAmount) < 0) { log('Enter a valid non-negative amount', 'error'); return; }
-
-  const weiValue = BigInt(Math.floor(Number(qrlAmount) * 1e18));
+  if (!isCurrentQrlAddress(to)) { log('Enter a valid QRL address', 'error'); return; }
+  let weiValue;
+  try { weiValue = parseQuanta(qrlAmount); } catch (error) { log(error.message, 'error'); return; }
+  const provider = activeProvider;
+  const from = connectedAccount;
+  if (!provider || !isCurrentQrlAddress(from)) return;
 
   btnSend.disabled = true;
   btnSend.textContent = 'Waiting for approval...';
   txResult.classList.add('hidden');
-  log(`Sending ${qrlAmount} QRL to ${to}...`, 'info');
+  log(`Sending ${qrlAmount} QRL to ${accountForDisplay(to)}...`, 'info', to);
 
   try {
+    const chainId = canonicalChainId(await provider.request({ method: 'qrl_chainId' }));
     // The two transports need different tx shapes. The relay wallet
     // estimates gas itself, so it gets the minimal hex shape. The extension
     // feeds the dApp's fields straight into web3 signTransaction: it needs
@@ -689,17 +750,18 @@ btnSend.addEventListener('click', async () => {
     if (QRL_EXTENSION_RDNS.has(activeProviderInfo?.rdns)) {
       let gasLimit = 100000;
       try {
-        const estimated = await activeProvider.request({
+        const estimated = await provider.request({
           method: 'qrl_estimateGas',
-          params: [{ from: connectedAccount, to, value: '0x' + weiValue.toString(16) }],
+          params: [{ from, to, value: '0x' + weiValue.toString(16) }],
         });
         gasLimit = Number((BigInt(estimated) * 130n) / 100n);
       } catch {
         // estimation is best-effort; the fallback covers native transfers
       }
       txParams = {
-        from: connectedAccount,
+        from,
         to,
+        chainId,
         value: weiValue.toString(),
         gas: gasLimit,
         gasLimit,
@@ -707,13 +769,15 @@ btnSend.addEventListener('click', async () => {
       };
     } else {
       txParams = {
-        from: connectedAccount,
+        from,
         to,
+        chainId,
         value: '0x' + weiValue.toString(16),
       };
     }
 
-    const txHash = await activeProvider.request({
+    if (activeProvider !== provider || connectedAccount !== from) throw new Error('Wallet changed before sending');
+    const txHash = await provider.request({
       method: 'qrl_sendTransaction',
       params: [txParams],
     });
@@ -737,10 +801,11 @@ const SHORT_HEX = (s) => (typeof s === 'string' && s.length > 24 ? `${s.slice(0,
 function renderSignResultCard(box, result, verifyOk) {
   box.replaceChildren();
   box.style.whiteSpace = 'pre-wrap';
+  box.title = typeof result.signer === 'string' ? result.signer : '';
   const lines = [
     `${verifyOk ? '✓ verified locally' : '✗ LOCAL VERIFY FAILED'}`,
     `schemeVersion : ${result.schemeVersion}`,
-    `signer        : ${result.signer}`,
+    `signer        : ${accountForDisplay(result.signer)}`,
     `digest        : ${SHORT_HEX(result.digest)}`,
     `publicKey     : ${SHORT_HEX(result.publicKey)}`,
     `signature     : ${SHORT_HEX(result.signature)}`,
@@ -756,6 +821,9 @@ function renderSignResultCard(box, result, verifyOk) {
 btnSign.addEventListener('click', async () => {
   const message = $('sign-message').value.trim();
   if (!message) { log('Enter a message to sign', 'error'); return; }
+  const provider = activeProvider;
+  const signer = connectedAccount;
+  if (!provider || !isCurrentQrlAddress(signer)) return;
 
   btnSign.disabled = true;
   btnSign.textContent = 'Waiting for approval...';
@@ -767,18 +835,20 @@ btnSign.addEventListener('click', async () => {
   const messageHex = bytesToHex(new TextEncoder().encode(message));
 
   try {
-    const result = await activeProvider.request({
+    const result = await provider.request({
       method: 'qrl_signMessage',
-      params: [connectedAccount, messageHex],
+      params: [signer, messageHex],
     });
     log('Wallet returned a signed-message response', 'success');
 
-    const ok = verifyMessage({
+    const ok = isCurrentQrlAddress(result.signer) && result.signer.toLowerCase() === signer.toLowerCase() && verifyMessageForSigner({
+      expectedSigner: signer,
+      descriptor: result.descriptor,
       signature: result.signature,
       publicKey: result.publicKey,
       messageBytes: messageHex,
     });
-    log(`Local verifyMessage(): ${ok ? 'OK' : 'FAILED'}`, ok ? 'success' : 'error');
+    log(`Local signer-bound verification: ${ok ? 'OK' : 'FAILED'}`, ok ? 'success' : 'error');
     renderSignResultCard(signResult, result, ok);
   } catch (err) {
     log(`qrl_signMessage failed: ${err.message}`, 'error');
@@ -790,96 +860,25 @@ btnSign.addEventListener('click', async () => {
   }
 });
 
-// ─── Sign Typed Data (qrl_signTypedData v1) ──────────────
-function defaultTypedPayload() {
-  // A realistic QuantaPool example: an off-chain, gasless "stake intent" that
-  // authorizes the pool to stake `qrlAmount` of QRL for stQRL liquid-staking
-  // shares (with a slippage floor), bound to the QuantaPool DepositPoolV2
-  // domain. nonce + deadline give it replay protection, exactly what a real
-  // protocol relayer would later honor on-chain.
-  return {
-    types: {
-      QRLDomain: [
-        { name: 'name', type: 'string' },
-        { name: 'version', type: 'string' },
-        { name: 'chainId', type: 'uint256' },
-        { name: 'verifyingContract', type: 'address' },
-      ],
-      StakeIntent: [
-        { name: 'staker', type: 'address' },
-        { name: 'qrlAmount', type: 'uint256' },
-        { name: 'minShares', type: 'uint256' },
-        { name: 'referrer', type: 'address' },
-        { name: 'nonce', type: 'uint256' },
-        { name: 'deadline', type: 'uint64' },
-      ],
-    },
-    primaryType: 'StakeIntent',
-    domain: {
-      name: 'QuantaPool',
-      version: '1',
-      chainId: '1337',
-      // DepositPoolV2 (placeholder; set to the deployed pool address)
-      verifyingContract: 'Q0000000000000000000000000000000000000000',
-    },
-    message: {
-      staker: connectedAccount || '',
-      qrlAmount: '100000000000000000000', // 100 QRL (in planck)
-      minShares: '98500000000000000000', // >= 98.5 stQRL (1.5% slippage floor)
-      referrer: 'Q0000000000000000000000000000000000000000', // zero = none
-      nonce: '0',
-      deadline: String(Math.floor(Date.now() / 1000) + 3600), // valid for 1h
-    },
-  };
-}
-
+// Typed data with QRL address fields has no qualified wallet signing format.
 function refreshTypedPlaceholder() {
-  signTypedInput.value = JSON.stringify(defaultTypedPayload(), null, 2);
+  signTypedInput.value = JSON.stringify(makeTypedRejectionPayload(connectedAccount, connectedChainId), null, 2);
 }
 refreshTypedPlaceholder();
 
-// Track manual edits so refreshing on connect never clobbers them.
+// Manual edits survive account or chain changes.
 signTypedInput.addEventListener('input', () => { typedEdited = true; });
 
-btnSignTyped.addEventListener('click', async () => {
-  let payload;
+btnSignTyped.addEventListener('click', () => {
+  signTypedResult.classList.remove('hidden');
   try {
-    payload = JSON.parse(signTypedInput.value);
-  } catch (e) {
-    log(`Typed-data payload is not valid JSON: ${e.message}`, 'error');
-    return;
-  }
-  // Auto-fill the staker with the connected account if left blank
-  if (payload?.message && !payload.message.staker) {
-    payload.message.staker = connectedAccount;
-  }
-
-  btnSignTyped.disabled = true;
-  btnSignTyped.textContent = 'Waiting for approval...';
-  signTypedResult.classList.add('hidden');
-  log(`Requesting qrl_signTypedData (primary=${payload.primaryType})`, 'info');
-
-  try {
-    const result = await activeProvider.request({
-      method: 'qrl_signTypedData',
-      params: [connectedAccount, payload],
-    });
-    log('Wallet returned a signed typed-data response', 'success');
-
-    const ok = verifyTypedData({
-      signature: result.signature,
-      publicKey: result.publicKey,
-      payload,
-    });
-    log(`Local verifyTypedData(): ${ok ? 'OK' : 'FAILED'}`, ok ? 'success' : 'error');
-    renderSignResultCard(signTypedResult, result, ok);
-  } catch (err) {
-    log(`qrl_signTypedData failed: ${err.message}`, 'error');
-    signTypedResult.textContent = `Error: ${err.message}`;
-    signTypedResult.classList.remove('hidden');
-  } finally {
-    btnSignTyped.disabled = false;
-    btnSignTyped.textContent = 'Sign Typed Data';
+    const payload = JSON.parse(signTypedInput.value);
+    computeTypedDataDigest(payload);
+    signTypedResult.textContent = 'This payload can be encoded locally, but typed-data wallet requests are unavailable. No signing request was sent.';
+    log('Typed-data wallet requests are unavailable; no signing request was sent.', 'info');
+  } catch (error) {
+    signTypedResult.textContent = `Local rejection: ${error.message}\nNo signing request was sent.`;
+    log(`Local typed-data rejection: ${error.message}`, 'info');
   }
 });
 
@@ -898,7 +897,11 @@ btnRpc.addEventListener('click', async () => {
 
   try {
     const result = await activeProvider.request({ method, params });
-    const display = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    const display =
+      typeof result === 'string'
+        ? accountForDisplay(result)
+        : JSON.stringify(result, null, 2);
+    rpcResult.title = typeof result === 'string' && display !== result ? result : '';
     log(`${method} => ${display}`, 'success');
     rpcResult.textContent = display;
     rpcResult.classList.remove('hidden');

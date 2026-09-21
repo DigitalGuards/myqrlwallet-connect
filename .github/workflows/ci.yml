@@ -42,6 +42,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build the browser example without Node polyfills
+        run: npm ci && npm run build
+        working-directory: example
+
       - name: Bundle size check
         run: npm run size
 

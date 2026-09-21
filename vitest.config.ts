@@ -6,7 +6,7 @@ export default defineConfig({
     environment: 'node',
     // Include co-located src tests (e.g. the signing cross-repo parity vectors
     // in src/signing/__tests__) so the digest-drift safety net actually runs.
-    include: ['test/**/*.test.ts', 'src/**/__tests__/**/*.test.ts'],
+    include: ['test/**/*.test.ts', 'src/**/__tests__/**/*.test.ts', 'example/*.test.js'],
     // Silence [QRLConnect:*]-tagged console noise from deliberate
     // failure-path tests (see test/setup.ts).
     setupFiles: ['test/setup.ts'],

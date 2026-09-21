@@ -271,6 +271,15 @@
     input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
     label { display: block; font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.35rem; }
     .info { font-family: var(--mono); font-size: 0.85rem; color: var(--accent); word-break: break-all; }
+    .address-copy {
+      width: 100%;
+      background: rgba(14, 17, 24, 0.8);
+      border-color: var(--border);
+      color: var(--accent);
+      padding: 0.65rem 0.75rem;
+      text-align: left;
+    }
+    .address-copy:hover { background: var(--surface-2); border-color: var(--accent); box-shadow: none; }
     .log-area {
       background: rgba(14, 17, 24, 0.8);
       border: 1px solid var(--border);
@@ -356,8 +365,8 @@
     </div>
 
     <div id="account-info" class="hidden">
-      <label>Connected Account</label>
-      <div class="info" id="account-address">Not connected</div>
+      <label for="account-address">Connected Account</label>
+      <button class="info address-copy" id="account-address" type="button" title="Copy full address">Not connected</button>
       <div class="active-wallet" id="active-wallet"></div>
     </div>
 
@@ -393,7 +402,8 @@
     </div>
     <div id="sign-result" class="result-box hidden"></div>
 
-    <label style="margin-top: 1rem;">Typed-data payload (qrl_signTypedData)</label>
+    <label for="sign-typed-payload" style="margin-top: 1rem;">Typed-data payload (currently unsupported)</label>
+    <p class="hint">QRL address fields need a versioned 64-byte encoding. This local check never sends a signing request. The zero contract is an undeployed placeholder.</p>
     <textarea
       id="sign-typed-payload"
       rows="14"
@@ -401,7 +411,7 @@
       style="font-family: var(--mono); font-size: 0.85rem; width: 100%; resize: vertical;"
     ></textarea>
     <div class="btn-row">
-      <button id="btn-sign-typed" disabled>Sign Typed Data</button>
+      <button id="btn-sign-typed" disabled>Test Typed-Data Rejection</button>
     </div>
     <div id="sign-typed-result" class="result-box hidden"></div>
   </div>
