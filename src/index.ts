@@ -99,9 +99,12 @@ export {
   UNRESTRICTED_METHODS,
   EXPLICITLY_UNSUPPORTED_METHODS,
   classifyRpcMethod,
+  formatQrlAddressFingerprint,
+  isCurrentQrlAddress,
   isValidJsonRpcId,
   isValidJsonRpcMethod,
   normalizeRelayUrl,
+  qip55AddressFromBytes,
   type RpcMethodPolicy,
   DEFAULT_RELAY_URL,
   MAX_JSON_RPC_ID_LENGTH,
@@ -109,6 +112,8 @@ export {
   MAX_RELAY_URL_LENGTH,
   PAIRING_CAPABILITY_LEN,
   PROTOCOL_VERSION,
+  QRL_ADDRESS_BYTES,
+  QRL_ADDRESS_HEX_LENGTH,
 } from './config.js';
 
 // Convenience alias

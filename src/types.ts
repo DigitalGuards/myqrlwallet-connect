@@ -1,4 +1,5 @@
 import type { PersistedSession } from './KeyExchange.js';
+import { isCurrentQrlAddress } from './config.js';
 
 /** dApp metadata shown to user in approval UI */
 export interface DAppMetadata {
@@ -146,10 +147,10 @@ export interface EIP6963ProviderInfoOverride {
 }
 
 /**
- * Rich response object returned by both `qrl_signMessage` and
- * `qrl_signTypedData`. The signature alone is not enough to verify since
- * ML-DSA-87 public keys cannot be recovered from a signature, so the
- * wallet always returns the public key explicitly. Stateless verifiers need
+ * Rich response object returned by `qrl_signMessage` and retained for locked
+ * `qrl_signTypedData` v1 fixtures. The signature alone is not enough to
+ * verify since ML-DSA-87 public keys cannot be recovered from a signature,
+ * so the wallet returns the public key explicitly. Stateless verifiers need
  * the original payload plus the signature fields below.
  */
 export interface QrlSignedResult {
@@ -163,7 +164,7 @@ export interface QrlSignedResult {
    * requires it.
    */
   descriptor?: string;
-  /** Current 41-character checksummed Q-address derived from descriptor + key. */
+  /** QIP-55 129-character checksummed Q-address derived from descriptor + key. */
   signer: string;
   /** 0x-hex of the 64-byte SHAKE256 digest that was signed. */
   digest: string;
@@ -184,8 +185,8 @@ export interface QrlSignedMessageResult extends QrlSignedResult {
 }
 
 /**
- * Response from `qrl_signTypedData`. Echoes `domain` so a stateless
- * verifier doesn't need to be told the domain out-of-band.
+ * Historical v1 response from `qrl_signTypedData`. It echoes `domain` so a
+ * stateless verifier does not need to be told the domain out-of-band.
  */
 export interface QrlSignedTypedDataResult extends QrlSignedResult {
   schemeVersion: 'QRL-SIGN-TYPED-v1';
@@ -244,7 +245,7 @@ function hasValidSigningFields(record: Record<string, unknown>): boolean {
     isFixedHex(record.publicKey, PUBLIC_KEY_HEX_BYTES) &&
     (!hasOwn(record, 'descriptor') || isSigningDescriptor(record.descriptor)) &&
     typeof record.signer === 'string' &&
-    /^Q[0-9a-fA-F]{40}$/.test(record.signer) &&
+    isCurrentQrlAddress(record.signer) &&
     isFixedHex(record.digest, DIGEST_HEX_BYTES)
   );
 }
@@ -323,10 +324,10 @@ export function hasSigningDescriptor(
 export type QrlSignMessageParams = [string, string];
 
 /**
- * `qrl_signTypedData` params: `[signer, payload]`. Payload mirrors EIP-712
- * shape: `{ types, primaryType, domain, message }`, but with `QRLDomain`
- * in place of `EIP712Domain` and SHAKE256-based hashing. See `signing/`
- * for the full encoder.
+ * Reserved `qrl_signTypedData` params: `[signer, payload]`. This interface
+ * describes the historical v1 payload retained by the verifier exports. The
+ * QIP-55 provider rejects requests until a versioned 64-byte encoding is
+ * defined.
  */
 export interface QrlTypedDataPayload {
   types: Record<string, readonly { name: string; type: string }[]>;

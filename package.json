@@ -1,6 +1,6 @@
 {
   "name": "@qrlwallet/connect",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "packageManager": "npm@10.9.8",
   "description": "Connect your dApp to QRL Wallet via QR code or deep link",
   "main": "dist/index.js",
@@ -44,13 +44,13 @@
   "dependencies": {
     "@noble/hashes": "^2.2.0",
     "@noble/post-quantum": "^0.5.4",
-    "@theqrl/mldsa87": "^2.1.1",
+    "@theqrl/mldsa87": "^2.1.4",
     "eventemitter3": "^5.0.1",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@size-limit/file": "^11.0.0",
-    "@theqrl/wallet.js": "^3.0.1",
+    "@theqrl/wallet.js": "^6.2.4",
     "@types/node": "^25.3.3",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
@@ -60,10 +60,13 @@
     "size-limit": "^11.0.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "4.1.11"
   },
   "overrides": {
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.1",
+    "vitest": {
+      "vite": "7.3.5"
+    }
   },
   "size-limit": [
     {

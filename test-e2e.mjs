@@ -1,5 +1,5 @@
 /**
- * E2E Test: QRL Connect 4.0 + protocol-v3 post-quantum handshake + JSON-RPC round-trip.
+ * E2E Test: QRL Connect 5.0 + protocol-v3 post-quantum handshake + JSON-RPC round-trip.
  *
  * Exercises the real built SDK (dist/index.mjs) as the dApp, and a minimal
  * wallet simulator built on top of the SDK's KeyExchange (isOriginator=false)
@@ -12,7 +12,9 @@ import { createServer } from 'http';
 import { io as ioClient } from 'socket.io-client';
 // The backend is TypeScript now: the relay must be imported from its built
 // output (run `npm run build` in ../myqrlwallet-backend if dist/ is missing).
-import { createRelayServer } from '../myqrlwallet-backend/dist/relay/relayServer.js';
+const relayModule = process.env.QRL_CONNECT_TEST_RELAY_MODULE ??
+  new URL('../myqrlwallet-backend/dist/relay/relayServer.js', import.meta.url).href;
+const { createRelayServer } = await import(relayModule);
 import {
   QRLConnect,
   ConnectionStatus,
@@ -25,17 +27,13 @@ import {
   PROTOCOL_VERSION,
   bytesToHex,
   computeMessageDigest,
-  computeTypedDataDigest,
   hexToBytes,
   SCHEME_TAG_MSG,
-  SCHEME_TAG_TYPED,
   SCHEME_VERSION_MSG,
-  SCHEME_VERSION_TYPED,
   verifyMessageForSigner,
-  verifyTypedDataForSigner,
 } from './dist/index.mjs';
 import * as mldsa from '@theqrl/mldsa87';
-import { newWalletFromExtendedSeed } from '@theqrl/wallet.js';
+import { newWalletFromExtendedSeed, toChecksumAddress } from '@theqrl/wallet.js';
 
 function fromBase64(b64) {
   const bin = atob(b64);
@@ -48,10 +46,9 @@ const TEST_PORT = 3001;
 const RELAY_URL = `http://localhost:${TEST_PORT}`;
 const RELAY_PATH = '/relay';
 
-// Current Q + 40 hex address derived from descriptor || ML-DSA public key.
-const WALLET_ADDRESS = 'Q919e248e9bc56e8d1f255841d6c92d9bd892e33a';
 const TEST_TX_HASH =
   '0x3e306b5a5a37532e1734503f7d2427a86f2c992fbe471f5be403b9f734e661c5';
+const RECIPIENT_ADDRESS = `Q${'2'.repeat(128)}`;
 
 /**
  * Stable extended seed used only by the e2e signing tests. Same shape as a
@@ -61,6 +58,17 @@ const TEST_TX_HASH =
 const E2E_HEX_SEED =
   '0x0100005bb4c0cea35e758d19a93923d014e41615e7d3d35076c9b659b880156b5c37bc3a6ccf3d3b7beaef012c4ff930fcb270';
 const WALLET_DESCRIPTOR = E2E_HEX_SEED.slice(0, 8);
+
+function addressFromSeed(hexSeed) {
+  const wallet = newWalletFromExtendedSeed(hexSeed);
+  try {
+    return toChecksumAddress(wallet.getAddress());
+  } finally {
+    wallet.zeroize();
+  }
+}
+
+const WALLET_ADDRESS = addressFromSeed(E2E_HEX_SEED);
 
 function signE2E(digest, ctxTag) {
   const wallet = newWalletFromExtendedSeed(E2E_HEX_SEED);
@@ -290,7 +298,7 @@ async function run() {
       params: [
         {
           from: WALLET_ADDRESS,
-          to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+          to: RECIPIENT_ADDRESS,
           value: '0x2386F26FC10000',
         },
       ],
@@ -375,7 +383,7 @@ async function run() {
     }
     console.log('    dApp verifyMessageForSigner() returned true');
 
-    console.log('14. dApp: firing qrl_signTypedData via provider.request()');
+    console.log('14. dApp: confirming QIP-55 typed data stays fail closed');
     const TYPED_PAYLOAD = {
       types: {
         QRLDomain: [{ name: 'name', type: 'string' }],
@@ -393,54 +401,20 @@ async function run() {
         issuedAt: '1747700000',
       },
     };
-    const typedRpcPromise = dapp.request({
-      method: 'qrl_signTypedData',
-      params: [WALLET_ADDRESS, TYPED_PAYLOAD],
-    });
-    const typedRpcEnc = (
-      await waitForMessage((d) => typeof d?.message === 'string')
-    ).message;
-    const typedRpcMsg = JSON.parse(await walletKex.decryptMessage(typedRpcEnc));
-    if (typedRpcMsg.method !== 'qrl_signTypedData') {
-      throw new Error(`wallet saw wrong method: ${typedRpcMsg.method}`);
+    let typedDataRejected = false;
+    try {
+      await dapp.request({
+        method: 'qrl_signTypedData',
+        params: [WALLET_ADDRESS, TYPED_PAYLOAD],
+      });
+    } catch (error) {
+      typedDataRejected =
+        error instanceof Error && error.message.includes('unavailable for QIP-55');
     }
-    const typedDigest = computeTypedDataDigest(TYPED_PAYLOAD);
-    const typedSig = signE2E(typedDigest, SCHEME_TAG_TYPED);
-    const typedResult = {
-      signature: bytesToHex(typedSig.signature),
-      publicKey: bytesToHex(typedSig.publicKey),
-      descriptor: WALLET_DESCRIPTOR,
-      signer: WALLET_ADDRESS,
-      digest: bytesToHex(typedDigest),
-      schemeVersion: SCHEME_VERSION_TYPED,
-      domain: TYPED_PAYLOAD.domain,
-    };
-    await sendMessage(
-      walletSocket,
-      channelIdStr,
-      'wallet',
-      await walletKex.encryptMessage(
-        JSON.stringify({
-          type: MessageType.JSONRPC,
-          jsonrpc: '2.0',
-          id: typedRpcMsg.id,
-          result: typedResult,
-        })
-      )
-    );
-    const typedRpcResult = await typedRpcPromise;
-    if (
-      !verifyTypedDataForSigner({
-        expectedSigner: WALLET_ADDRESS,
-        descriptor: typedRpcResult.descriptor,
-        signature: typedRpcResult.signature,
-        publicKey: typedRpcResult.publicKey,
-        payload: TYPED_PAYLOAD,
-      })
-    ) {
-      throw new Error('dApp bound typed-data verification rejected a valid signature');
+    if (!typedDataRejected) {
+      throw new Error('QIP-55 typed data crossed the unversioned v1 boundary');
     }
-    console.log('    dApp verifyTypedDataForSigner() returned true');
+    console.log('    SDK rejected the unversioned QIP-55 typed-data request locally');
 
     console.log('15. Wallet: leaving the relay channel (app backgrounded/closed)');
     const sawWalletLeave = new Promise((resolve) => {
@@ -468,7 +442,7 @@ async function run() {
       params: [
         {
           from: WALLET_ADDRESS,
-          to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+          to: RECIPIENT_ADDRESS,
           value: '0x1',
         },
       ],
@@ -570,7 +544,7 @@ async function run() {
     console.log('   - WALLET_INFO cannot bypass explicit single-account authorization');
     console.log('   - qrl_sendTransaction request/response round-trip');
     console.log('   - qrl_signMessage round-trip with signer-bound local verification');
-    console.log('   - qrl_signTypedData round-trip with signer-bound local verification');
+    console.log('   - unversioned QIP-55 typed data rejected locally before relay use');
     console.log('   - offline-wallet request buffered by relay + resolved on re-join');
   } catch (err) {
     console.error('\n❌ E2E TEST FAILED:', err.message);

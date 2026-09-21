@@ -5,6 +5,7 @@
 
 import EventEmitter from 'eventemitter3';
 import { ConnectionManager } from './ConnectionManager.js';
+import { getBrowserStorage } from './SessionOwnership.js';
 import {
   classifyRpcMethod,
   isCurrentQrlAddress,
@@ -13,7 +14,7 @@ import {
   REQUEST_TIMEOUT_MS,
   STORAGE_KEY_PREFIX,
 } from './config.js';
-import { computeTypedDataDigest, TYPED_DATA_LIMITS } from './signing/typedData.js';
+import { TYPED_DATA_LIMITS } from './signing/typedData.js';
 import { log, warn } from './utils/logger.js';
 import { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
@@ -217,8 +218,9 @@ function validateRestrictedRequest(
   if (params[0] !== authorizedAccount) {
     throw new Error('qrl_signTypedData signer is not the authorized account');
   }
-  computeTypedDataDigest(params[1]);
-  return undefined;
+  throw new Error(
+    'qrl_signTypedData is unavailable for QIP-55 until the 64-byte word encoding and signing scheme version are finalized'
+  );
 }
 
 function requiresAuthorizedAccount(method: string): boolean {
@@ -495,7 +497,12 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
 
     this.pendingRequests.delete(response.id);
     if (response.error) {
-      pending.reject(new Error(response.error.message || 'Request failed'));
+      pending.reject(
+        Object.assign(new Error(response.error.message || 'Request failed'), {
+          code: response.error.code,
+          ...(response.error.data === undefined ? {} : { data: response.error.data }),
+        })
+      );
       return;
     }
     try {
@@ -828,9 +835,10 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   // ── In-flight persistence (survive the return-redirect reload) ──────
 
   private readInflight(): InflightRecord[] {
-    if (typeof localStorage === 'undefined') return [];
+    const storage = getBrowserStorage();
+    if (!storage) return [];
     try {
-      const raw = localStorage.getItem(this.inflightKey);
+      const raw = storage.getItem(this.inflightKey);
       if (!raw) return [];
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
@@ -849,12 +857,13 @@ export class QRLConnectProvider extends EventEmitter<ProviderEvents> {
   }
 
   private writeInflight(records: InflightRecord[]): void {
-    if (typeof localStorage === 'undefined') return;
+    const storage = getBrowserStorage();
+    if (!storage) return;
     try {
       if (records.length === 0) {
-        localStorage.removeItem(this.inflightKey);
+        storage.removeItem(this.inflightKey);
       } else {
-        localStorage.setItem(this.inflightKey, JSON.stringify(records));
+        storage.setItem(this.inflightKey, JSON.stringify(records));
       }
     } catch {
       // Best effort: without storage the reload just loses the response,

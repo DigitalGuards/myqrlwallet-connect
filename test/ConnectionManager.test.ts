@@ -10,6 +10,10 @@ let nextJoinError: Error | null = null;
 const TERMINATE_TEST_TIMEOUT_MS = 801;
 const VALID_SYNACK_CT = btoa(String.fromCharCode(...new Uint8Array(1088)));
 const VALID_SYNACK_C0 = btoa(String.fromCharCode(...new Uint8Array(31)));
+const ADDRESS_A = `Q${'a'.repeat(128)}`;
+const ADDRESS_B = `Q${'b'.repeat(128)}`;
+const ADDRESS_C = `Q${'c'.repeat(128)}`;
+const ADDRESS_1 = `Q${'1'.repeat(128)}`;
 
 const PERSISTED_KEX = {
   protocolVersion: 3,
@@ -115,7 +119,7 @@ function storedSession(sendSeq = 4): string {
     channelId: '11111111-1111-4111-8111-111111111111',
     keyExchange: { ...PERSISTED_KEX, sendSeq },
     dappMetadata: { name: 'Stored dApp', url: 'https://stored.invalid' },
-    connectedAccounts: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+    connectedAccounts: [ADDRESS_A],
     chainId: '0x539',
     createdAt: Date.now(),
     lastActivity: Date.now(),
@@ -202,13 +206,17 @@ class MockKeyExchange extends EventEmitter {
 }
 
 vi.mock('../src/SocketClient.js', () => ({
-  SocketClient: vi.fn().mockImplementation(() => new MockSocketClient()),
+  SocketClient: vi.fn().mockImplementation(function () {
+    return new MockSocketClient();
+  }),
 }));
 
 vi.mock('../src/KeyExchange.js', () => ({
   SYNACK_C0_LEN: 31,
   KeyExchange: Object.assign(
-    vi.fn().mockImplementation(() => new MockKeyExchange()),
+    vi.fn().mockImplementation(function () {
+      return new MockKeyExchange();
+    }),
     { sessionFromPersisted: vi.fn() }
   ),
 }));
@@ -398,7 +406,7 @@ describe('ConnectionManager desync teardown', () => {
   it('tombstones the old channel and clears authorization before generating another URI', async () => {
     const { cm, socket: oldSocket } = await pairedManager();
     const oldChannelId = cm.getChannelId();
-    const account = 'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const account = ADDRESS_A;
     await cm.authorizeAccounts([account]);
     const accountsChanged = vi.fn();
     cm.on('accounts_changed', accountsChanged);
@@ -733,7 +741,7 @@ describe('ConnectionManager desync teardown', () => {
       .mockResolvedValueOnce(
         JSON.stringify({
           type: 'wallet_info',
-          accounts: ['Q1111111111111111111111111111111111111111'],
+          accounts: [ADDRESS_1],
           chainId: '0x1',
         })
       )
@@ -1013,7 +1021,7 @@ describe('ConnectionManager desync teardown', () => {
             resolve(
               JSON.stringify({
                 type: 'wallet_info',
-                accounts: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+                accounts: [ADDRESS_A],
               })
             );
           };
@@ -1034,7 +1042,7 @@ describe('ConnectionManager desync teardown', () => {
     replacementKex.decryptMessage.mockResolvedValue(
       JSON.stringify({
         type: 'wallet_info',
-        accounts: ['Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+        accounts: [ADDRESS_B],
         chainId: '0x539',
       })
     );
@@ -1058,7 +1066,7 @@ describe('ConnectionManager desync teardown', () => {
     kex.decryptMessage.mockResolvedValue(
       JSON.stringify({
         type: 'wallet_info',
-        accounts: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+        accounts: [ADDRESS_A],
         chainId: '0x539',
       })
     );
@@ -1081,24 +1089,19 @@ describe('ConnectionManager desync teardown', () => {
       accounts.length = 0;
     });
 
-    await expect(
-      cm.authorizeAccounts(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'])
-    ).resolves.toEqual(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+    await expect(cm.authorizeAccounts([ADDRESS_A])).resolves.toEqual([ADDRESS_A]);
 
     const returned = cm.getAccounts();
-    returned[0] = 'Qcccccccccccccccccccccccccccccccccccccccc';
-    expect(cm.getAccounts()).toEqual(['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+    returned[0] = ADDRESS_C;
+    expect(cm.getAccounts()).toEqual([ADDRESS_A]);
   });
 
   it('rejects multi-account approval results at the session boundary', async () => {
     const { cm } = await pairedManager();
 
-    await expect(
-      cm.authorizeAccounts([
-        'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        'Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      ])
-    ).rejects.toThrow('invalid account list');
+    await expect(cm.authorizeAccounts([ADDRESS_A, ADDRESS_B])).rejects.toThrow(
+      'invalid account list'
+    );
     expect(cm.getAccounts()).toEqual([]);
   });
 
@@ -1112,7 +1115,7 @@ describe('ConnectionManager desync teardown', () => {
     kex.exchanged = true;
     kex.exportPersisted.mockResolvedValue(PERSISTED_KEX);
 
-    const account = 'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const account = ADDRESS_A;
     await cm.authorizeAccounts([account]);
 
     const stored = JSON.parse(values.get('@qrlwallet/connect:session') ?? '{}') as {
@@ -1126,6 +1129,27 @@ describe('ConnectionManager desync teardown', () => {
     const { cm, socket, kex } = await pairedManager();
     kex.decryptMessage.mockResolvedValue(
       JSON.stringify({ type: 'wallet_info', accounts: ['Q1234'], chainId: '0x539' })
+    );
+    const walletInfo = vi.fn();
+    cm.on('wallet_info', walletInfo);
+
+    socket.emit('message', walletCiphertext(cm));
+    await vi.waitFor(() => {
+      expect(kex.decryptMessage).toHaveBeenCalledOnce();
+    });
+
+    expect(walletInfo).not.toHaveBeenCalled();
+    expect(cm.getAccounts()).toEqual([]);
+  });
+
+  it('drops wallet info from a legacy Q plus 40 peer', async () => {
+    const { cm, socket, kex } = await pairedManager();
+    kex.decryptMessage.mockResolvedValue(
+      JSON.stringify({
+        type: 'wallet_info',
+        accounts: [`Q${'a'.repeat(40)}`],
+        chainId: '0x539',
+      })
     );
     const walletInfo = vi.fn();
     cm.on('wallet_info', walletInfo);
@@ -1259,7 +1283,7 @@ describe('ConnectionManager desync teardown', () => {
     kex.decryptMessage.mockResolvedValue(
       JSON.stringify({
         type: 'wallet_info',
-        accounts: ['Q1111111111111111111111111111111111111111'],
+        accounts: [ADDRESS_1],
         chainId: '0x539',
       })
     );
@@ -1496,10 +1520,7 @@ describe('ConnectionManager desync teardown', () => {
         session.lastActivity = 1;
       },
       (session) => {
-        session.connectedAccounts = [
-          'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          'Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        ];
+        session.connectedAccounts = [ADDRESS_A, ADDRESS_B];
       },
     ];
 
@@ -1531,10 +1552,13 @@ describe('ConnectionManager desync teardown', () => {
     await cm.disconnect();
   });
 
-  it('drops a persisted session containing a malformed current-format account', async () => {
+  it.each([
+    ['malformed', 'Q1234'],
+    ['legacy Q plus 40', `Q${'a'.repeat(40)}`],
+  ])('drops a persisted session containing a %s account', async (_label, account) => {
     const values = installBrowserStorage();
     const malformed = JSON.parse(storedSession()) as Record<string, unknown>;
-    malformed.connectedAccounts = ['Q1234'];
+    malformed.connectedAccounts = [account];
     values.set('@qrlwallet/connect:session', JSON.stringify(malformed));
 
     const cm = new ConnectionManager({

@@ -1,14 +1,19 @@
 /**
- * EIP-712-shaped typed-data encoding for `qrl_signTypedData` v1.
+ * Historical EIP-712-shaped typed-data encoding for `qrl_signTypedData` v1.
  *
  * Byte-identical algorithm with the wallet's signing/typedData.ts; this
  * file is the SDK port (only the import block differs: the SDK routes
  * SHAKE256 through src/crypto/primitives.ts, its crypto boundary). See
  * the wallet copy for the spec-level comments; behavior must stay in
  * lock-step or the cross-repo parity test fails on next CI.
+ *
+ * The v1 address slot is 32 bytes. QIP-55 address fields fail closed until a
+ * 64-byte encoding receives a new scheme tag and lockstep wallet fixtures.
+ * Address-free digests retain their existing encoding.
  */
 
 import { shake256Digest } from '../crypto/primitives.js';
+import { isCurrentQrlAddress } from '../config.js';
 import { SCHEME_TAG_TYPED, DIGEST_LEN } from './ctx.js';
 import { hexToBytes, concatBytes, concatBytesArr } from './bytes.js';
 
@@ -277,10 +282,14 @@ export function typeHash(primary: string, types: TypeMap): Uint8Array {
 }
 
 function parseQAddress(addr: string): Uint8Array {
-  if (typeof addr !== 'string' || !/^Q[0-9a-fA-F]{40}$/.test(addr)) {
-    throw new Error(`invalid Q-address: ${addr}`);
+  if (!isCurrentQrlAddress(addr)) {
+    throw new Error(`invalid Q-address: ${String(addr)}`);
   }
-  return hexToBytes('0x' + addr.slice(1).toLowerCase());
+  const bytes = hexToBytes('0x' + addr.slice(1).toLowerCase());
+  if (bytes.length > SLOT) {
+    throw new Error('qrl_signTypedData v1 does not support QIP-55 address fields');
+  }
+  return bytes;
 }
 
 function padLeft32(bytes: Uint8Array): Uint8Array {

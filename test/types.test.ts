@@ -49,7 +49,7 @@ describe('types/enums', () => {
 const baseResult: QrlSignedResult = {
   signature: `0x${'ab'.repeat(4627)}`,
   publicKey: `0x${'cd'.repeat(2592)}`,
-  signer: `Q${'0'.repeat(40)}`,
+  signer: `Q${'0'.repeat(128)}`,
   digest: `0x${'ef'.repeat(64)}`,
   schemeVersion: 'QRL-SIGN-MSG-v1',
 };
@@ -98,8 +98,8 @@ describe('strict signing result guards', () => {
     ['short signature', { ...baseResult, signature: '0xab' }],
     ['short public key', { ...baseResult, publicKey: '0xcd' }],
     ['short digest', { ...baseResult, digest: '0xef' }],
-    ['lowercase address prefix', { ...baseResult, signer: `q${'0'.repeat(40)}` }],
-    ['roadmap-width address', { ...baseResult, signer: `Q${'0'.repeat(128)}` }],
+    ['lowercase address prefix', { ...baseResult, signer: `q${'0'.repeat(128)}` }],
+    ['legacy-width address', { ...baseResult, signer: `Q${'0'.repeat(40)}` }],
     ['unknown scheme', { ...baseResult, schemeVersion: 'QRL-SIGN-MSG-v2' }],
     ['extra field', { ...baseResult, displayText: 'unsigned' }],
     ['message result with domain', { ...baseResult, domain: {} }],

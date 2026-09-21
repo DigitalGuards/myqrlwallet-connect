@@ -31,7 +31,7 @@ const accounts = await provider.request({
   method: 'qrl_requestAccounts',
   params: [],
 });
-// => ["Q208318ecd68f26726CE7C54b29CaBA94584969B6"]
+// => ["Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194"]
 ```
 
 The session has no authorized account before this call succeeds:
@@ -48,8 +48,8 @@ const txHash = await provider.request({
   method: 'qrl_sendTransaction',
   params: [
     {
-      from: 'Q208318ecd68f26726CE7C54b29CaBA94584969B6',
-      to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+      from: 'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194',
+      to: 'Q22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222',
       value: '0x2386F26FC10000', // 0.01 QRL in wei
       gas: '0x5208', // 21000 (optional, auto-estimated)
       data: '0x', // contract call data (optional)
@@ -77,7 +77,7 @@ same `[tx]` contract and account binding as `qrl_sendTransaction`.
 Sign opaque bytes (off-chain auth challenges, ownership proofs, anything without internal structure). The wallet displays the message for approval, hashes it with SHAKE256, signs with ML-DSA-87, and returns a stateless-verifiable response object.
 
 `params[0]` is the signer Q-address (must equal the connected account and use
-the current `Q` + 40 hex character format).
+the QIP-55 `Q` + 128 hex character format).
 `params[1]` is the message as **strict 0x-hex bytes**, capped at 16 KiB. The SDK does not accept bare UTF-8 strings here; the dApp UTF-8-encodes before sending so the wallet receives a single canonical form.
 
 Transport authentication establishes that the response came from the paired
@@ -93,7 +93,8 @@ import {
   verifyMessageForSigner,
 } from '@qrlwallet/connect';
 
-const signer = 'Q208318ecd68f26726CE7C54b29CaBA94584969B6';
+const signer =
+  'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194';
 const messageBytes = '0x48656c6c6f2c20514f4c21'; // "Hello, QRL!"
 const rawResult = await provider.request({
   method: 'qrl_signMessage',
@@ -103,7 +104,7 @@ const rawResult = await provider.request({
 //   signature:     "0x...<4627-byte ML-DSA-87 signature>",
 //   publicKey:     "0x...<2592-byte ML-DSA-87 public key>",
 //   descriptor:    "0x010000", // exact 3-byte ML-DSA wallet descriptor
-//   signer:        "Q208318ecd68f26726CE7C54b29CaBA94584969B6",
+//   signer:        "Q6aFB7dFC...dea04C194",
 //   digest:        "0x...<64-byte SHAKE256 digest>",
 //   schemeVersion: "QRL-SIGN-MSG-v1"
 // }
@@ -126,28 +127,14 @@ Signing uses `ctx = utf8("QRL-SIGN-MSG-v1")` and FIPS 204 §3.4 randomized (hedg
 
 ### qrl_signTypedData
 
-Sign EIP-712-shaped structured data. Same shape as Ethereum's `signTypedData_v4` (`types`/`primaryType`/`domain`/`message`), but with post-quantum primitives: SHAKE256 hashing, native Dilithium ctx, 64-byte digests throughout, and `QRLDomain` in place of `EIP712Domain`.
-
-`QRLDomain` is wallet-reserved. Allowed fields (each with a fixed type):
-
-| Field               | Type      | Required |
-| ------------------- | --------- | -------- |
-| `name`              | `string`  | yes      |
-| `version`           | `string`  | no       |
-| `chainId`           | `uint256` | no       |
-| `verifyingContract` | `address` | no       |
-| `salt`              | `bytes32` | no       |
-
-Any other field name, or a type mismatch on a reserved name, is rejected by the wallet before signing.
+QIP-55 status: temporarily unavailable. The provider validates the signer and
+account authorization, then rejects the request locally before relay use. The
+historical `QRL-SIGN-TYPED-v1` preimage fixes an address at 20 bytes in one
+32-byte word, so it cannot represent a 64-byte QIP-55 address.
 
 ```typescript
-import {
-  hasSigningDescriptor,
-  isQrlSignedTypedDataResult,
-  verifyTypedDataForSigner,
-} from '@qrlwallet/connect';
-
-const signer = 'Q208318ecd68f26726CE7C54b29CaBA94584969B6';
+const signer =
+  'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194';
 const payload = {
   types: {
     QRLDomain: [{ name: 'name', type: 'string' }],
@@ -165,55 +152,23 @@ const payload = {
     issuedAt: '1747699200', // string or 0x-hex for uintN >= 64
   },
 };
-const rawResult = await provider.request({
-  method: 'qrl_signTypedData',
-  params: [signer, payload],
-});
-// => {
-//   signature, publicKey, descriptor, signer, digest,
-//   schemeVersion: "QRL-SIGN-TYPED-v1",
-//   domain:        { name: "zondscan.com" }
-// }
 
-if (!isQrlSignedTypedDataResult(rawResult) || !hasSigningDescriptor(rawResult)) {
-  throw new Error('Invalid or unbound qrl_signTypedData response');
-}
-const ok = verifyTypedDataForSigner({
-  expectedSigner: signer,
-  descriptor: rawResult.descriptor,
-  signature: rawResult.signature,
-  publicKey: rawResult.publicKey,
-  payload,
-});
-if (!ok) throw new Error('qrl_signTypedData verification failed');
+// Rejects locally: qrl_signTypedData is unavailable for QIP-55 until the
+// 64-byte word encoding and signing scheme version are finalized.
+await provider.request({ method: 'qrl_signTypedData', params: [signer, payload] });
 ```
 
-The lower-level `verifyMessageSignature` and `verifyTypedDataSignature`
-helpers verify a signature against the public key supplied by the caller. They
-do not bind that key to `result.signer`, so they are not sufficient on their
-own for account authentication or authorization. The old `verifyMessage` and
-`verifyTypedData` names remain as deprecated aliases. Bound verification
-returns `false` when an older wallet response omits `descriptor`; request a
-new signature after the wallet is upgraded. The strict shape guards validate
-field sets, fixed widths, the current Q + 40 signer shape, and method-specific
-scheme tags. They perform no cryptographic verification.
+The likely successor layout uses one 64-byte ABI word per typed value: native
+addresses occupy all 64 bytes, while `uint256` and `int256` remain in the low
+32 bytes. This layout still requires protocol ratification. The release must
+assign a new scheme version and context tag, update the wallet and SDK in
+lockstep, regenerate canonical fixtures, and decide how peers advertise the
+capability. Reusing the v1 tag with a different preimage would make the signed
+format ambiguous.
 
-Digest pipeline:
-
-```
-SCHEME_TAG_TYPED = utf8("QRL-SIGN-TYPED-v1")
-domainHash  = SHAKE256(typeHash("QRLDomain") || encodedFields(domain), 64)
-messageHash = SHAKE256(typeHash(primaryType) || encodedFields(message), 64)
-digest      = SHAKE256(SCHEME_TAG_TYPED || domainHash || messageHash, 64)
-```
-
-Type system mirrors EIP-712: `address`, `bool`, `string`, `bytes`, `uintN` / `intN` (N ∈ multiples of 8, 8 ≤ N ≤ 256), `bytesN` (1 ≤ N ≤ 32), arrays `T[]` and `T[N]`, struct references. `uint64` and wider must be passed as strings or 0x-hex; JS `number` literals above the safe-integer range are rejected.
-
-The SDK applies deterministic resource limits before forwarding typed data:
-32 struct types, 32 fields per struct, 256 total fields, 12 levels each for
-type graphs and array types, 256 items per array, 2,048 encoded values, and
-16 KiB per dynamic string or bytes field. Identifier names are canonical and
-prototype-sensitive names are rejected.
+The exported v1 digest and verifier helpers remain available for address-free
+payloads. They reject legacy Q + 40 addresses and unsupported QIP-55 address
+fields consistently with the wallet. Provider typed-data requests stay disabled.
 
 ### Removed in v3.0.0
 
@@ -221,9 +176,9 @@ The Ethereum-flavored signing methods are no longer supported. A dApp that still
 
 - `personal_sign` → replaced by `qrl_signMessage`
 - `qrl_sign` → replaced by `qrl_signMessage` (with `[signer, messageHex]` argument order)
-- `qrl_signTypedData_v3` / `qrl_signTypedData_v4` → replaced by `qrl_signTypedData` (single canonical version, no `_v3`/`_v4`)
+- `qrl_signTypedData_v3` / `qrl_signTypedData_v4` → reserved for replacement by a future versioned `qrl_signTypedData` format
 
-Old signatures produced before the upgrade cannot be reproduced and aren't verifiable by the new helpers.
+Signatures from the removed Ethereum-flavored methods are outside the current helper contracts.
 
 ### Explicitly unsupported node mutation methods
 
@@ -273,7 +228,10 @@ const blockNumber = await provider.request({ method: 'qrl_blockNumber', params: 
 ```typescript
 const balance = await provider.request({
   method: 'qrl_getBalance',
-  params: ['Q208318ecd68f26726CE7C54b29CaBA94584969B6', 'latest'],
+  params: [
+    'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194',
+    'latest',
+  ],
 });
 // => "0x6cfe56f3795885980005"
 ```
@@ -292,8 +250,8 @@ const gas = await provider.request({
   method: 'qrl_estimateGas',
   params: [
     {
-      from: 'Q208318ecd68f26726CE7C54b29CaBA94584969B6',
-      to: 'Q20B714091cF2a62DADda2847803e3f1B9D2D3779',
+      from: 'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194',
+      to: 'Q22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222',
       value: '0x7',
     },
   ],
@@ -306,7 +264,13 @@ const gas = await provider.request({
 ```typescript
 const result = await provider.request({
   method: 'qrl_call',
-  params: [{ to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c', value: '0x7' }, 'latest'],
+  params: [
+    {
+      to: 'Q22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222',
+      value: '0x7',
+    },
+    'latest',
+  ],
 });
 // => "0x"
 ```
@@ -326,7 +290,10 @@ const receipt = await provider.request({
 ```typescript
 const nonce = await provider.request({
   method: 'qrl_getTransactionCount',
-  params: ['Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c', 'latest'],
+  params: [
+    'Q22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222',
+    'latest',
+  ],
 });
 // => "0x1"
 ```
@@ -346,7 +313,10 @@ const block = await provider.request({
 ```typescript
 const code = await provider.request({
   method: 'qrl_getCode',
-  params: ['Q208318ecd68f26726CE7C54b29CaBA94584969B6', 'latest'],
+  params: [
+    'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194',
+    'latest',
+  ],
 });
 // => "0x60806040..."
 ```
@@ -360,7 +330,8 @@ const logs = await provider.request({
     {
       fromBlock: '0x1234AB',
       toBlock: 'latest',
-      address: 'Q208318ecd68f26726CE7C54b29CaBA94584969B6',
+      address:
+        'Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194',
       topics: [],
     },
   ],
@@ -368,11 +339,13 @@ const logs = await provider.request({
 // => [{ logIndex: "0x0", blockNumber: "0x233", topics: [...], ... }]
 ```
 
+QIP-55 log topics are complete 64-byte VM words encoded as `0x` plus 128 hex characters. Event-signature and indexed dynamic-value hashes occupy the high 32 bytes followed by 32 zero bytes. Short 32-byte topic filters are rejected.
+
 ### qrl_accounts
 
 ```typescript
 const accounts = await provider.request({ method: 'qrl_accounts', params: [] });
-// => ["Q20B714091cF2a62DADda2847803e3f1B9D2D3779"]
+// => ["Q6aFB7dFC849bC16E439033DfEE7B296484619Db8fc7e3b7c20a1b1688B128259338aFfd79b7cdda8F28509607bc26eB67a4799Ae457Ec82b57A6a57dea04C194"]
 ```
 
 This is a local authorization-cache read and never reaches hosted node RPC.

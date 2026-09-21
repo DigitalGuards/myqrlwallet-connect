@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_scope:
-        description: Release both packages under next, or only the UI package under latest
+        description: Release both packages under the selected tag, or only the UI under latest
         required: true
         default: both
         type: choice
@@ -14,15 +14,23 @@ on:
       sdk_version:
         description: Expected @qrlwallet/connect version from package.json
         required: true
-        default: 4.0.0
+        default: 5.0.0
         type: string
       ui_version:
         description: Expected @qrlwallet/connect-ui version from ui/package.json
         required: true
-        default: 0.2.0
+        default: 0.2.2
         type: string
+      release_tag:
+        description: Registry tag for both packages
+        required: true
+        default: next
+        type: choice
+        options:
+          - next
+          - latest
       confirmation:
-        description: Type publish-next for both packages, or publish-ui for the UI package
+        description: Type publish-next or publish-latest to match the tag, or publish-ui for UI only
         required: true
         type: string
 
@@ -34,7 +42,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main' && inputs.package_scope != 'ui' && inputs.confirmation == 'publish-next'
+    if: github.ref == 'refs/heads/main' && inputs.package_scope == 'both' && ((inputs.release_tag == 'next' && inputs.confirmation == 'publish-next') || (inputs.release_tag == 'latest' && inputs.confirmation == 'publish-latest'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -192,20 +200,23 @@ jobs:
           verify_registry_version '@qrlwallet/connect' "$SDK_VERSION" "$SDK_INTEGRITY" sdk
           verify_registry_version '@qrlwallet/connect-ui' "$UI_VERSION" "$UI_INTEGRITY" ui
 
-      - name: Publish SDK under next
+      - name: Publish SDK under selected tag
         if: steps.registry.outputs.sdk_exists != 'true'
         env:
           TARBALL: ${{ runner.temp }}/npm-packs/${{ steps.packs.outputs.sdk_filename }}
-        run: npm publish "$TARBALL" --access public --tag next
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: npm publish "$TARBALL" --access public --tag "$RELEASE_TAG"
 
-      - name: Publish UI under next
+      - name: Publish UI under selected tag
         if: steps.registry.outputs.ui_exists != 'true'
         env:
           TARBALL: ${{ runner.temp }}/npm-packs/${{ steps.packs.outputs.ui_filename }}
-        run: npm publish "$TARBALL" --access public --tag next
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: npm publish "$TARBALL" --access public --tag "$RELEASE_TAG"
 
       - name: Verify registry release
         env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
           SDK_VERSION: ${{ inputs.sdk_version }}
           SDK_INTEGRITY: ${{ steps.packs.outputs.sdk_integrity }}
           UI_VERSION: ${{ inputs.ui_version }}
@@ -223,12 +234,12 @@ jobs:
 
           function verify(name, version, integrity) {
             const publishedIntegrity = npmView(`${name}@${version}`, 'dist.integrity');
-            const taggedVersion = npmView(`${name}@next`, 'version');
+            const taggedVersion = npmView(`${name}@${process.env.RELEASE_TAG}`, 'version');
             if (publishedIntegrity !== integrity) {
               throw new Error(`${name}@${version} registry integrity mismatch`);
             }
             if (taggedVersion !== version) {
-              throw new Error(`${name} next tag does not point to ${version}`);
+              throw new Error(`${name} ${process.env.RELEASE_TAG} tag does not point to ${version}`);
             }
           }
 
