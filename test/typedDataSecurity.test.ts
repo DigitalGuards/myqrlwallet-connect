@@ -14,6 +14,18 @@ function payloadWith(fieldType: string, value: unknown): unknown {
 }
 
 describe('typed data resource and nesting limits', () => {
+  it('rejects legacy address fields', () => {
+    expect(() => computeTypedDataDigest(payloadWith('address', `Q${'1'.repeat(40)}`))).toThrow(
+      'invalid Q-address'
+    );
+  });
+
+  it('rejects QIP-55 address fields until the encoding is versioned', () => {
+    expect(() => computeTypedDataDigest(payloadWith('address', `Q${'1'.repeat(128)}`))).toThrow(
+      'qrl_signTypedData v1 does not support QIP-55 address fields'
+    );
+  });
+
   it('rejects dynamic arrays above the deterministic item cap', () => {
     const values = new Array(TYPED_DATA_LIMITS.maxArrayLength + 1).fill(1);
     expect(() => computeTypedDataDigest(payloadWith('uint8[]', values))).toThrow(

@@ -1,15 +1,20 @@
 import { describe, it, expect } from 'vitest';
+import { toChecksumAddress } from '@theqrl/wallet.js';
 import {
   RESTRICTED_METHODS,
   UNRESTRICTED_METHODS,
   EXPLICITLY_UNSUPPORTED_METHODS,
   classifyRpcMethod,
+  formatQrlAddressFingerprint,
   isCurrentQrlAddress,
   isValidJsonRpcId,
   isValidJsonRpcMethod,
   normalizeRelayUrl,
+  qip55AddressFromBytes,
   MAX_JSON_RPC_ID_LENGTH,
   MAX_JSON_RPC_METHOD_LENGTH,
+  QRL_ADDRESS_BYTES,
+  QRL_ADDRESS_HEX_LENGTH,
   DEFAULT_RELAY_URL,
   RELAY_PATH,
   PROTOCOL_VERSION,
@@ -160,10 +165,52 @@ describe('config', () => {
       );
     });
 
-    it('keeps address validation on the current Q plus 40 hex format', () => {
-      expect(isCurrentQrlAddress(`Q${'a'.repeat(40)}`)).toBe(true);
-      expect(isCurrentQrlAddress(`Q${'a'.repeat(64)}`)).toBe(false);
-      expect(isCurrentQrlAddress(`0x${'a'.repeat(40)}`)).toBe(false);
+    it('validates the 64-byte QIP-55 address format and checksum casing', () => {
+      const lower =
+        'Qd5812f6cf4a0f645aa620cd57319a0ed649dd8f5519a9dde7770ae5b0e49e547985f35eb972a2a07041561aa39c65a3991478f9b1e6749e05277dcf58a9a8b72';
+      const checksum =
+        'Qd5812F6Cf4a0f645aa620cd57319a0Ed649dd8f5519A9dde7770ae5b0E49e547985f35eB972A2a07041561aa39c65A3991478f9B1e6749e05277dcf58A9A8B72';
+      const bytes = new Uint8Array(
+        lower
+          .slice(1)
+          .match(/../g)
+          ?.map((byte) => Number.parseInt(byte, 16)) ?? []
+      );
+
+      expect(QRL_ADDRESS_BYTES).toBe(64);
+      expect(QRL_ADDRESS_HEX_LENGTH).toBe(128);
+      expect(isCurrentQrlAddress(lower)).toBe(true);
+      expect(isCurrentQrlAddress(`Q${lower.slice(1).toUpperCase()}`)).toBe(true);
+      expect(isCurrentQrlAddress(checksum)).toBe(true);
+      expect(qip55AddressFromBytes(bytes)).toBe(checksum);
+      expect(qip55AddressFromBytes(bytes)).toBe(toChecksumAddress(bytes));
+      expect(isCurrentQrlAddress(`QD${checksum.slice(2)}`)).toBe(false);
+      expect(isCurrentQrlAddress(`Q${'a'.repeat(40)}`)).toBe(false);
+      expect(isCurrentQrlAddress(`Q${'a'.repeat(96)}`)).toBe(false);
+      expect(isCurrentQrlAddress(`q${'a'.repeat(128)}`)).toBe(false);
+      expect(isCurrentQrlAddress(`0x${'a'.repeat(128)}`)).toBe(false);
+    });
+
+    it('formats stable first, middle, and final address fingerprints', () => {
+      const address =
+        `QaBcDeF01${'2'.repeat(52)}` + `AbCdEf09${'4'.repeat(52)}FfEeDdCc`;
+      expect(formatQrlAddressFingerprint(address)).toBe(
+        'QaBcDeF01...AbCdEf09...FfEeDdCc'
+      );
+      const legacy = `Q11111111${'2'.repeat(8)}` + `33333333${'4'.repeat(8)}55555555`;
+      expect(formatQrlAddressFingerprint(legacy)).toBe(
+        'Q11111111...33333333...55555555'
+      );
+      expect(formatQrlAddressFingerprint('Q1234')).toBe('Q1234');
+      expect(formatQrlAddressFingerprint(`Q${'1'.repeat(127)}`)).toBe(
+        `Q${'1'.repeat(127)}`
+      );
+      expect(formatQrlAddressFingerprint(`Q${'1'.repeat(129)}`)).toBe(
+        `Q${'1'.repeat(129)}`
+      );
+      expect(formatQrlAddressFingerprint(`q${'1'.repeat(128)}`)).toBe(
+        `q${'1'.repeat(128)}`
+      );
     });
 
     it('should have valid relay URL', () => {

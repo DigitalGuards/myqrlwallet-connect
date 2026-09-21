@@ -16,14 +16,13 @@ export const MAX_RELAY_URL_LENGTH = 2048;
 // backgrounded wallet is not torn down, but short enough to avoid an
 // indefinite "reconnecting…" hang when the wallet is genuinely gone.
 export const RECONNECT_WALLET_PROBE_MS = 12 * 1000; // 12 seconds
-
-// Current network address format. The planned wider address format is a
-// separate protocol migration and must not be accepted implicitly here.
-const CURRENT_QRL_ADDRESS_RE = /^Q[0-9a-fA-F]{40}$/;
-
-export function isCurrentQrlAddress(value: unknown): value is string {
-  return typeof value === 'string' && CURRENT_QRL_ADDRESS_RE.test(value);
-}
+export {
+  formatQrlAddressFingerprint,
+  isCurrentQrlAddress,
+  qip55AddressFromBytes,
+  QRL_ADDRESS_BYTES,
+  QRL_ADDRESS_HEX_LENGTH,
+} from './utils/qrlAddress.js';
 
 export function isExplicitLoopbackHostname(value: string): boolean {
   const hostname = value.toLowerCase();
@@ -68,10 +67,11 @@ export function normalizeRelayUrl(value: unknown): string {
 /**
  * RPC methods that require user approval in the wallet.
  *
- * v3.0.0 replaces the Ethereum-flavored signing surface with two
- * post-quantum-native methods: `qrl_signMessage` for opaque bytes and
- * `qrl_signTypedData` for structured payloads (EIP-712-shaped, but with
- * SHAKE256 + native Dilithium ctx). The legacy methods (`personal_sign`,
+ * v3.0.0 replaced the Ethereum-flavored signing surface with two
+ * post-quantum-native methods. `qrl_signMessage` remains active for opaque
+ * bytes. `qrl_signTypedData` retains its approval classification while the
+ * QIP-55 request boundary rejects it pending a versioned 64-byte encoding.
+ * The legacy methods (`personal_sign`,
  * `qrl_sign`, `qrl_signTypedData_v3`, `qrl_signTypedData_v4`) are no
  * longer accepted; a dApp calling them via this SDK will get a
  * "method not supported" error before the relay round-trip.

@@ -2,6 +2,18 @@
 
 Connect your dApp to QRL Wallet. Users scan a QR code (desktop) or tap a button (mobile) to pair their wallet, then approve transactions right from the app.
 
+## Version 5 migration
+
+Version 5 requires QIP-55 addresses: `Q` followed by 128 hexadecimal characters.
+Account validation and message-signature verification use the complete 64-byte
+address. Applications using legacy 20-byte addresses must remain on version 4
+until their network and wallet support QIP-55.
+
+Wallet typed-data requests are disabled pending a versioned 64-byte address
+encoding. The local verifier remains available for address-free typed data.
+The private v3 network is a test network; its availability does not establish
+compatibility with legacy deployments or contracts.
+
 ## How it works
 
 1. Your dApp generates a connection URI and shows it as a QR code
@@ -78,7 +90,7 @@ const txHash = await qrl.request({
   params: [
     {
       from: accounts[0],
-      to: 'Q20E7Bde67f00EA38ABb2aC57e1B0DD93f518446c',
+      to: 'Q22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222',
       value: '0x2386F26FC10000', // 0.01 QRL
     },
   ],
@@ -161,15 +173,16 @@ The main class. Creates a connection manager and EIP-1193 provider.
 **Require user approval:**
 `qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_switchQrlChain`
 
-`qrl_signMessage` and `qrl_signTypedData` (v3.0.0) replace the Ethereum-flavored `personal_sign` / `qrl_sign` / `qrl_signTypedData_v3` / `qrl_signTypedData_v4`. Both use SHAKE256 + native ML-DSA-87 ctx and return a rich `{ signature, publicKey, descriptor, signer, digest, schemeVersion }` object.
+`qrl_signMessage` uses SHAKE256 plus native ML-DSA-87 ctx and returns a rich `{ signature, publicKey, descriptor, signer, digest, schemeVersion }` object. During the QIP-55 port, `qrl_signTypedData` stays in the approval policy and fails locally before relay use. Its v1 encoding fixes addresses to a 32-byte slot, so a new 64-byte encoding needs a new scheme version and regenerated wallet parity vectors.
 
 `request()` returns `unknown`. First validate the exact response shape with
 `isQrlSignedMessageResult` or `isQrlSignedTypedDataResult`, then require
 `hasSigningDescriptor`. PQP3 authenticates the paired transport session. It
 does not prove that the returned ML-DSA signature is valid or that its public
 key belongs to the claimed signer. Authentication and authorization flows must
-call `verifyMessageForSigner` or `verifyTypedDataForSigner` with the original
-challenge or payload and the expected current Q + 40 hex address.
+call `verifyMessageForSigner` or the historical v1 `verifyTypedDataForSigner`
+with the original challenge or payload and the expected QIP-55 Q + 128 hex
+address.
 
 The lower-level `verifyMessageSignature` / `verifyTypedDataSignature` helpers
 verify only the supplied key and signature; they do not prove that the key
@@ -194,6 +207,18 @@ field must exactly match that approved address.
 `qrl_requestAccounts` succeeds and is never forwarded to hosted node RPC.
 An account string is not proof of control. For authentication, request a fresh
 challenge with `qrl_signMessage` and verify it with `verifyMessageForSigner`.
+
+## Address display
+
+Use `formatQrlAddressFingerprint(address)` for compact QRL account labels. It
+preserves checksum case and shows the first, exact middle, and final 8 hex
+characters. Keep the complete raw address in links, clipboard values, QR codes,
+RPC requests, and signing payloads.
+
+```typescript
+const label = formatQrlAddressFingerprint(account);
+// Q11111111...33333333...55555555
+```
 
 ## Sessions
 

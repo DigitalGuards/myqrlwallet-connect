@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCurrentQrlAddress } from '../../config.js';
 import {
   bytesToHex,
   computeMessageDigest,
@@ -84,23 +85,25 @@ describe('SDK ↔ wallet parity', () => {
     expect(hexToBytes(vector.hexSeed.slice(0, 8))).toHaveLength(ML_DSA_DESCRIPTOR_BYTES);
     expect(hexToBytes(vector.publicKey)).toHaveLength(ML_DSA_87_PUBLIC_KEY_BYTES);
     expect(hexToBytes(vector.signature)).toHaveLength(ML_DSA_87_SIGNATURE_BYTES);
+    expect(vector.signer).toHaveLength(129);
+    expect(isCurrentQrlAddress(vector.signer)).toBe(true);
   });
 
-  it('typedData encoder matches every locked vector', () => {
+  it('preserves legacy type hashes while rejecting legacy typed addresses', () => {
     for (const v of canonical.typedVectors) {
       expect(encodeType(v.payload.primaryType, v.payload.types)).toBe(v.encodeTypeString);
       expect(bytesToHex(typeHash(v.payload.primaryType, v.payload.types))).toBe(v.typeHashHex);
       expect(bytesToHex(hashStruct('QRLDomain', v.payload.domain, v.payload.types))).toBe(
         v.domainHashHex
       );
-      expect(
+      expect(() =>
         bytesToHex(hashStruct(v.payload.primaryType, v.payload.message, v.payload.types))
-      ).toBe(v.messageHashHex);
-      expect(bytesToHex(computeTypedDataDigest(v.payload))).toBe(v.digestHex);
+      ).toThrow(/invalid Q-address/);
+      expect(() => computeTypedDataDigest(v.payload)).toThrow(/invalid Q-address/);
     }
   });
 
-  it('key-only signature helpers accept the pinned wallet signatures', () => {
+  it('key-only helpers verify messages and reject legacy typed addresses', () => {
     for (const v of canonical.signingVectors) {
       if (v.messageHex !== undefined) {
         const params = {
@@ -116,13 +119,13 @@ describe('SDK ↔ wallet parity', () => {
           publicKey: v.publicKey,
           payload: v.payload,
         };
-        expect(verifyTypedDataSignature(params)).toBe(true);
-        expect(verifyTypedData(params)).toBe(true);
+        expect(verifyTypedDataSignature(params)).toBe(false);
+        expect(verifyTypedData(params)).toBe(false);
       }
     }
   });
 
-  it('bound verifiers accept pinned signatures only for their derived signer', () => {
+  it('bound verifiers accept current messages and reject legacy typed addresses', () => {
     const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
     const typed = canonical.signingVectors.find((v) => v.payload !== undefined)!;
     const messageDescriptor = message.hexSeed.slice(0, 8);
@@ -145,14 +148,14 @@ describe('SDK ↔ wallet parity', () => {
         publicKey: typed.publicKey,
         payload: typed.payload!,
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('bound verifiers reject a different current-format signer', () => {
     const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
     expect(
       verifyMessageForSigner({
-        expectedSigner: `Q${'0'.repeat(40)}`,
+        expectedSigner: `Q${'0'.repeat(128)}`,
         descriptor: message.hexSeed.slice(0, 8),
         signature: message.signature,
         publicKey: message.publicKey,
@@ -190,11 +193,11 @@ describe('SDK ↔ wallet parity', () => {
     }
   );
 
-  it('bound verification rejects the roadmap-width address format', () => {
+  it('bound verification rejects the legacy address format', () => {
     const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
     expect(
       verifyMessageForSigner({
-        expectedSigner: `Q${'a'.repeat(64)}`,
+        expectedSigner: `Q${'a'.repeat(40)}`,
         descriptor: message.hexSeed.slice(0, 8),
         signature: message.signature,
         publicKey: message.publicKey,

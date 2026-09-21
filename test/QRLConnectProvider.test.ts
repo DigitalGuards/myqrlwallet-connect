@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'eventemitter3';
 import { ConnectionStatus } from '../src/types.js';
+import { isCurrentQrlAddress } from '../src/config.js';
+
+const ADDRESS_A = `Q${'a'.repeat(128)}`;
+const ADDRESS_B = `Q${'b'.repeat(128)}`;
+const ADDRESS_1 = `Q${'1'.repeat(128)}`;
 
 // Mock the platform helpers so the wallet-wake redirect can be asserted
 // without a browser environment (and without actually navigating anywhere).
@@ -55,7 +60,7 @@ class MockConnectionManager extends EventEmitter {
     if (!Array.isArray(value) || value.length !== 1) throw new Error('invalid accounts');
     const accounts: string[] = [];
     for (const account of value) {
-      if (typeof account !== 'string' || !/^Q[0-9a-fA-F]{40}$/.test(account)) {
+      if (!isCurrentQrlAddress(account)) {
         throw new Error('invalid accounts');
       }
       accounts.push(account);
@@ -72,7 +77,7 @@ class MockConnectionManager extends EventEmitter {
 }
 
 vi.mock('../src/ConnectionManager.js', () => ({
-  ConnectionManager: vi.fn().mockImplementation((..._args: unknown[]) => {
+  ConnectionManager: vi.fn().mockImplementation(function (..._args: unknown[]) {
     return new MockConnectionManager();
   }),
 }));
@@ -83,8 +88,8 @@ import type { QRLConnectOptions } from '../src/types.js';
 describe('QRLConnectProvider', () => {
   let provider: QRLConnectProvider;
   let mockCM: MockConnectionManager;
-  const authorizedAccount = 'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-  const recipientAccount = 'Qbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const authorizedAccount = ADDRESS_A;
+  const recipientAccount = ADDRESS_B;
   const defaultOptions: QRLConnectOptions = {
     dappMetadata: { name: 'Test DApp', url: 'https://test.com' },
     autoReconnect: false,
@@ -104,6 +109,32 @@ describe('QRLConnectProvider', () => {
   });
 
   describe('constructor', () => {
+    it('supports requests and disconnect when the browser denies access to its storage getter', async () => {
+      vi.stubGlobal('localStorage', undefined);
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        get() {
+          throw new DOMException('Storage access denied', 'SecurityError');
+        },
+      });
+      try {
+        const storageDeniedProvider = new QRLConnectProvider(defaultOptions);
+        const cm = latestMockCM;
+        cm.status = ConnectionStatus.CONNECTED;
+        cm.accounts = [authorizedAccount];
+        const result = storageDeniedProvider.request({
+          method: 'qrl_signMessage',
+          params: [authorizedAccount, '0x00'],
+        });
+        const sent = cm.sendJsonRpc.mock.calls[0][0];
+        cm.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, result: 'signed' });
+        await expect(result).resolves.toBe('signed');
+        await expect(storageDeniedProvider.disconnect()).resolves.toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     it('should set isQRLConnect flag', () => {
       expect(provider.isQRLConnect).toBe(true);
     });
@@ -140,7 +171,7 @@ describe('QRLConnectProvider', () => {
       });
       const queued = provider.request({
         method: 'qrl_signMessage',
-        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+        params: [ADDRESS_A, '0x00'],
       });
       expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
 
@@ -191,9 +222,9 @@ describe('QRLConnectProvider', () => {
     });
 
     it('should return cached accounts for qrl_accounts', async () => {
-      mockCM.accounts = ['Q1111111111111111111111111111111111111111'];
+      mockCM.accounts = [ADDRESS_1];
       const result = await provider.request({ method: 'qrl_accounts' });
-      expect(result).toEqual(['Q1111111111111111111111111111111111111111']);
+      expect(result).toEqual([ADDRESS_1]);
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
 
@@ -339,6 +370,22 @@ describe('QRLConnectProvider', () => {
       await expect(requestPromise).rejects.toThrow('User rejected');
     });
 
+    it.each([4001, 4902, -32000])(
+      'preserves wallet error code %i and its data for dApp recovery',
+      async (code) => {
+        mockCM.status = ConnectionStatus.CONNECTED;
+        const result = provider.request({
+          method: 'wallet_switchQrlChain',
+          params: [{ chainId: '0x539' }],
+        });
+        const sent = mockCM.sendJsonRpc.mock.calls[0][0];
+        const error = { code, message: 'Wallet declined request', data: { chainId: '0x539' } };
+        mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, error });
+        await expect(result).rejects.toMatchObject(error);
+        await expect(result).rejects.toBeInstanceOf(Error);
+      }
+    );
+
     it('should serialize approval-bound requests by request id', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
 
@@ -348,7 +395,7 @@ describe('QRLConnectProvider', () => {
       });
       const second = provider.request({
         method: 'qrl_signMessage',
-        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+        params: [ADDRESS_A, '0x00'],
       });
 
       expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
@@ -462,7 +509,7 @@ describe('QRLConnectProvider', () => {
       });
       const next = provider.request({
         method: 'qrl_signMessage',
-        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+        params: [ADDRESS_A, '0x00'],
       });
 
       await expect(failed).rejects.toThrow('session changed before send');
@@ -478,27 +525,26 @@ describe('QRLConnectProvider', () => {
       await expect(next).resolves.toEqual({ signature: '0xsig' });
     });
 
-    it('should reject unsafe nested typed data before sending it to the wallet', async () => {
+    it('keeps QIP-55 typed data fail closed until its 64-byte scheme is versioned', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
-      const nestedArrayType = `uint8${'[]'.repeat(14)}`;
 
       await expect(
         provider.request({
           method: 'qrl_signTypedData',
           params: [
-            'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            ADDRESS_A,
             {
               types: {
                 QRLDomain: [{ name: 'name', type: 'string' }],
-                Payload: [{ name: 'values', type: nestedArrayType }],
+                Payload: [{ name: 'account', type: 'address' }],
               },
               primaryType: 'Payload',
               domain: { name: 'Security test' },
-              message: { values: [] },
+              message: { account: ADDRESS_A },
             },
           ],
         })
-      ).rejects.toThrow('type nesting too deep');
+      ).rejects.toThrow('unavailable for QIP-55');
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
 
@@ -511,7 +557,7 @@ describe('QRLConnectProvider', () => {
       await expect(
         provider.request({
           method: 'qrl_signMessage',
-          params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', `0x${'00'.repeat(16 * 1024 + 1)}`],
+          params: [ADDRESS_A, `0x${'00'.repeat(16 * 1024 + 1)}`],
         })
       ).rejects.toThrow('bounded 0x-prefixed bytes');
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
@@ -519,7 +565,7 @@ describe('QRLConnectProvider', () => {
 
     it('binds explicit signers and transaction from fields to the authorized account', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
-      const differentlyCased = `Q${'A'.repeat(40)}`;
+      const differentlyCased = `Q${'A'.repeat(128)}`;
 
       await expect(
         provider.request({ method: 'qrl_signMessage', params: [differentlyCased, '0x00'] })
@@ -569,26 +615,30 @@ describe('QRLConnectProvider', () => {
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
 
-    it('snapshots queued typed data before caller-owned objects can be mutated', async () => {
+    it('rejects QIP-55 typed data before it enters the restricted request queue', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       const first = provider.request({
         method: 'qrl_sendTransaction',
         params: [{ from: authorizedAccount, to: recipientAccount, value: '0x0' }],
       });
-      const payload = {
-        types: {
-          QRLDomain: [{ name: 'name', type: 'string' }],
-          Payload: [{ name: 'values', type: 'uint8[]' }],
-        },
-        primaryType: 'Payload',
-        domain: { name: 'Security test' },
-        message: { values: [1] },
-      };
-      const second = provider.request({
-        method: 'qrl_signTypedData',
-        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', payload],
-      });
-      payload.message.values = new Array(300).fill(7);
+      await expect(
+        provider.request({
+          method: 'qrl_signTypedData',
+          params: [
+            ADDRESS_A,
+            {
+              types: {
+                QRLDomain: [{ name: 'name', type: 'string' }],
+                Payload: [{ name: 'value', type: 'uint8' }],
+              },
+              primaryType: 'Payload',
+              domain: { name: 'Security test' },
+              message: { value: 1 },
+            },
+          ],
+        })
+      ).rejects.toThrow('signing scheme version');
+      expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
 
       const firstWire = mockCM.sendJsonRpc.mock.calls[0][0];
       mockCM.emit('jsonrpc_response', {
@@ -597,21 +647,6 @@ describe('QRLConnectProvider', () => {
         result: '0xhash',
       });
       await expect(first).resolves.toBe('0xhash');
-
-      await vi.waitFor(() => {
-        expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
-      });
-      const secondWire = mockCM.sendJsonRpc.mock.calls[1][0];
-      expect(secondWire.params).toEqual([
-        'Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        expect.objectContaining({ message: { values: [1] } }),
-      ]);
-      mockCM.emit('jsonrpc_response', {
-        jsonrpc: '2.0',
-        id: secondWire.id,
-        result: { signature: '0xsig' },
-      });
-      await expect(second).resolves.toEqual({ signature: '0xsig' });
     });
   });
 
@@ -737,9 +772,9 @@ describe('QRLConnectProvider', () => {
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sentRequest.id,
-        result: ['Q1111111111111111111111111111111111111111'],
+        result: [ADDRESS_1],
       });
-      await expect(requestPromise).resolves.toEqual(['Q1111111111111111111111111111111111111111']);
+      await expect(requestPromise).resolves.toEqual([ADDRESS_1]);
     });
 
     it('should not redirect when walletRedirectOnRequest is false', async () => {
@@ -834,7 +869,7 @@ describe('QRLConnectProvider', () => {
       cm.accounts = [authorizedAccount];
       const requestPromise = p.request({
         method: 'qrl_signMessage',
-        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+        params: [ADDRESS_A, '0x00'],
       });
       const sentRequest = cm.sendJsonRpc.mock.calls[0][0];
       expect(store.has(INFLIGHT_KEY)).toBe(true);
@@ -953,7 +988,7 @@ describe('QRLConnectProvider', () => {
       });
       const queued = provider.request({
         method: 'qrl_signMessage',
-        params: ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '0x00'],
+        params: [ADDRESS_A, '0x00'],
       });
       expect(mockCM.sendJsonRpc).toHaveBeenCalledOnce();
 
@@ -972,7 +1007,7 @@ describe('QRLConnectProvider', () => {
         method: 'qrl_requestAccounts',
       });
       mockCM.emit('wallet_info', {
-        accounts: ['Q1111111111111111111111111111111111111111'],
+        accounts: [ADDRESS_1],
         chainId: '0x0',
       });
       await Promise.resolve();
@@ -982,9 +1017,9 @@ describe('QRLConnectProvider', () => {
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sent.id,
-        result: ['Q1111111111111111111111111111111111111111'],
+        result: [ADDRESS_1],
       });
-      await expect(requestPromise).resolves.toEqual(['Q1111111111111111111111111111111111111111']);
+      await expect(requestPromise).resolves.toEqual([ADDRESS_1]);
     });
 
     it('commits a strictly validated successful qrl_requestAccounts result', async () => {
@@ -992,7 +1027,7 @@ describe('QRLConnectProvider', () => {
       mockCM.accounts = [];
       const requestPromise = provider.request({ method: 'qrl_requestAccounts' });
       const sent = mockCM.sendJsonRpc.mock.calls[0][0];
-      const accounts = ['Qaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'];
+      const accounts = [ADDRESS_A];
 
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, result: accounts });
 

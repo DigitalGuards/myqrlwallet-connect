@@ -9,17 +9,16 @@
  */
 
 import { mldsaVerify, shake256Digest } from '../crypto/primitives.js';
-import { isCurrentQrlAddress } from '../config.js';
+import { isCurrentQrlAddress, qip55AddressFromBytes, QRL_ADDRESS_BYTES } from '../config.js';
 import { SCHEME_TAG_MSG, SCHEME_TAG_TYPED } from './ctx.js';
 import { computeMessageDigest } from './messageDigest.js';
 import { computeTypedDataDigest, type TypedDataPayload } from './typedData.js';
-import { bytesToHex, concatBytes, hexToBytes } from './bytes.js';
+import { concatBytes, hexToBytes } from './bytes.js';
 
 const ML_DSA_87_DESCRIPTOR_TYPE = 1;
 export const ML_DSA_DESCRIPTOR_BYTES = 3;
 export const ML_DSA_87_PUBLIC_KEY_BYTES = 2592;
 export const ML_DSA_87_SIGNATURE_BYTES = 4627;
-const CURRENT_QRL_ADDRESS_BYTES = 20;
 
 function bytesOrHex(v: Uint8Array | string): Uint8Array {
   if (v instanceof Uint8Array) return new Uint8Array(v);
@@ -125,16 +124,13 @@ function publicKeyMatchesSigner(
   if (descriptor[0] !== ML_DSA_87_DESCRIPTOR_TYPE) {
     return false;
   }
-  const addressBytes = shake256Digest(
-    concatBytes(descriptor, publicKey),
-    CURRENT_QRL_ADDRESS_BYTES
-  );
-  const derived = `Q${bytesToHex(addressBytes).slice(2)}`;
+  const addressBytes = shake256Digest(concatBytes(descriptor, publicKey), QRL_ADDRESS_BYTES);
+  const derived = qip55AddressFromBytes(addressBytes);
   return derived.toLowerCase() === expectedSigner.toLowerCase();
 }
 
 export interface VerifyMessageForSignerParams extends VerifyMessageParams {
-  /** Current Q + 40 hex address expected by the dApp. */
+  /** QIP-55 Q + 128 hex address expected by the dApp. */
   expectedSigner: string;
   /** Exact 3-byte wallet descriptor. Missing legacy values fail closed. */
   descriptor?: Uint8Array | string | undefined;
@@ -165,7 +161,7 @@ export function verifyMessageForSigner({
 }
 
 export interface VerifyTypedDataForSignerParams extends VerifyTypedDataParams {
-  /** Current Q + 40 hex address expected by the dApp. */
+  /** QIP-55 Q + 128 hex address expected by the dApp. */
   expectedSigner: string;
   /** Exact 3-byte wallet descriptor. Missing legacy values fail closed. */
   descriptor?: Uint8Array | string | undefined;

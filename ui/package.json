@@ -1,6 +1,6 @@
 {
   "name": "@qrlwallet/connect-ui",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "packageManager": "npm@10.9.8",
   "description": "Framework-agnostic pairing modal for @qrlwallet/connect: <qrl-pairing-modal> web component plus a one-line showPairingModal() helper",
   "main": "dist/index.js",
@@ -45,7 +45,7 @@
     "qrcode": "^1.5.4"
   },
   "peerDependencies": {
-    "@qrlwallet/connect": ">=4.0.0 <5"
+    "@qrlwallet/connect": ">=4.0.0 <6"
   },
   "peerDependenciesMeta": {
     "@qrlwallet/connect": {
@@ -63,9 +63,12 @@
     "prettier": "^3.4.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "4.1.11"
   },
   "overrides": {
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.1",
+    "vitest": {
+      "vite": "7.3.5"
+    }
   }
 }
