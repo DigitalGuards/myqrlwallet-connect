@@ -8,20 +8,21 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
   <style>
-    /* Quantum Observatory tokens, kept in sync with zondscan's globals.css */
+    /* QRL Blue tokens: deep navy surface, QRL sky-blue accent, ice-blue
+       identity color, kept in sync with the wallet's src/index.css. */
     :root {
-      --bg: #0b0d13;
-      --bg-2: #12151d;
-      --bg-3: #0e1118;
+      --bg: #080c16;
+      --bg-2: #0e1424;
+      --bg-3: #0a0f1c;
       --surface: rgba(255, 255, 255, 0.03);
       --surface-2: rgba(255, 255, 255, 0.055);
       --border: rgba(255, 255, 255, 0.08);
       --border-hover: rgba(255, 255, 255, 0.16);
-      --accent: #ffa729;
-      --accent-hover: #ffbc57;
-      --quantum: #2ee6c8;
-      --text: #e9ecf2;
-      --text-2: #9aa3b2;
+      --accent: #33ade6;
+      --accent-hover: #5cc0ec;
+      --quantum: #a5d7e9;
+      --text: #eef3f9;
+      --text-2: #9aa8bb;
       --muted: #79839b;
       --success: #34d399;
       --warning: #fbbf24;
@@ -35,14 +36,14 @@
     body {
       font-family: var(--sans);
       background-color: var(--bg);
-      background-image: linear-gradient(180deg, #0c0e15 0%, #0b0d13 40%, #0a0c11 100%);
+      background-image: linear-gradient(180deg, #0a0f1c 0%, #080c16 40%, #070a13 100%);
       background-attachment: fixed;
       color: var(--text-2);
       min-height: 100vh;
       padding: 2rem;
       -webkit-font-smoothing: antialiased;
     }
-    /* Atmosphere: amber glow answering a quantum-teal one, like the explorer */
+    /* Atmosphere: sky-blue glow answering a paler ice-blue one, QRL Blue */
     body::before {
       content: '';
       position: fixed;
@@ -50,14 +51,14 @@
       z-index: -1;
       pointer-events: none;
       background:
-        radial-gradient(ellipse 70% 45% at 12% -8%, rgba(255, 167, 41, 0.075), transparent 62%),
-        radial-gradient(ellipse 55% 40% at 92% 112%, rgba(46, 230, 200, 0.055), transparent 62%),
+        radial-gradient(ellipse 70% 45% at 12% -8%, rgba(51, 173, 230, 0.075), transparent 62%),
+        radial-gradient(ellipse 55% 40% at 92% 112%, rgba(165, 215, 233, 0.055), transparent 62%),
         radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
       background-size: auto, auto, 26px 26px;
       mask-image: linear-gradient(180deg, black, black 60%, rgba(0,0,0,0.4));
       -webkit-mask-image: linear-gradient(180deg, black, black 60%, rgba(0,0,0,0.4));
     }
-    ::selection { background: rgba(255, 167, 41, 0.28); color: #fff; }
+    ::selection { background: rgba(51, 173, 230, 0.28); color: #fff; }
     :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
     .eyebrow {
@@ -140,12 +141,12 @@
     .dot.yellow { background: var(--warning); }
     .dot.green {
       background: var(--quantum);
-      box-shadow: 0 0 10px rgba(46, 230, 200, 0.5);
+      box-shadow: 0 0 10px rgba(165, 215, 233, 0.5);
       animation: pulse-dot 2.4s ease-in-out infinite;
     }
     @keyframes pulse-dot {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(46, 230, 200, 0.45); }
-      50% { box-shadow: 0 0 0 5px rgba(46, 230, 200, 0); }
+      0%, 100% { box-shadow: 0 0 0 0 rgba(165, 215, 233, 0.45); }
+      50% { box-shadow: 0 0 0 5px rgba(165, 215, 233, 0); }
     }
     @media (prefers-reduced-motion: reduce) {
       .dot.green { animation: none; }
@@ -184,14 +185,14 @@
       cursor: pointer;
       transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, opacity 0.2s;
     }
-    button:hover { background: var(--accent-hover); border-color: var(--accent-hover); box-shadow: 0 0 28px -6px rgba(255, 167, 41, 0.4); }
+    button:hover { background: var(--accent-hover); border-color: var(--accent-hover); box-shadow: 0 0 28px -6px rgba(51, 173, 230, 0.4); }
     button:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
     button.outline {
       background: transparent;
       border: 1px solid var(--border);
       color: var(--text);
     }
-    button.outline:hover { background: var(--surface-2); border-color: rgba(255, 167, 41, 0.5); box-shadow: none; }
+    button.outline:hover { background: var(--surface-2); border-color: rgba(51, 173, 230, 0.5); box-shadow: none; }
     button.danger {
       background: rgba(248, 113, 113, 0.1);
       border: 1px solid rgba(248, 113, 113, 0.25);
@@ -210,7 +211,7 @@
       display: inline-block;
       transition: background 0.2s, box-shadow 0.2s;
     }
-    a.btn-link:hover { background: var(--accent-hover); box-shadow: 0 0 28px -6px rgba(255, 167, 41, 0.4); }
+    a.btn-link:hover { background: var(--accent-hover); box-shadow: 0 0 28px -6px rgba(51, 173, 230, 0.4); }
     .btn-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
     .wallet-list {
       display: flex;
@@ -234,7 +235,7 @@
       transition: border-color 0.2s, background 0.2s;
     }
     .wallet-row:hover {
-      border-color: rgba(255, 167, 41, 0.5);
+      border-color: rgba(51, 173, 230, 0.5);
       background: var(--surface-2);
     }
     .wallet-icon {
@@ -311,11 +312,38 @@
       color: var(--text);
     }
     .hidden { display: none !important; }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.35rem;
+    }
+    .brand-mark { width: 40px; height: 40px; flex-shrink: 0; }
   </style>
 </head>
 <body>
 
-  <p class="eyebrow">MyQRLWallet Ecosystem · Live Demo</p>
+  <div class="brand-row">
+    <svg class="brand-mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
+      <rect width="64" height="64" rx="14.3" fill="#33ADE6"/>
+      <g transform="translate(14 14) scale(1.5)">
+        <rect x="5.1" y=".4" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="9.8" y=".4" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="14.5" y=".4" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x=".4" y="5.1" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="19.2" y="5.1" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x=".4" y="9.8" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="19.2" y="9.8" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="5.1" y="14.5" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="14.5" y="14.5" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x=".4" y="19.2" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="5.1" y="19.2" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="14.5" y="19.2" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+        <rect x="19.2" y="19.2" width="4.4" height="4.4" rx=".5" fill="#041725"/>
+      </g>
+    </svg>
+    <p class="eyebrow" style="margin-bottom: 0;">MyQRLWallet Ecosystem &middot; Live Demo</p>
+  </div>
   <h1>QRL <span class="accent">Connect</span> Test dApp</h1>
   <p class="subtitle">Live demo of <code style="font-family: var(--mono); color: var(--accent);">@qrlwallet/connect</code>. Pair a dApp with MyQRLWallet over an end-to-end encrypted channel.</p>
 

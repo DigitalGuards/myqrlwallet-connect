@@ -2,7 +2,7 @@
 
 The MyQRLWallet pairing dialog as a framework-free web component, for dApps using [`@qrlwallet/connect`](https://github.com/DigitalGuards/myqrlwallet-connect). One import replaces the QR modal every dApp used to hand-copy.
 
-- `<qrl-pairing-modal>`: shadow-DOM custom element with the MyQRLWallet charcoal, ember and champagne palette, themeable with CSS custom properties.
+- `<qrl-pairing-modal>`: shadow-DOM custom element with the MyQRLWallet QRL Blue palette (deep navy, sky-blue accent, ice-blue links), themeable with CSS custom properties.
 - `showPairingModal(provider)`: one-line helper that wires the modal to a connect provider and resolves when pairing finishes.
 - Zero framework dependencies; works in React, Vue, Svelte and plain HTML alike. Only runtime dependency is the `qrcode` encoder.
 - Purely presentational: consumes only the SDK's public API and contains no cryptography. Keys, sessions and protocol live in `@qrlwallet/connect`.
@@ -88,12 +88,12 @@ Set CSS custom properties on the element or any ancestor:
 
 | Property                   | Default                                          | Role                                     |
 | -------------------------- | ------------------------------------------------ | ---------------------------------------- |
-| `--qrl-modal-accent`       | `hsl(24 96% 55%)`                                | Ember wallet icon and keyboard focus     |
-| `--qrl-modal-bg`           | `hsl(235 14% 6%)`                                | Charcoal card background                 |
-| `--qrl-modal-fg`           | `hsl(36 20% 95%)`                                | Warm primary text                        |
-| `--qrl-modal-muted`        | `hsl(234 8% 64%)`                                | Secondary text                           |
-| `--qrl-modal-link`         | `hsl(38 45% 76%)`                                | Champagne links and button hover accents |
-| `--qrl-modal-border`       | `hsl(235 10% 15%)`                               | Card, section and button borders         |
+| `--qrl-modal-accent`       | `hsl(199 78% 55%)`                               | Sky-blue mark icon and keyboard focus    |
+| `--qrl-modal-bg`           | `hsl(222 38% 9%)`                                | Navy card background                     |
+| `--qrl-modal-fg`           | `hsl(210 30% 96%)`                               | Primary text                             |
+| `--qrl-modal-muted`        | `hsl(215 15% 66%)`                               | Secondary text                           |
+| `--qrl-modal-link`         | `hsl(196 60% 78%)`                               | Ice-blue links and button hover accents  |
+| `--qrl-modal-border`       | `hsl(220 30% 17%)`                               | Card, section and button borders         |
 | `--qrl-modal-radius`       | `12px`                                           | Card corner radius                       |
 | `--qrl-modal-backdrop`     | `rgb(0 0 0 / 70%)`                               | Backdrop overlay                         |
 | `--qrl-modal-font`         | Instrument Sans Variable, then system sans-serif | Body font family                         |

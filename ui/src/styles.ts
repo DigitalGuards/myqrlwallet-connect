@@ -1,14 +1,15 @@
 // Public theme properties inherit from the host page. Internal fallbacks keep
-// the shared charcoal, ember and champagne palette usable in any dApp.
+// the shared QRL Blue palette (deep navy, sky-blue accent, ice-blue links)
+// usable in any dApp.
 
 export const modalStyles = `
 :host {
-  --_qrl-accent: var(--qrl-modal-accent, hsl(24 96% 55%));
-  --_qrl-bg: var(--qrl-modal-bg, hsl(235 14% 6%));
-  --_qrl-fg: var(--qrl-modal-fg, hsl(36 20% 95%));
-  --_qrl-muted: var(--qrl-modal-muted, hsl(234 8% 64%));
-  --_qrl-link: var(--qrl-modal-link, hsl(38 45% 76%));
-  --_qrl-border: var(--qrl-modal-border, hsl(235 10% 15%));
+  --_qrl-accent: var(--qrl-modal-accent, hsl(199 78% 55%));
+  --_qrl-bg: var(--qrl-modal-bg, hsl(222 38% 9%));
+  --_qrl-fg: var(--qrl-modal-fg, hsl(210 30% 96%));
+  --_qrl-muted: var(--qrl-modal-muted, hsl(215 15% 66%));
+  --_qrl-link: var(--qrl-modal-link, hsl(196 60% 78%));
+  --_qrl-border: var(--qrl-modal-border, hsl(220 30% 17%));
   --_qrl-radius: var(--qrl-modal-radius, 12px);
   --_qrl-font: var(--qrl-modal-font, 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif);
   --_qrl-heading-font: var(--qrl-modal-heading-font, 'Sora Variable', var(--_qrl-font));
@@ -249,8 +250,23 @@ export const ICON_REFRESH = iconSvg(
   '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'
 );
 
-export const ICON_WALLET = iconSvg(
-  '<path d="M20 8V5a2 2 0 0 0-2-2H5a3 3 0 0 0 0 6h15v4"/><path d="M3 6v12a2 2 0 0 0 2 2h15v-4"/><path d="M20 12h-4a2 2 0 0 0 0 4h4v-4Z"/>'
-);
+// The MyQRLWallet mark: 13 rounded blocks forming an omega, filled solid
+// with the current text color (unlike the stroked lucide outlines above).
+export const ICON_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+  '<rect x="5.1" y=".4" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="9.8" y=".4" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="14.5" y=".4" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x=".4" y="5.1" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="19.2" y="5.1" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x=".4" y="9.8" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="19.2" y="9.8" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="5.1" y="14.5" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="14.5" y="14.5" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x=".4" y="19.2" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="5.1" y="19.2" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="14.5" y="19.2" width="4.4" height="4.4" rx=".5"/>' +
+  '<rect x="19.2" y="19.2" width="4.4" height="4.4" rx=".5"/>' +
+  '</svg>';
 
 export const ICON_CLOSE = iconSvg('<path d="m18 6-12 12M6 6l12 12"/>');

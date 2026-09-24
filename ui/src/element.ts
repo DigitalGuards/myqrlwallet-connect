@@ -18,8 +18,8 @@ import {
   ICON_CLOSE,
   ICON_COPY,
   ICON_EXTERNAL_LINK,
+  ICON_MARK,
   ICON_REFRESH,
-  ICON_WALLET,
   modalStyles,
 } from './styles.js';
 
@@ -86,7 +86,7 @@ export class QrlPairingModal extends HTMLElement {
     const brandIcon = document.createElement('div');
     brandIcon.className = 'brand-icon';
     brandIcon.setAttribute('aria-hidden', 'true');
-    brandIcon.append(makeIcon(ICON_WALLET));
+    brandIcon.append(makeIcon(ICON_MARK));
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'close';
