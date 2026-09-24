@@ -1,6 +1,6 @@
 {
   "name": "@qrlwallet/connect",
-  "version": "5.0.1",
+  "version": "5.0.2",
   "packageManager": "npm@10.9.8",
   "description": "Connect your dApp to QRL Wallet via QR code or deep link",
   "main": "dist/index.js",

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.2] - 2026-09-24 (connect-ui 0.2.3)
+
 ### Changed
 
 - Rebrand to the QRL Blue palette. The EIP-6963 `icon` in
