@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Rebrand to the QRL Blue palette. The EIP-6963 `icon` in
+  `QRL_CONNECT_PROVIDER_INFO` is now an optimized SVG data URI of the
+  MyQRLWallet mark instead of the old raster icon. `@qrlwallet/connect-ui`'s
+  default modal theme (`--qrl-modal-*` custom properties) moves from the
+  charcoal, ember, and champagne palette to deep navy, QRL sky blue, and ice
+  blue; the modal's header icon is now the MyQRLWallet mark. No protocol,
+  session, or public API change.
+
 ## [4.0.0] - 2026-08-03
 
 ### Changed
