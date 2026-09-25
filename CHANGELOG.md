@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@qrlwallet/connect-ui` 0.3.0: `groupMyQrlWallet()` and
+  `resolveMyQrlWalletEntry()` fold the two MyQRLWallet EIP-6963 announcements
+  (`com.qrlwallet.extension` from the browser extension, `com.qrlwallet.connect`
+  from this SDK) into a single wallet-picker entry, so a dApp lists MyQRLWallet
+  once. The entry names the transport a click uses and exposes relay pairing as
+  a secondary action when the extension is installed. Also exported:
+  `isMyQrlWalletRdns()` and the rdns, name and label constants. Pure data, no
+  DOM. The helpers ship from the package index and from a new dependency-free
+  `@qrlwallet/connect-ui/wallets` subpath for pickers that do not load the
+  pairing modal. Peer range on `@qrlwallet/connect` is unchanged. No SDK,
+  protocol, session or crypto change.
+- The dApp example groups its picker with the new helper: one MyQRLWallet row
+  with a "Use phone or desktop app" action when the extension is announced.
+
 ## [5.0.2] - 2026-09-24 (connect-ui 0.2.3)
 
 ### Changed

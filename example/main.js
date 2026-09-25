@@ -9,6 +9,10 @@ import {
   formatQrlAddressFingerprint,
   getAppStoreUrl,
 } from '@qrlwallet/connect';
+// The grouping helper also ships from the package index. This example imports
+// the dependency-free `/wallets` subpath because it renders its own picker and
+// never loads the pairing modal, so the QR encoder stays out of the bundle.
+import { groupMyQrlWallet } from '@qrlwallet/connect-ui/wallets';
 import QRCode from 'qrcode';
 import { canonicalChainId, makeTypedRejectionPayload, parseQuanta } from './demo-utils.js';
 
@@ -101,6 +105,11 @@ function setStatus(color, label) {
 // MyQRLWallet Extension fork (com.qrlwallet.extension). Both take the
 // extension tx shape; everything else EIP-1193-compatible is listed too
 // since this example doubles as a diagnostic harness.
+//
+// MyQRLWallet announces twice, once per transport. The picker shows it as a
+// single row via groupMyQrlWallet() from @qrlwallet/connect-ui: the row body
+// uses the extension when it is installed, and a secondary action opens the
+// relay pairing flow for the phone, web and desktop wallets.
 const QRL_EXTENSION_RDNS = new Set(['theqrl.org', 'com.qrlwallet.extension']);
 const QRL_CONNECT_RDNS   = QRL_CONNECT_PROVIDER_INFO.rdns;
 
@@ -115,30 +124,83 @@ function renderWalletPicker() {
     walletList.appendChild(empty);
     return;
   }
-  for (const detail of discovered.values()) {
-    const row = document.createElement('button');
-    row.className = 'wallet-row';
-
-    // Build with createElement + textContent rather than innerHTML - wallet
-    // metadata is attacker-controlled (any page script can dispatch
-    // `eip6963:announceProvider`), so any HTML interpolation is XSS.
-    const icon = document.createElement('img');
-    icon.className = 'wallet-icon';
-    icon.src = detail.info.icon;
-    icon.alt = detail.info.name;
-
-    const name = document.createElement('span');
-    name.className = 'wallet-name';
-    name.textContent = detail.info.name;
-
-    const rdns = document.createElement('span');
-    rdns.className = 'wallet-rdns';
-    rdns.textContent = detail.info.rdns;
-
-    row.append(icon, name, rdns);
-    row.addEventListener('click', () => connectWith(detail));
-    walletList.appendChild(row);
+  // groupMyQrlWallet folds the extension and relay announcements into one
+  // MyQRLWallet row; every other announced wallet passes through unchanged.
+  for (const entry of groupMyQrlWallet(discovered.values())) {
+    walletList.appendChild(
+      entry.kind === 'myqrlwallet' ? buildMyQrlWalletRow(entry) : buildWalletRow(entry)
+    );
   }
+}
+
+// Wallet metadata is attacker-controlled: any page script can dispatch
+// `eip6963:announceProvider`. Every row below is therefore built with
+// createElement + textContent, since HTML interpolation here would be XSS.
+function buildWalletRow(entry) {
+  const row = document.createElement('button');
+  row.className = 'wallet-row';
+
+  const icon = document.createElement('img');
+  icon.className = 'wallet-icon';
+  icon.src = entry.icon;
+  icon.alt = entry.name;
+
+  const name = document.createElement('span');
+  name.className = 'wallet-name';
+  name.textContent = entry.name;
+
+  const rdns = document.createElement('span');
+  rdns.className = 'wallet-rdns';
+  rdns.textContent = entry.rdns;
+
+  row.append(icon, name, rdns);
+  row.addEventListener('click', () => connectWith(entry.detail));
+  return row;
+}
+
+// One MyQRLWallet row. The row body takes the extension when it is installed
+// and relay pairing otherwise; the extra button always starts relay pairing
+// for the phone, web and desktop wallets.
+function buildMyQrlWalletRow(entry) {
+  const group = document.createElement('div');
+  group.className = 'wallet-entry';
+
+  const row = document.createElement('button');
+  row.className = 'wallet-row';
+  row.setAttribute(
+    'aria-label',
+    entry.primary === 'extension'
+      ? `Connect ${entry.name} browser extension`
+      : `Connect ${entry.name} on phone, web or desktop`
+  );
+
+  const icon = document.createElement('img');
+  icon.className = 'wallet-icon';
+  icon.src = entry.icon;
+  icon.alt = entry.name;
+
+  const name = document.createElement('span');
+  name.className = 'wallet-name';
+  name.textContent = entry.name;
+
+  const path = document.createElement('span');
+  path.className = 'wallet-path';
+  path.textContent = entry.primaryLabel;
+
+  row.append(icon, name, path);
+  row.addEventListener('click', () => connectMyQrlWallet(entry, entry.primary));
+  group.appendChild(row);
+
+  if (entry.secondary === 'relay') {
+    const alt = document.createElement('button');
+    alt.className = 'wallet-alt';
+    alt.textContent = entry.secondaryLabel;
+    alt.setAttribute('aria-label', `${entry.secondaryLabel} to connect ${entry.name}`);
+    alt.addEventListener('click', () => connectMyQrlWallet(entry, 'relay'));
+    group.appendChild(alt);
+  }
+
+  return group;
 }
 
 function showPicker() {
@@ -545,6 +607,12 @@ function wireExtensionProviderEvents(detail) {
 }
 
 // ─── Connect dispatch ────────────────────────────────────
+async function connectMyQrlWallet(entry, transport) {
+  const detail = transport === 'extension' ? entry.extension : entry.relay;
+  if (!detail) return;
+  await connectWith(detail);
+}
+
 async function connectWith(detail) {
   hidePicker();
   if (detail.info.rdns === QRL_CONNECT_RDNS) {

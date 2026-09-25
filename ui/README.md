@@ -82,6 +82,71 @@ them in a normal query string. The fragment handoff above is safe only when
 the wallet page reads and scrubs it immediately. A copied URI remains usable
 until its relay channel is paired, cancelled, rotated, or expired.
 
+## One MyQRLWallet row in the wallet picker
+
+MyQRLWallet announces itself twice over EIP-6963: the browser extension announces
+`com.qrlwallet.extension`, and `@qrlwallet/connect` announces
+`com.qrlwallet.connect` for relay pairing with the phone, web and desktop
+wallets. A picker that lists announcements as it receives them therefore shows
+MyQRLWallet twice.
+
+`groupMyQrlWallet()` folds the pair into one entry. It is pure data: no DOM, no
+framework, no protocol surface, and it ships from the dependency-free
+`@qrlwallet/connect-ui/wallets` subpath as well as the package index.
+
+```ts
+import { groupMyQrlWallet } from '@qrlwallet/connect-ui';
+
+for (const entry of groupMyQrlWallet(announcements)) {
+  if (entry.kind === 'myqrlwallet') {
+    // One row: name "MyQRLWallet", the wallet mark as its icon.
+    renderRow(entry.name, entry.icon, entry.primaryLabel, () =>
+      connect(entry.primary === 'extension' ? entry.extension : entry.relay)
+    );
+    if (entry.secondary === 'relay') {
+      // Extra button, e.g. "Use phone or desktop app".
+      renderAction(entry.secondaryLabel, () => connect(entry.relay));
+    }
+  } else {
+    renderRow(entry.name, entry.icon, entry.rdns, () => connect(entry.detail));
+  }
+}
+```
+
+The input is any iterable of EIP-6963 `announceProvider` details (only
+`detail.info` is read; your own detail object travels through untouched on the
+generic type). Output preserves announcement order, with the merged entry
+sitting where the first MyQRLWallet announcement was, and every other wallet
+passed through as `{ kind: 'wallet', uuid, name, icon, rdns, detail }`.
+
+The merged entry:
+
+| Field                           | Meaning                                                                                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `kind`                          | Always `'myqrlwallet'`                                                                     |
+| `uuid`                          | uuid of the announcement the primary click uses, so an existing uuid lookup keeps working  |
+| `name`                          | `"MyQRLWallet"`, overridable                                                               |
+| `icon`                          | The relay announcement's icon (the wallet mark), falling back to the extension's           |
+| `extension` / `relay`           | The announcements themselves; each present only when that transport announced              |
+| `primary`                       | `'extension'` when the extension announced, otherwise `'relay'`                            |
+| `primaryLabel`                  | Plain secondary line: `"Browser extension"` or `"Phone, web or desktop"`                   |
+| `secondary`                     | `'relay'` when both transports announced, otherwise `null`                                 |
+| `secondaryLabel`                | `"Use phone or desktop app"` when `secondary` is set, otherwise `null`                     |
+
+Options: `icon` overrides the row icon (for a locally hosted mark), `name`
+overrides the display name.
+
+Also exported: `resolveMyQrlWalletEntry(details, options?)` returns just the
+merged entry (or `null`) for pickers that keep their own list shape,
+`isMyQrlWalletRdns(rdns)` for filtering, and the constants
+`MYQRLWALLET_EXTENSION_RDNS`, `MYQRLWALLET_CONNECT_RDNS`, `MYQRLWALLET_NAME`,
+`MYQRLWALLET_EXTENSION_LABEL`, `MYQRLWALLET_RELAY_LABEL` and
+`MYQRLWALLET_RELAY_ACTION_LABEL`.
+
+Render the row as one button with the extra action as a second, separately
+focusable button, so keyboard and screen-reader users reach both paths and the
+accessible name of each says which one it takes.
+
 ## Theming
 
 Set CSS custom properties on the element or any ancestor:
