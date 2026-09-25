@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@qrlwallet/connect": "file:..",
+    "@qrlwallet/connect-ui": "file:../ui",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

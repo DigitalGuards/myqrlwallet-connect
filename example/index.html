@@ -247,6 +247,23 @@
     }
     .wallet-name { flex: 1; font-weight: 600; color: var(--text); }
     .wallet-rdns { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); }
+    .wallet-entry { display: flex; flex-direction: column; gap: 0.35rem; }
+    .wallet-path { font-size: 0.75rem; color: var(--muted); }
+    .wallet-alt {
+      align-self: flex-start;
+      background: none;
+      border: none;
+      padding: 0 0 0 calc(28px + 0.75rem + 0.75rem);
+      color: var(--accent);
+      font-size: 0.8rem;
+      font-family: inherit;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .wallet-alt:hover { color: var(--accent-hover); }
+    .wallet-alt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
     .wallet-empty {
       color: var(--text-2);
       font-size: 0.85rem;

@@ -1,18 +1,31 @@
 {
   "name": "@qrlwallet/connect-ui",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "packageManager": "npm@10.9.8",
   "description": "Framework-agnostic pairing modal for @qrlwallet/connect: <qrl-pairing-modal> web component plus a one-line showPairingModal() helper",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./wallets": {
+      "types": "./dist/wallets.d.ts",
+      "import": "./dist/wallets.mjs",
+      "require": "./dist/wallets.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "LICENSE"
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts src/wallets.ts --format cjs,esm --dts --clean",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -20,6 +33,7 @@
     "lint:fix": "eslint src/ test/ --ext .ts --fix",
     "format": "prettier --write src/ test/",
     "format:check": "prettier --check src/ test/",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "keywords": [
