@@ -125,10 +125,13 @@ jobs:
           set -euo pipefail
           release_pack_dir="$RUNNER_TEMP/npm-packs"
           mkdir -p "$release_pack_dir"
-          npm pack --json --pack-destination "$release_pack_dir" > "$RUNNER_TEMP/sdk-pack.json"
+          # Both packages were built by the validate steps above. Skip
+          # lifecycle scripts here: connect-ui's `prepare` rebuilds and its
+          # tsup output would land in the --json stream and break the parse.
+          npm pack --json --ignore-scripts --pack-destination "$release_pack_dir" > "$RUNNER_TEMP/sdk-pack.json"
           (
             cd ui
-            npm pack --json --pack-destination "$release_pack_dir" > "$RUNNER_TEMP/ui-pack.json"
+            npm pack --json --ignore-scripts --pack-destination "$release_pack_dir" > "$RUNNER_TEMP/ui-pack.json"
           )
 
           node --input-type=module <<'NODE'
