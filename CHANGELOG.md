@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.3] - 2026-09-26 (connect-ui 0.3.0)
+
+### Security
+
+- Require `@theqrl/mldsa87` ^2.2.0. It rejects weak ML-DSA-87 public keys
+  (all-zero t1) and invalid secret keys, and bounds the signing loop. The SDK
+  verifies ML-DSA-87 signatures during pairing and signing, so a weak key
+  presented by a peer is now refused by the library. Development dependency
+  `@theqrl/wallet.js` moves to ^6.3.0 with the same validation. No API,
+  protocol, session or wire change.
+
 ### Added
 
 - `@qrlwallet/connect-ui` 0.3.0: `groupMyQrlWallet()` and
