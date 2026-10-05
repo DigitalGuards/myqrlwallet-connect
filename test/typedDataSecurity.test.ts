@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { computeTypedDataDigest, TYPED_DATA_LIMITS } from '../src/signing/typedData.js';
+import {
+  computeTypedDataDigest,
+  TYPED_DATA_LIMITS,
+  typedDataSchemeVersion,
+} from '../src/signing/typedData.js';
 
 function payloadWith(fieldType: string, value: unknown): unknown {
   return {
@@ -20,10 +24,11 @@ describe('typed data resource and nesting limits', () => {
     );
   });
 
-  it('rejects QIP-55 address fields until the encoding is versioned', () => {
-    expect(() => computeTypedDataDigest(payloadWith('address', `Q${'1'.repeat(128)}`))).toThrow(
-      'qrl_signTypedData v1 does not support QIP-55 address fields'
-    );
+  it('encodes QIP-55 address fields under typed-data v2', () => {
+    const payload = payloadWith('address', `Q${'1'.repeat(128)}`);
+    expect(typedDataSchemeVersion(payload)).toBe('QRL-SIGN-TYPED-v2');
+    expect(computeTypedDataDigest(payload)).toHaveLength(64);
+    expect(typedDataSchemeVersion(payloadWith('uint8', 1))).toBe('QRL-SIGN-TYPED-v1');
   });
 
   it('rejects dynamic arrays above the deterministic item cap', () => {
