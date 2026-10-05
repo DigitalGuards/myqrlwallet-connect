@@ -6,9 +6,12 @@
 export {
   SCHEME_VERSION_MSG,
   SCHEME_VERSION_TYPED,
+  SCHEME_VERSION_TYPED_V2,
   SCHEME_TAG_MSG,
   SCHEME_TAG_TYPED,
+  SCHEME_TAG_TYPED_V2,
   DIGEST_LEN,
+  type TypedDataSchemeVersion,
 } from './ctx.js';
 
 export { computeMessageDigest } from './messageDigest.js';
@@ -19,6 +22,8 @@ export {
   hashStruct,
   encodeField,
   computeTypedDataDigest,
+  typedDataSchemeVersion,
+  typedDataSchemeTag,
   TYPED_DATA_LIMITS,
   type TypedDataPayload,
   type TypeMap,

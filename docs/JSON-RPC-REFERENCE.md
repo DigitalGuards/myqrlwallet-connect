@@ -131,10 +131,9 @@ Signing uses `ctx = utf8("QRL-SIGN-MSG-v1")` and FIPS 204 §3.4 randomized (hedg
 
 ### qrl_signTypedData
 
-QIP-55 status: temporarily unavailable. The provider validates the signer and
-account authorization, then rejects the request locally before relay use. The
-historical `QRL-SIGN-TYPED-v1` preimage fixes an address at 20 bytes in one
-32-byte word, so it cannot represent a 64-byte QIP-55 address.
+Signs EIP-712-shaped structured data with ML-DSA-87. The provider checks the
+signer and account authorization and encodes the payload locally, so a
+malformed payload fails before using the relay.
 
 ```typescript
 const signer =
@@ -157,22 +156,54 @@ const payload = {
   },
 };
 
-// Rejects locally: qrl_signTypedData is unavailable for QIP-55 until the
-// 64-byte word encoding and signing scheme version are finalized.
-await provider.request({ method: 'qrl_signTypedData', params: [signer, payload] });
+const result = await provider.request({
+  method: 'qrl_signTypedData',
+  params: [signer, payload],
+});
+const ok = verifyTypedDataForSigner({
+  expectedSigner: signer,
+  descriptor: result.descriptor,
+  signature: result.signature,
+  publicKey: result.publicKey,
+  payload,
+  schemeVersion: result.schemeVersion,
+});
 ```
 
-The likely successor layout uses one 64-byte ABI word per typed value: native
-addresses occupy all 64 bytes, while `uint256` and `int256` remain in the low
-32 bytes. This layout still requires protocol ratification. The release must
-assign a new scheme version and context tag, update the wallet and SDK in
-lockstep, regenerate canonical fixtures, and decide how peers advertise the
-capability. Reusing the v1 tag with a different preimage would make the signed
-format ambiguous.
+Two schemes share one encoding and differ only in the size of the slot each
+atomic value (`address`, `bool`, `uintN`, `intN`, `bytesN`) occupies:
 
-The exported v1 digest and verifier helpers remain available for address-free
-payloads. They reject legacy Q + 40 addresses and unsupported QIP-55 address
-fields consistently with the wallet. Provider typed-data requests stay disabled.
+| Scheme | Slot | Used when |
+|---|---|---|
+| `QRL-SIGN-TYPED-v1` | 32 bytes | no `address` type is reachable from `QRLDomain` or the primary type |
+| `QRL-SIGN-TYPED-v2` | 64 bytes, one QRVM word | an `address` type (including address arrays) is reachable |
+
+In v2 a 64-byte QIP-55 address fills its slot; `uintN` is zero-extended and
+`intN` sign-extended over 512 bits; `bool` and `address` are left-padded and
+`bytesN` right-padded. Strings, `bytes`, arrays, nested structs and type
+hashes are 64-byte SHAKE256 digests in both schemes. The digest is
+`SHAKE256(scheme || hashStruct(QRLDomain) || hashStruct(primaryType), 64)`
+and the scheme string is also the ML-DSA-87 `ctx`, so a signature made under
+one scheme never verifies under the other.
+
+The scheme follows from the payload's types alone (`typedDataSchemeVersion`),
+so wallet and dApp agree without negotiating, and address-free payloads keep
+their v1 digests. It belongs to the whole payload: an address-free struct is
+hashed with 64-byte slots when the domain or another struct has an address,
+so a verifier that hashes structs on its own must use the payload's scheme
+(`hashStruct` and `encodeField` default to the scheme their type map
+selects). A wallet that predates v2 rejects address-bearing payloads with
+"qrl_signTypedData v1 does not support QIP-55 address fields" and still
+signs address-free ones under v1.
+
+v2 is defined by this SDK and the MyQRLWallet wallets, and v2 keeps v1's type
+widths (`uint8` to `uint256`, `bytes1` to `bytes32`). If a later QRL standard
+defines typed data differently, it gets its own scheme tag; signatures made
+under v2 stay verifiable as v2. `scripts/typed-data-reference.py`
+recomputes the canonical vectors independently of the codec. The response's `schemeVersion`
+names the scheme used; pass it to `verifyTypedDataForSigner`, which rejects a
+response whose claimed scheme differs from the one the payload selects.
+Legacy Q + 40 addresses are rejected under both schemes.
 
 ### Removed in v3.0.0
 

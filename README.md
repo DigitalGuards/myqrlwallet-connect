@@ -9,8 +9,9 @@ Account validation and message-signature verification use the complete 64-byte
 address. Applications using legacy 20-byte addresses must remain on version 4
 until their network and wallet support QIP-55.
 
-Wallet typed-data requests are disabled pending a versioned 64-byte address
-encoding. The local verifier remains available for address-free typed data.
+`qrl_signTypedData` signs payloads with QIP-55 address fields under
+`QRL-SIGN-TYPED-v2` (one 64-byte word per value); address-free payloads keep
+`QRL-SIGN-TYPED-v1`. See docs/JSON-RPC-REFERENCE.md.
 The private v3 network is a test network; its availability does not establish
 compatibility with legacy deployments or contracts.
 
@@ -173,16 +174,16 @@ The main class. Creates a connection manager and EIP-1193 provider.
 **Require user approval:**
 `qrl_requestAccounts`, `qrl_sendTransaction`, `qrl_signTransaction`, `qrl_signMessage`, `qrl_signTypedData`, `wallet_switchQrlChain`
 
-`qrl_signMessage` uses SHAKE256 plus native ML-DSA-87 ctx and returns a rich `{ signature, publicKey, descriptor, signer, digest, schemeVersion }` object. During the QIP-55 port, `qrl_signTypedData` stays in the approval policy and fails locally before relay use. Its v1 encoding fixes addresses to a 32-byte slot, so a new 64-byte encoding needs a new scheme version and regenerated wallet parity vectors.
+`qrl_signMessage` and `qrl_signTypedData` use SHAKE256 plus native ML-DSA-87 ctx and return a rich `{ signature, publicKey, descriptor, signer, digest, schemeVersion }` object (typed data also echoes `domain`). Typed data with QIP-55 address fields is signed under `QRL-SIGN-TYPED-v2`, address-free typed data under `QRL-SIGN-TYPED-v1`.
 
 `request()` returns `unknown`. First validate the exact response shape with
 `isQrlSignedMessageResult` or `isQrlSignedTypedDataResult`, then require
 `hasSigningDescriptor`. PQP3 authenticates the paired transport session. It
 does not prove that the returned ML-DSA signature is valid or that its public
 key belongs to the claimed signer. Authentication and authorization flows must
-call `verifyMessageForSigner` or the historical v1 `verifyTypedDataForSigner`
-with the original challenge or payload and the expected QIP-55 Q + 128 hex
-address.
+call `verifyMessageForSigner` or `verifyTypedDataForSigner` (pass the
+response's `schemeVersion`) with the original challenge or payload and the
+expected QIP-55 Q + 128 hex address.
 
 The lower-level `verifyMessageSignature` / `verifyTypedDataSignature` helpers
 verify only the supplied key and signature; they do not prove that the key

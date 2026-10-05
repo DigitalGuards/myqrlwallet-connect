@@ -22,6 +22,7 @@ import {
   ML_DSA_DESCRIPTOR_BYTES,
   ML_DSA_87_PUBLIC_KEY_BYTES,
   ML_DSA_87_SIGNATURE_BYTES,
+  SCHEME_VERSION_TYPED,
   typeHash,
   verifyMessage,
   verifyMessageForSigner,
@@ -93,11 +94,19 @@ describe('SDK ↔ wallet parity', () => {
     for (const v of canonical.typedVectors) {
       expect(encodeType(v.payload.primaryType, v.payload.types)).toBe(v.encodeTypeString);
       expect(bytesToHex(typeHash(v.payload.primaryType, v.payload.types))).toBe(v.typeHashHex);
-      expect(bytesToHex(hashStruct('QRLDomain', v.payload.domain, v.payload.types))).toBe(
-        v.domainHashHex
-      );
+      // These vectors are v1 history; their address fields would select v2.
+      expect(
+        bytesToHex(hashStruct('QRLDomain', v.payload.domain, v.payload.types, SCHEME_VERSION_TYPED))
+      ).toBe(v.domainHashHex);
       expect(() =>
-        bytesToHex(hashStruct(v.payload.primaryType, v.payload.message, v.payload.types))
+        bytesToHex(
+          hashStruct(
+            v.payload.primaryType,
+            v.payload.message,
+            v.payload.types,
+            SCHEME_VERSION_TYPED
+          )
+        )
       ).toThrow(/invalid Q-address/);
       expect(() => computeTypedDataDigest(v.payload)).toThrow(/invalid Q-address/);
     }

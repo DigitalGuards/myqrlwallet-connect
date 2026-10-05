@@ -14,7 +14,7 @@ import {
   REQUEST_TIMEOUT_MS,
   STORAGE_KEY_PREFIX,
 } from './config.js';
-import { TYPED_DATA_LIMITS } from './signing/typedData.js';
+import { computeTypedDataDigest, TYPED_DATA_LIMITS } from './signing/typedData.js';
 import { log, warn } from './utils/logger.js';
 import { isMobileBrowser, getAppStoreUrl, attemptWalletRedirect } from './utils/platform.js';
 import { setDebug } from './utils/logger.js';
@@ -229,9 +229,11 @@ function validateRestrictedRequest(
   if (params[0] !== authorizedAccount) {
     throw new Error('qrl_signTypedData signer is not the authorized account');
   }
-  throw new Error(
-    'qrl_signTypedData is unavailable for QIP-55 until the 64-byte word encoding and signing scheme version are finalized'
-  );
+  // Encode the payload locally so one the wallet would refuse (unknown or
+  // cyclic types, bad values, limits) fails here without using the relay.
+  // QIP-55 address fields select QRL-SIGN-TYPED-v2; see signing/typedData.ts.
+  computeTypedDataDigest(params[1]);
+  return undefined;
 }
 
 function requiresAuthorizedAccount(method: string): boolean {

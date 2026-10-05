@@ -147,8 +147,8 @@ export interface EIP6963ProviderInfoOverride {
 }
 
 /**
- * Rich response object returned by `qrl_signMessage` and retained for locked
- * `qrl_signTypedData` v1 fixtures. The signature alone is not enough to
+ * Rich response object returned by `qrl_signMessage` and
+ * `qrl_signTypedData`. The signature alone is not enough to
  * verify since ML-DSA-87 public keys cannot be recovered from a signature,
  * so the wallet returns the public key explicitly. Stateless verifiers need
  * the original payload plus the signature fields below.
@@ -168,7 +168,7 @@ export interface QrlSignedResult {
   signer: string;
   /** 0x-hex of the 64-byte SHAKE256 digest that was signed. */
   digest: string;
-  /** Scheme tag: 'QRL-SIGN-MSG-v1' or 'QRL-SIGN-TYPED-v1'. */
+  /** Scheme tag: 'QRL-SIGN-MSG-v1', 'QRL-SIGN-TYPED-v1' or 'QRL-SIGN-TYPED-v2'. */
   schemeVersion: QrlSigningSchemeVersion;
 }
 
@@ -177,7 +177,7 @@ export interface QrlSignedResultWithDescriptor extends QrlSignedResult {
   descriptor: string;
 }
 
-export type QrlSigningSchemeVersion = 'QRL-SIGN-MSG-v1' | 'QRL-SIGN-TYPED-v1';
+export type QrlSigningSchemeVersion = 'QRL-SIGN-MSG-v1' | 'QRL-SIGN-TYPED-v1' | 'QRL-SIGN-TYPED-v2';
 
 /** Strict wire shape returned by `qrl_signMessage`. */
 export interface QrlSignedMessageResult extends QrlSignedResult {
@@ -185,11 +185,13 @@ export interface QrlSignedMessageResult extends QrlSignedResult {
 }
 
 /**
- * Historical v1 response from `qrl_signTypedData`. It echoes `domain` so a
- * stateless verifier does not need to be told the domain out-of-band.
+ * Response from `qrl_signTypedData`. It echoes `domain` so a stateless
+ * verifier does not need to be told the domain out-of-band. The scheme is
+ * v2 when the payload's types reach an `address` field and v1 otherwise;
+ * pass `schemeVersion` to `verifyTypedDataForSigner` to have it checked.
  */
 export interface QrlSignedTypedDataResult extends QrlSignedResult {
-  schemeVersion: 'QRL-SIGN-TYPED-v1';
+  schemeVersion: 'QRL-SIGN-TYPED-v1' | 'QRL-SIGN-TYPED-v2';
   domain: Record<string, unknown>;
 }
 
@@ -284,7 +286,8 @@ export function isQrlSignedTypedDataResult(value: unknown): value is QrlSignedTy
       : TYPED_RESULT_KEYS;
     return (
       hasExactOwnKeys(value, keys) &&
-      value.schemeVersion === 'QRL-SIGN-TYPED-v1' &&
+      (value.schemeVersion === 'QRL-SIGN-TYPED-v1' ||
+        value.schemeVersion === 'QRL-SIGN-TYPED-v2') &&
       isSigningResultRecord(value.domain) &&
       hasValidSigningFields(value)
     );
@@ -324,10 +327,9 @@ export function hasSigningDescriptor(
 export type QrlSignMessageParams = [string, string];
 
 /**
- * Reserved `qrl_signTypedData` params: `[signer, payload]`. This interface
- * describes the historical v1 payload retained by the verifier exports. The
- * QIP-55 provider rejects requests until a versioned 64-byte encoding is
- * defined.
+ * `qrl_signTypedData` params: `[signer, payload]`. A payload whose types
+ * reach an `address` field is signed under QRL-SIGN-TYPED-v2, any other
+ * under v1.
  */
 export interface QrlTypedDataPayload {
   types: Record<string, readonly { name: string; type: string }[]>;

@@ -10,9 +10,14 @@
 
 import { mldsaVerify, shake256Digest } from '../crypto/primitives.js';
 import { isCurrentQrlAddress, qip55AddressFromBytes, QRL_ADDRESS_BYTES } from '../config.js';
-import { SCHEME_TAG_MSG, SCHEME_TAG_TYPED } from './ctx.js';
+import { SCHEME_TAG_MSG } from './ctx.js';
 import { computeMessageDigest } from './messageDigest.js';
-import { computeTypedDataDigest, type TypedDataPayload } from './typedData.js';
+import {
+  computeTypedDataDigest,
+  typedDataSchemeTag,
+  typedDataSchemeVersion,
+  type TypedDataPayload,
+} from './typedData.js';
 import { concatBytes, hexToBytes } from './bytes.js';
 
 const ML_DSA_87_DESCRIPTOR_TYPE = 1;
@@ -55,10 +60,17 @@ function verifyMessageBytes(
 function verifyTypedDataBytes(
   signature: Uint8Array,
   publicKey: Uint8Array,
-  payload: TypedDataPayload
+  payload: TypedDataPayload,
+  claimedSchemeVersion: string | undefined
 ): boolean {
+  // The payload's types decide the scheme. A wallet response that claims
+  // another one is inconsistent and fails.
+  const schemeVersion = typedDataSchemeVersion(payload);
+  if (claimedSchemeVersion !== undefined && claimedSchemeVersion !== schemeVersion) {
+    return false;
+  }
   const digest = computeTypedDataDigest(payload);
-  return mldsaVerify(signature, digest, publicKey, SCHEME_TAG_TYPED);
+  return mldsaVerify(signature, digest, publicKey, typedDataSchemeTag(schemeVersion));
 }
 
 export interface VerifyMessageParams {
@@ -93,6 +105,11 @@ export interface VerifyTypedDataParams {
   signature: Uint8Array | string;
   publicKey: Uint8Array | string;
   payload: TypedDataPayload;
+  /**
+   * The `schemeVersion` from the wallet response. Optional: the payload's
+   * types decide the scheme, and a supplied value must match it.
+   */
+  schemeVersion?: string | undefined;
 }
 
 /**
@@ -104,12 +121,13 @@ export function verifyTypedDataSignature({
   signature,
   publicKey,
   payload,
+  schemeVersion,
 }: VerifyTypedDataParams): boolean {
   try {
     const sig = fixedBytesOrHex(signature, ML_DSA_87_SIGNATURE_BYTES);
     const pk = fixedBytesOrHex(publicKey, ML_DSA_87_PUBLIC_KEY_BYTES);
     if (!sig || !pk) return false;
-    return verifyTypedDataBytes(sig, pk, payload);
+    return verifyTypedDataBytes(sig, pk, payload, schemeVersion);
   } catch {
     return false;
   }
@@ -174,6 +192,7 @@ export function verifyTypedDataForSigner({
   signature,
   publicKey,
   payload,
+  schemeVersion,
 }: VerifyTypedDataForSignerParams): boolean {
   try {
     if (descriptor === undefined) return false;
@@ -183,7 +202,7 @@ export function verifyTypedDataForSigner({
     if (!descriptorBytes || !publicKeyBytes || !signatureBytes) return false;
     return (
       publicKeyMatchesSigner(expectedSigner, descriptorBytes, publicKeyBytes) &&
-      verifyTypedDataBytes(signatureBytes, publicKeyBytes, payload)
+      verifyTypedDataBytes(signatureBytes, publicKeyBytes, payload, schemeVersion)
     );
   } catch {
     return false;
