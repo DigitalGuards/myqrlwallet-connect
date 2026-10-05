@@ -591,27 +591,30 @@ describe('QRLConnectProvider', () => {
       await expect(next).resolves.toEqual({ signature: '0xsig' });
     });
 
-    it('keeps QIP-55 typed data fail closed until its 64-byte scheme is versioned', async () => {
+    it('sends QIP-55 typed data to the wallet (QRL-SIGN-TYPED-v2)', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
+      const payload = {
+        types: {
+          QRLDomain: [{ name: 'name', type: 'string' }],
+          Payload: [{ name: 'account', type: 'address' }],
+        },
+        primaryType: 'Payload',
+        domain: { name: 'Security test' },
+        message: { account: ADDRESS_A },
+      };
 
-      await expect(
-        provider.request({
-          method: 'qrl_signTypedData',
-          params: [
-            ADDRESS_A,
-            {
-              types: {
-                QRLDomain: [{ name: 'name', type: 'string' }],
-                Payload: [{ name: 'account', type: 'address' }],
-              },
-              primaryType: 'Payload',
-              domain: { name: 'Security test' },
-              message: { account: ADDRESS_A },
-            },
-          ],
-        })
-      ).rejects.toThrow('unavailable for QIP-55');
-      expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
+      const pending = provider.request({
+        method: 'qrl_signTypedData',
+        params: [ADDRESS_A, payload],
+      });
+      await vi.waitFor(() => {
+        expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
+      });
+      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      expect(wire.method).toBe('qrl_signTypedData');
+      expect(wire.params).toEqual([ADDRESS_A, payload]);
+      mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: { signed: true } });
+      await expect(pending).resolves.toEqual({ signed: true });
     });
 
     it('should enforce current Q-address and message-size rules before signing', async () => {
@@ -681,7 +684,7 @@ describe('QRLConnectProvider', () => {
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
 
-    it('rejects QIP-55 typed data before it enters the restricted request queue', async () => {
+    it('rejects malformed typed data before it enters the restricted request queue', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       const first = provider.request({
         method: 'qrl_sendTransaction',
@@ -695,7 +698,7 @@ describe('QRLConnectProvider', () => {
             {
               types: {
                 QRLDomain: [{ name: 'name', type: 'string' }],
-                Payload: [{ name: 'value', type: 'uint8' }],
+                Payload: [{ name: 'value', type: 'Missing' }],
               },
               primaryType: 'Payload',
               domain: { name: 'Security test' },
@@ -703,7 +706,7 @@ describe('QRLConnectProvider', () => {
             },
           ],
         })
-      ).rejects.toThrow('signing scheme version');
+      ).rejects.toThrow('unknown type');
       expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
 
       const firstWire = mockCM.sendJsonRpc.mock.calls[0][0];
