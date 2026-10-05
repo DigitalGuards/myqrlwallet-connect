@@ -447,8 +447,8 @@
     </div>
     <div id="sign-result" class="result-box hidden"></div>
 
-    <label for="sign-typed-payload" style="margin-top: 1rem;">Typed-data payload (currently unsupported)</label>
-    <p class="hint">QRL address fields need a versioned 64-byte encoding. This local check never sends a signing request. The zero contract is an undeployed placeholder.</p>
+    <label for="sign-typed-payload" style="margin-top: 1rem;">Typed-data payload (qrl_signTypedData)</label>
+    <p class="hint">Address fields are signed under QRL-SIGN-TYPED-v2, one 64-byte word per value; address-free payloads stay on v1. The zero contract is an undeployed placeholder.</p>
     <textarea
       id="sign-typed-payload"
       rows="14"
@@ -456,7 +456,7 @@
       style="font-family: var(--mono); font-size: 0.85rem; width: 100%; resize: vertical;"
     ></textarea>
     <div class="btn-row">
-      <button id="btn-sign-typed" disabled>Test Typed-Data Rejection</button>
+      <button id="btn-sign-typed" disabled>Sign Typed Data</button>
     </div>
     <div id="sign-typed-result" class="result-box hidden"></div>
   </div>

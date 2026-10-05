@@ -3,7 +3,8 @@ import {
   ConnectionStatus,
   QRL_CONNECT_PROVIDER_INFO,
   verifyMessageForSigner,
-  computeTypedDataDigest,
+  verifyTypedDataForSigner,
+  typedDataSchemeVersion,
   isCurrentQrlAddress,
   bytesToHex,
   formatQrlAddressFingerprint,
@@ -14,7 +15,7 @@ import {
 // never loads the pairing modal, so the QR encoder stays out of the bundle.
 import { groupMyQrlWallet } from '@qrlwallet/connect-ui/wallets';
 import QRCode from 'qrcode';
-import { canonicalChainId, makeTypedRejectionPayload, parseQuanta } from './demo-utils.js';
+import { canonicalChainId, makeTypedDemoPayload, parseQuanta } from './demo-utils.js';
 
 // ─── Config ──────────────────────────────────────────────
 // Local dev override: set VITE_RELAY_URL before `vite` (e.g. via
@@ -928,25 +929,64 @@ btnSign.addEventListener('click', async () => {
   }
 });
 
-// Typed data with QRL address fields has no qualified wallet signing format.
+// The default payload carries QIP-55 address fields, so it signs under
+// QRL-SIGN-TYPED-v2; an address-free payload signs under v1.
 function refreshTypedPlaceholder() {
-  signTypedInput.value = JSON.stringify(makeTypedRejectionPayload(connectedAccount, connectedChainId), null, 2);
+  signTypedInput.value = JSON.stringify(makeTypedDemoPayload(connectedAccount, connectedChainId), null, 2);
 }
 refreshTypedPlaceholder();
 
 // Manual edits survive account or chain changes.
 signTypedInput.addEventListener('input', () => { typedEdited = true; });
 
-btnSignTyped.addEventListener('click', () => {
-  signTypedResult.classList.remove('hidden');
+// ─── Sign Typed Data (qrl_signTypedData v1/v2) ───────────
+btnSignTyped.addEventListener('click', async () => {
+  const provider = activeProvider;
+  const signer = connectedAccount;
+  if (!provider || !isCurrentQrlAddress(signer)) return;
+
+  let payload;
+  let scheme;
   try {
-    const payload = JSON.parse(signTypedInput.value);
-    computeTypedDataDigest(payload);
-    signTypedResult.textContent = 'This payload can be encoded locally, but typed-data wallet requests are unavailable. No signing request was sent.';
-    log('Typed-data wallet requests are unavailable; no signing request was sent.', 'info');
+    payload = JSON.parse(signTypedInput.value);
+    // Encodes the payload locally, so a malformed one is caught here.
+    scheme = typedDataSchemeVersion(payload);
   } catch (error) {
-    signTypedResult.textContent = `Local rejection: ${error.message}\nNo signing request was sent.`;
-    log(`Local typed-data rejection: ${error.message}`, 'info');
+    signTypedResult.textContent = `Invalid typed data: ${error.message}\nNo signing request was sent.`;
+    signTypedResult.classList.remove('hidden');
+    log(`Invalid typed data: ${error.message}`, 'error');
+    return;
+  }
+
+  btnSignTyped.disabled = true;
+  btnSignTyped.textContent = 'Waiting for approval...';
+  signTypedResult.classList.add('hidden');
+  log(`Requesting qrl_signTypedData (${scheme}) for ${payload.primaryType}`, 'info');
+
+  try {
+    const result = await provider.request({
+      method: 'qrl_signTypedData',
+      params: [signer, payload],
+    });
+    log('Wallet returned a signed typed-data response', 'success');
+
+    const ok = isCurrentQrlAddress(result.signer) && result.signer.toLowerCase() === signer.toLowerCase() && verifyTypedDataForSigner({
+      expectedSigner: signer,
+      descriptor: result.descriptor,
+      signature: result.signature,
+      publicKey: result.publicKey,
+      payload,
+      schemeVersion: result.schemeVersion,
+    });
+    log(`Local signer-bound verification: ${ok ? 'OK' : 'FAILED'}`, ok ? 'success' : 'error');
+    renderSignResultCard(signTypedResult, result, ok);
+  } catch (err) {
+    log(`qrl_signTypedData failed: ${err.message}`, 'error');
+    signTypedResult.textContent = `Error: ${err.message}`;
+    signTypedResult.classList.remove('hidden');
+  } finally {
+    btnSignTyped.disabled = !activeProvider;
+    btnSignTyped.textContent = 'Sign Typed Data';
   }
 });
 

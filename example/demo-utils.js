@@ -20,8 +20,11 @@ export function canonicalChainId(value) {
   return `0x${BigInt(value).toString(16)}`;
 }
 
-/** Unsupported address-bearing typed data, used only by the local rejection probe. */
-export function makeTypedRejectionPayload(account, chainId, now = Date.now()) {
+/**
+ * Typed data with QIP-55 address fields, so the wallet signs it under
+ * QRL-SIGN-TYPED-v2. The zero contract is an undeployed placeholder.
+ */
+export function makeTypedDemoPayload(account, chainId, now = Date.now()) {
   return {
     types: {
       QRLDomain: [
@@ -38,7 +41,7 @@ export function makeTypedRejectionPayload(account, chainId, now = Date.now()) {
     },
     primaryType: 'ExampleIntent',
     domain: {
-      name: 'QRL Connect local rejection demo',
+      name: 'QRL Connect typed-data demo',
       version: '1',
       chainId: chainId ? BigInt(canonicalChainId(chainId)).toString() : DEFAULT_DEMO_CHAIN_ID,
       verifyingContract: QRL_ZERO_ADDRESS,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canonicalChainId,
-  makeTypedRejectionPayload,
+  makeTypedDemoPayload,
   parseQuanta,
   QRL_ZERO_ADDRESS,
 } from './demo-utils.js';
@@ -34,15 +34,15 @@ describe('example transaction values', () => {
 describe('example network and typed-data probe', () => {
   it('uses full-width addresses and the connected chain', () => {
     const account = `Q${'a'.repeat(128)}`;
-    const payload = makeTypedRejectionPayload(account, '0x301825', 0);
+    const payload = makeTypedDemoPayload(account, '0x301825', 0);
     expect(payload.domain.chainId).toBe('3151909');
     expect(payload.domain.verifyingContract).toBe(QRL_ZERO_ADDRESS);
     expect(QRL_ZERO_ADDRESS).toHaveLength(129);
     expect(payload.message.account).toBe(account);
-    expect(makeTypedRejectionPayload(account, '0x2a', 0).domain.chainId).toBe('42');
+    expect(makeTypedDemoPayload(account, '0x2a', 0).domain.chainId).toBe('42');
   });
   it('uses the private v3 example profile before connecting', () => {
-    expect(makeTypedRejectionPayload(null, null, 0).domain.chainId).toBe('3151909');
+    expect(makeTypedDemoPayload(null, null, 0).domain.chainId).toBe('3151909');
   });
   it.each(['0x0', '1337', '', null, '0x' + 'f'.repeat(65)])(
     'rejects an invalid wallet chain %s',
