@@ -188,8 +188,19 @@ one scheme never verifies under the other.
 
 The scheme follows from the payload's types alone (`typedDataSchemeVersion`),
 so wallet and dApp agree without negotiating, and address-free payloads keep
-their v1 digests. A wallet that predates v2 rejects address-bearing payloads
-and still signs address-free ones under v1. The response's `schemeVersion`
+their v1 digests. It belongs to the whole payload: an address-free struct is
+hashed with 64-byte slots when the domain or another struct has an address,
+so a verifier that hashes structs on its own must use the payload's scheme
+(`hashStruct` and `encodeField` default to the scheme their type map
+selects). A wallet that predates v2 rejects address-bearing payloads with
+"qrl_signTypedData v1 does not support QIP-55 address fields" and still
+signs address-free ones under v1.
+
+v2 is defined by this SDK and the MyQRLWallet wallets, and v2 keeps v1's type
+widths (`uint8` to `uint256`, `bytes1` to `bytes32`). If a later QRL standard
+defines typed data differently, it gets its own scheme tag; signatures made
+under v2 stay verifiable as v2. `scripts/typed-data-reference.py`
+recomputes the canonical vectors independently of the codec. The response's `schemeVersion`
 names the scheme used; pass it to `verifyTypedDataForSigner`, which rejects a
 response whose claimed scheme differs from the one the payload selects.
 Legacy Q + 40 addresses are rejected under both schemes.

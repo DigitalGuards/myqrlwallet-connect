@@ -61,6 +61,7 @@ export {
   SCHEME_TAG_TYPED_V2,
   DIGEST_LEN,
   typedDataSchemeVersion,
+  typedDataSchemeTag,
   type TypedDataSchemeVersion,
   type TypedDataPayload,
   type TypeMap,

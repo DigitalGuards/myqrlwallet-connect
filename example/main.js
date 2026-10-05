@@ -5,6 +5,8 @@ import {
   verifyMessageForSigner,
   verifyTypedDataForSigner,
   typedDataSchemeVersion,
+  isQrlSignedTypedDataResult,
+  hasSigningDescriptor,
   isCurrentQrlAddress,
   bytesToHex,
   formatQrlAddressFingerprint,
@@ -949,7 +951,8 @@ btnSignTyped.addEventListener('click', async () => {
   let scheme;
   try {
     payload = JSON.parse(signTypedInput.value);
-    // Encodes the payload locally, so a malformed one is caught here.
+    // Validates the payload's shape and types and picks the scheme. The
+    // provider encodes every value before sending, so bad values fail there.
     scheme = typedDataSchemeVersion(payload);
   } catch (error) {
     signTypedResult.textContent = `Invalid typed data: ${error.message}\nNo signing request was sent.`;
@@ -970,7 +973,8 @@ btnSignTyped.addEventListener('click', async () => {
     });
     log('Wallet returned a signed typed-data response', 'success');
 
-    const ok = isCurrentQrlAddress(result.signer) && result.signer.toLowerCase() === signer.toLowerCase() && verifyTypedDataForSigner({
+    // Check the exact wire shape and the descriptor first, then verify.
+    const ok = isQrlSignedTypedDataResult(result) && hasSigningDescriptor(result) && isCurrentQrlAddress(result.signer) && result.signer.toLowerCase() === signer.toLowerCase() && verifyTypedDataForSigner({
       expectedSigner: signer,
       descriptor: result.descriptor,
       signature: result.signature,

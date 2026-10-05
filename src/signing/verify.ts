@@ -10,15 +10,11 @@
 
 import { mldsaVerify, shake256Digest } from '../crypto/primitives.js';
 import { isCurrentQrlAddress, qip55AddressFromBytes, QRL_ADDRESS_BYTES } from '../config.js';
-import {
-  SCHEME_TAG_MSG,
-  SCHEME_TAG_TYPED,
-  SCHEME_TAG_TYPED_V2,
-  SCHEME_VERSION_TYPED_V2,
-} from './ctx.js';
+import { SCHEME_TAG_MSG } from './ctx.js';
 import { computeMessageDigest } from './messageDigest.js';
 import {
   computeTypedDataDigest,
+  typedDataSchemeTag,
   typedDataSchemeVersion,
   type TypedDataPayload,
 } from './typedData.js';
@@ -74,8 +70,7 @@ function verifyTypedDataBytes(
     return false;
   }
   const digest = computeTypedDataDigest(payload);
-  const tag = schemeVersion === SCHEME_VERSION_TYPED_V2 ? SCHEME_TAG_TYPED_V2 : SCHEME_TAG_TYPED;
-  return mldsaVerify(signature, digest, publicKey, tag);
+  return mldsaVerify(signature, digest, publicKey, typedDataSchemeTag(schemeVersion));
 }
 
 export interface VerifyMessageParams {
