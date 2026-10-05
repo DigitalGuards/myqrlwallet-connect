@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-10-05
+
+### Added
+
+- Typed-data signing for QIP-55 addresses: scheme `QRL-SIGN-TYPED-v2`. Every
+  atomic value occupies one 64-byte slot (one QRVM word), so a 64-byte address
+  fits; `uintN` is zero-extended and `intN` sign-extended over 512 bits, `bool`
+  and `address` are left-padded, `bytesN` right-padded. Strings, `bytes`,
+  arrays, structs and type hashes stay 64-byte SHAKE256 digests. A payload
+  uses v2 exactly when an `address` type is reachable from `QRLDomain` or the
+  primary type; address-free payloads keep their v1 digests. The scheme
+  string is in the digest preimage and the ML-DSA-87 ctx.
+- `typedDataSchemeVersion(payload)`, `typedDataSchemeTag(version)`,
+  `SCHEME_VERSION_TYPED_V2`, `SCHEME_TAG_TYPED_V2` and the
+  `TypedDataSchemeVersion` type.
+- `verifyTypedDataSignature` / `verifyTypedDataForSigner` accept an optional
+  `schemeVersion` (pass the wallet response's) and reject a response whose
+  claimed scheme differs from the one the payload selects.
+  `isQrlSignedTypedDataResult` accepts `QRL-SIGN-TYPED-v2`.
+- `scripts/typed-data-reference.py`: an independent reference implementation
+  that recomputes the canonical vectors.
+
+### Changed
+
+- `qrl_signTypedData` requests are sent to the wallet again. The provider
+  encodes the payload locally first, so a malformed payload still fails before
+  using the relay. Wallets without v2 reject address-bearing payloads and
+  still sign address-free ones under v1.
+- `hashStruct` and `encodeField` default to the scheme their type map selects
+  (v2 when any struct has an address field); pass a scheme to override.
+
 ## [5.0.3] - 2026-09-26 (connect-ui 0.3.0)
 
 ### Security
