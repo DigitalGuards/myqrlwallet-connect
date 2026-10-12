@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Typed-data validation no longer runs in quadratic time on long field types.
+  The array-suffix scan in `baseTypeName` used the regex `(\[\d*\])+$`, which a
+  dApp-supplied field type such as `uint8` followed by thousands of `[]` drove
+  into minutes of work before the 128-character cap applied. Field types are
+  now length-checked first and the scan is linear. Results are identical for
+  every type within the cap: canonical vectors, schemes and digests are
+  unchanged.
+- Error messages built from untrusted typed-data input echo at most a short
+  prefix plus the length.
+
+### Changed
+
+- `encodeType`, `typeHash`, `hashStruct` and `encodeField` now reject a type
+  map in which any struct, reachable or not, has a field type longer than 128
+  characters (`field type too long`). They previously accepted such maps when
+  the long type sat in a struct the primary type does not reach.
+  `computeTypedDataDigest` and `typedDataSchemeVersion` are unaffected, since
+  payload validation already rejected those maps.
+
 ## [5.1.0] - 2026-10-05
 
 ### Added

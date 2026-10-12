@@ -151,22 +151,26 @@ function consumeValue(budget: EncodingBudget): void {
   if (budget.remainingValues < 0) throw new Error('typed data contains too many encoded values');
 }
 
+function inputPreview(value: string): string {
+  return value.length > 32 ? `${value.slice(0, 32)}... (length ${value.length})` : value;
+}
+
 function assertIdentifier(value: string, label: string): void {
   if (
     !IDENTIFIER_RE.test(value) ||
     value.length > TYPED_DATA_LIMITS.maxIdentifierLength ||
     UNSAFE_OBJECT_KEYS.has(value)
   ) {
-    throw new Error(`invalid ${label}: ${value}`);
+    throw new Error(`invalid ${label}: ${inputPreview(value)}`);
   }
 }
 
 function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind {
   if (depth > TYPED_DATA_LIMITS.maxArrayNesting) {
-    throw new Error(`type nesting too deep: ${type}`);
+    throw new Error(`type nesting too deep: ${inputPreview(type)}`);
   }
   if (type.length > TYPED_DATA_LIMITS.maxFieldTypeLength) {
-    throw new Error(`field type too long: ${type}`);
+    throw new Error(`field type too long: ${inputPreview(type)}`);
   }
   const m = ATOMIC_RE.exec(type);
   if (m) {
@@ -177,14 +181,14 @@ function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind 
     if (intKind) {
       const width = Number(intWidthStr);
       if (!Number.isInteger(width) || width < 8 || width > 256 || width % 8 !== 0) {
-        throw new Error(`invalid int width: ${type}`);
+        throw new Error(`invalid int width: ${inputPreview(type)}`);
       }
       return { kind: intKind === 'uint' ? 'uintN' : 'intN', width };
     }
     if (bytesWidthStr) {
       const width = Number(bytesWidthStr);
       if (!Number.isInteger(width) || width < 1 || width > 32) {
-        throw new Error(`invalid bytesN width: ${type}`);
+        throw new Error(`invalid bytesN width: ${inputPreview(type)}`);
       }
       return { kind: 'bytesN', width };
     }
@@ -193,7 +197,7 @@ function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind 
       if (sizeStr) {
         const size = Number(sizeStr);
         if (!Number.isSafeInteger(size) || size <= 0 || size > TYPED_DATA_LIMITS.maxArrayLength) {
-          throw new Error(`invalid array size: ${type}`);
+          throw new Error(`invalid array size: ${inputPreview(type)}`);
         }
         return { kind: 'array', inner: innerType, size };
       }
@@ -203,7 +207,7 @@ function parseFieldType(type: FieldType, types: TypeMap, depth = 0): AtomicKind 
   if (Object.prototype.hasOwnProperty.call(types, type)) {
     return { kind: 'ref', name: type };
   }
-  throw new Error(`unknown type: ${type}`);
+  throw new Error(`unknown type: ${inputPreview(type)}`);
 }
 
 function isReservedAtomicTypeName(name: string): boolean {
@@ -221,26 +225,37 @@ function isReservedAtomicTypeName(name: string): boolean {
   return false;
 }
 
-function baseTypeName(type: FieldType): string {
-  return type.replace(/(\[\d*\])+$/, '');
+export function baseTypeName(type: FieldType): string {
+  let end = type.length;
+  while (end > 0 && type[end - 1] === ']') {
+    let start = end - 2;
+    while (start >= 0) {
+      const code = type.charCodeAt(start);
+      if (code < 48 || code > 57) break;
+      start--;
+    }
+    if (start < 0 || type[start] !== '[') break;
+    end = start;
+  }
+  return type.slice(0, end);
 }
 
 function collectDependencies(primary: string, types: TypeMap): Set<string> {
   if (!Object.prototype.hasOwnProperty.call(types, primary)) {
-    throw new Error(`unknown primary type: ${primary}`);
+    throw new Error(`unknown primary type: ${inputPreview(primary)}`);
   }
   const visited = new Set<string>();
   const visit = (name: string, path: string[]): void => {
     if (path.length > TYPED_DATA_LIMITS.maxTypeGraphDepth) {
-      throw new Error(`type graph nesting too deep: ${[...path, name].join(' -> ')}`);
+      throw new Error(`type graph nesting too deep: ${inputPreview([...path, name].join(' -> '))}`);
     }
     if (path.includes(name)) {
-      throw new Error(`cyclic type reference: ${[...path, name].join(' -> ')}`);
+      throw new Error(`cyclic type reference: ${inputPreview([...path, name].join(' -> '))}`);
     }
     if (visited.has(name)) return;
     visited.add(name);
     const def = types[name];
-    if (!def) throw new Error(`unknown type: ${name}`);
+    if (!def) throw new Error(`unknown type: ${inputPreview(name)}`);
     for (const f of def) {
       const base = baseTypeName(f.type);
       if (Object.prototype.hasOwnProperty.call(types, base)) {
@@ -264,7 +279,7 @@ function validateTypeMap(types: TypeMap): void {
   for (const [name, def] of entries) {
     assertIdentifier(name, 'struct name');
     if (name !== 'QRLDomain' && isReservedAtomicTypeName(name)) {
-      throw new Error(`struct name is reserved by an atomic type: ${name}`);
+      throw new Error(`struct name is reserved by an atomic type: ${inputPreview(name)}`);
     }
     const defUnknown: unknown = def;
     if (
@@ -272,7 +287,7 @@ function validateTypeMap(types: TypeMap): void {
       def.length === 0 ||
       def.length > TYPED_DATA_LIMITS.maxFieldsPerType
     ) {
-      throw new Error(`empty or invalid struct: ${name}`);
+      throw new Error(`empty or invalid struct: ${inputPreview(name)}`);
     }
     totalFields += def.length;
     if (totalFields > TYPED_DATA_LIMITS.maxTotalFields) {
@@ -281,14 +296,17 @@ function validateTypeMap(types: TypeMap): void {
     const seen = new Set<string>();
     for (const f of def) {
       if (!f || typeof f.name !== 'string' || !f.name) {
-        throw new Error(`bad field in ${name}`);
+        throw new Error(`bad field in ${inputPreview(name)}`);
       }
-      assertIdentifier(f.name, `field name in ${name}`);
+      assertIdentifier(f.name, `field name in ${inputPreview(name)}`);
       if (typeof f.type !== 'string' || !f.type) {
-        throw new Error(`bad field type in ${name}.${f.name}`);
+        throw new Error(`bad field type in ${inputPreview(name)}.${inputPreview(f.name)}`);
+      }
+      if (f.type.length > TYPED_DATA_LIMITS.maxFieldTypeLength) {
+        throw new Error(`field type too long: ${inputPreview(f.type)}`);
       }
       if (seen.has(f.name)) {
-        throw new Error(`duplicate field "${f.name}" in ${name}`);
+        throw new Error(`duplicate field "${inputPreview(f.name)}" in ${inputPreview(name)}`);
       }
       seen.add(f.name);
     }
@@ -302,7 +320,7 @@ export function encodeType(primary: string, types: TypeMap): string {
   return [primary, ...others]
     .map((name) => {
       const fields = types[name];
-      if (!fields) throw new Error(`unknown type: ${name}`);
+      if (!fields) throw new Error(`unknown type: ${inputPreview(name)}`);
       const inner = fields.map((f) => `${f.type} ${f.name}`).join(',');
       return `${name}(${inner})`;
     })
@@ -315,7 +333,7 @@ export function typeHash(primary: string, types: TypeMap): Uint8Array {
 
 function parseQAddress(addr: string, slot: number): Uint8Array {
   if (!isCurrentQrlAddress(addr)) {
-    throw new Error(`invalid Q-address: ${String(addr)}`);
+    throw new Error(`invalid Q-address: ${inputPreview(String(addr))}`);
   }
   const bytes = hexToBytes('0x' + addr.slice(1).toLowerCase());
   if (bytes.length > slot) {
@@ -342,12 +360,13 @@ function bigIntToSlot(value: bigint, width: number, signed: boolean, slot: numbe
   if (signed) {
     const limit = 1n << BigInt(width - 1);
     if (value >= limit || value < -limit) {
-      throw new Error(`int${width} out of range: ${value}`);
+      throw new Error(`int${width} out of range: ${inputPreview(String(value))}`);
     }
   } else {
-    if (value < 0n) throw new Error(`uint${width} negative: ${value}`);
+    if (value < 0n) throw new Error(`uint${width} negative: ${inputPreview(String(value))}`);
     const limit = 1n << BigInt(width);
-    if (value >= limit) throw new Error(`uint${width} out of range: ${value}`);
+    if (value >= limit)
+      throw new Error(`uint${width} out of range: ${inputPreview(String(value))}`);
   }
   const slotBits = BigInt(slot * 8);
   const slotMask = (1n << slotBits) - 1n;
@@ -372,7 +391,7 @@ function parseIntValue(v: unknown, typeLabel: string): bigint {
       return isNegative ? -abs : abs;
     }
     if (!/^-?(0|[1-9]\d*)$/.test(v)) {
-      throw new Error(`invalid ${typeLabel} string: ${v}`);
+      throw new Error(`invalid ${typeLabel} string: ${inputPreview(v)}`);
     }
     return BigInt(v);
   }
@@ -393,7 +412,7 @@ function encodeFieldWithBudget(
   depth: number
 ): Uint8Array {
   if (depth > TYPED_DATA_LIMITS.maxTypeGraphDepth + TYPED_DATA_LIMITS.maxArrayNesting) {
-    throw new Error(`value nesting too deep: ${type}`);
+    throw new Error(`value nesting too deep: ${inputPreview(type)}`);
   }
   consumeValue(budget);
   const parsed = parseFieldType(type, types);
@@ -401,7 +420,7 @@ function encodeFieldWithBudget(
   switch (parsed.kind) {
     case 'ref':
       if (!isMessageObject(value)) {
-        throw new Error(`struct field expects object: ${type}`);
+        throw new Error(`struct field expects object: ${inputPreview(type)}`);
       }
       return hashStructWithBudget(parsed.name, value, types, budget, depth + 1);
 
@@ -475,10 +494,12 @@ function encodeFieldWithBudget(
         throw new Error(`array field expects array: ${typeof value}`);
       }
       if (value.length > TYPED_DATA_LIMITS.maxArrayLength) {
-        throw new Error(`array ${type} exceeds length limit`);
+        throw new Error(`array ${inputPreview(type)} exceeds length limit`);
       }
       if (parsed.size !== undefined && value.length !== parsed.size) {
-        throw new Error(`fixed array ${type} requires length ${parsed.size}, got ${value.length}`);
+        throw new Error(
+          `fixed array ${inputPreview(type)} requires length ${parsed.size}, got ${value.length}`
+        );
       }
       const chunks = value.map((v) =>
         encodeFieldWithBudget(parsed.inner, v, types, budget, depth + 1)
@@ -513,7 +534,7 @@ function hashStructWithBudget(
 ): Uint8Array {
   consumeValue(budget);
   const fields = types[primary];
-  if (!fields) throw new Error(`unknown struct: ${primary}`);
+  if (!fields) throw new Error(`unknown struct: ${inputPreview(primary)}`);
   const expected = new Set(fields.map((f) => f.name));
   let ownFieldCount = 0;
   for (const k in data) {
@@ -522,12 +543,14 @@ function hashStructWithBudget(
     if (ownFieldCount > TYPED_DATA_LIMITS.maxEncodedValues) {
       throw new Error('typed data object contains too many fields');
     }
-    if (!expected.has(k)) throw new Error(`unknown field in ${primary}: ${k}`);
+    if (!expected.has(k)) {
+      throw new Error(`unknown field in ${inputPreview(primary)}: ${inputPreview(k)}`);
+    }
   }
   const parts: Uint8Array[] = [typeHash(primary, types)];
   for (const f of fields) {
     if (!Object.prototype.hasOwnProperty.call(data, f.name)) {
-      throw new Error(`missing field ${primary}.${f.name}`);
+      throw new Error(`missing field ${inputPreview(primary)}.${inputPreview(f.name)}`);
     }
     parts.push(encodeFieldWithBudget(f.type, data[f.name], types, budget, depth + 1));
   }
@@ -566,12 +589,14 @@ function validateDomainTypes(types: TypeMap): void {
     const expected = RESERVED_DOMAIN_FIELDS[f.name];
     if (!expected) {
       throw new Error(
-        `QRLDomain field "${f.name}" not in reserved set ` +
+        `QRLDomain field "${inputPreview(f.name)}" not in reserved set ` +
           `(name, version, chainId, verifyingContract, salt)`
       );
     }
     if (f.type !== expected) {
-      throw new Error(`QRLDomain field "${f.name}" must be type "${expected}", got "${f.type}"`);
+      throw new Error(
+        `QRLDomain field "${inputPreview(f.name)}" must be type "${expected}", got "${inputPreview(f.type)}"`
+      );
     }
     if (f.name === 'name') hasName = true;
   }
@@ -584,7 +609,7 @@ function validatePayloadReachability(primary: string, types: TypeMap): void {
     for (const t of collectDependencies(root, types)) reachable.add(t);
   }
   for (const k of Object.keys(types)) {
-    if (!reachable.has(k)) throw new Error(`unused referenced type: ${k}`);
+    if (!reachable.has(k)) throw new Error(`unused referenced type: ${inputPreview(k)}`);
   }
 }
 
