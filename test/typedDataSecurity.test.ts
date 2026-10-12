@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  baseTypeName,
   computeTypedDataDigest,
+  encodeField,
+  encodeType,
+  hashStruct,
   TYPED_DATA_LIMITS,
   typedDataSchemeVersion,
+  type TypedDataPayload,
 } from '../src/signing/typedData.js';
 
-function payloadWith(fieldType: string, value: unknown): unknown {
+function payloadWith(fieldType: string, value: unknown): TypedDataPayload {
   return {
     types: {
       QRLDomain: [{ name: 'name', type: 'string' }],
@@ -18,6 +23,32 @@ function payloadWith(fieldType: string, value: unknown): unknown {
 }
 
 describe('typed data resource and nesting limits', () => {
+  it('rejects a 1 MB field type within 100 ms with a bounded error', () => {
+    const type = 'T' + '[]'.repeat(499_999) + 'x';
+    const payload = payloadWith(type, []);
+    const start = performance.now();
+    expect(() => computeTypedDataDigest(payload)).toThrow(
+      new Error(`field type too long: ${type.slice(0, 32)}... (length 1000000)`)
+    );
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+
+  it.each(['QRLDomain', 'Unused'])('checks field type length before traversing %s', (name) => {
+    const payload = payloadWith('uint8', 1);
+    payload.types[name] = [
+      { name: 'name', type: 'x'.repeat(TYPED_DATA_LIMITS.maxFieldTypeLength + 1) },
+    ];
+    expect(() => computeTypedDataDigest(payload)).toThrow('field type too long');
+  });
+
+  it('preserves the field type length boundary', () => {
+    const zeros = '0'.repeat(TYPED_DATA_LIMITS.maxFieldTypeLength - 'uint8[1]'.length);
+    expect(() => computeTypedDataDigest(payloadWith(`uint8[${zeros}1]`, [1]))).not.toThrow();
+    expect(() => computeTypedDataDigest(payloadWith(`uint8[${zeros}01]`, [1]))).toThrow(
+      'field type too long'
+    );
+  });
+
   it('rejects legacy address fields', () => {
     expect(() => computeTypedDataDigest(payloadWith('address', `Q${'1'.repeat(40)}`))).toThrow(
       'invalid Q-address'
@@ -101,5 +132,83 @@ describe('typed data resource and nesting limits', () => {
         message: { items: [{ value: 1 }, { value: 2 }] },
       })
     ).not.toThrow();
+  });
+});
+
+describe('typed data array suffixes', () => {
+  it.each([
+    'uint256',
+    'address[]',
+    'Struct[][3]',
+    'bytes32[2][]',
+    'string',
+    '',
+    '[]',
+    '[123]',
+    'Struct[0003][]',
+    'Struct[2]x',
+    'Struct[2][',
+    'Struct[]][3]',
+    'Struct[bad][]',
+    'Struct[-1][]',
+    'Struct[1.5][]',
+    'Struct[\u0661][]',
+    'Struct\n[]',
+    'Struct[]\n',
+    'Struct[]\r',
+    'Struct[]\u2028',
+    'Struct[]\u2029',
+    '[]'.repeat(TYPED_DATA_LIMITS.maxFieldTypeLength / 2),
+    '[' + '1'.repeat(TYPED_DATA_LIMITS.maxFieldTypeLength - 2) + ']',
+    'T' + '[]'.repeat(TYPED_DATA_LIMITS.maxFieldTypeLength / 2 - 1) + 'x',
+  ])('matches the original baseTypeName result for %j', (type) => {
+    expect(baseTypeName(type)).toBe(type.replace(/(\[\d*\])+$/, ''));
+  });
+});
+
+describe('typed data error previews', () => {
+  it.each<[string, (input: string) => unknown]>([
+    [
+      'invalid struct name',
+      (input) => {
+        const payload = payloadWith('uint8', 1);
+        payload.types[input] = [{ name: 'value', type: 'uint8' }];
+        return computeTypedDataDigest(payload);
+      },
+    ],
+    [
+      'invalid field name in Payload',
+      (input) => {
+        const payload = payloadWith('uint8', 1);
+        payload.types.Payload = [{ name: input, type: 'uint8' }];
+        return computeTypedDataDigest(payload);
+      },
+    ],
+    [
+      'invalid primary type',
+      (input) => computeTypedDataDigest({ ...payloadWith('uint8', 1), primaryType: input }),
+    ],
+    [
+      'unknown field in Payload',
+      (input) => computeTypedDataDigest({ ...payloadWith('uint8', 1), message: { [input]: 1 } }),
+    ],
+    ['invalid Q-address', (input) => computeTypedDataDigest(payloadWith('address', input))],
+    ['unknown primary type', (input) => encodeType(input, payloadWith('uint8', 1).types)],
+    ['unknown struct', (input) => hashStruct(input, {}, payloadWith('uint8', 1).types)],
+    ['field type too long', (input) => encodeField(input, [], payloadWith('uint8', 1).types)],
+  ])('bounds %s errors for 1 MB inputs', (label, reject) => {
+    const input = 'x'.repeat(1_000_000);
+    expect(() => reject(input)).toThrow(
+      new Error(`${label}: ${'x'.repeat(32)}... (length 1000000)`)
+    );
+  });
+
+  it('bounds invalid integer strings and out-of-range values', () => {
+    expect(() => computeTypedDataDigest(payloadWith('uint256', 'x'.repeat(80)))).toThrow(
+      new Error(`invalid uint256 string: ${'x'.repeat(32)}... (length 80)`)
+    );
+    expect(() => computeTypedDataDigest(payloadWith('uint256', '9'.repeat(80)))).toThrow(
+      new Error(`uint256 out of range: ${'9'.repeat(32)}... (length 80)`)
+    );
   });
 });
