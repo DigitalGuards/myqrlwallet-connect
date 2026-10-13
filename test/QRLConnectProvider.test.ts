@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, assert, vi, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'eventemitter3';
 import { ConnectionStatus } from '../src/types.js';
 import { isCurrentQrlAddress } from '../src/config.js';
+import type { ConnectionManager } from '../src/ConnectionManager.js';
+import { at } from './helpers.js';
 
 const ADDRESS_A = `Q${'a'.repeat(128)}`;
 const ADDRESS_B = `Q${'b'.repeat(128)}`;
@@ -68,7 +70,7 @@ class MockConnectionManager extends EventEmitter {
     this.accounts = accounts;
     return Promise.resolve([...this.accounts]);
   });
-  sendJsonRpc = vi.fn().mockResolvedValue(undefined);
+  sendJsonRpc = vi.fn<ConnectionManager['sendJsonRpc']>().mockResolvedValue(undefined);
   ensureChannelJoined = vi.fn().mockResolvedValue(false);
   hasStoredSession = vi.fn().mockReturnValue(false);
   reconnect = vi.fn().mockResolvedValue(false);
@@ -126,7 +128,7 @@ describe('QRLConnectProvider', () => {
           method: 'qrl_signMessage',
           params: [authorizedAccount, '0x00'],
         });
-        const sent = cm.sendJsonRpc.mock.calls[0][0];
+        const sent = at(cm.sendJsonRpc.mock.calls, 0)[0];
         cm.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, result: 'signed' });
         await expect(result).resolves.toBe('signed');
         await expect(storageDeniedProvider.disconnect()).resolves.toBeUndefined();
@@ -188,7 +190,7 @@ describe('QRLConnectProvider', () => {
         params: [authorizedAccount, '0x02'],
       });
       expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
-      const sent = mockCM.sendJsonRpc.mock.calls[1][0];
+      const sent = at(mockCM.sendJsonRpc.mock.calls, 1)[0];
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, result: '0xsigned' });
       await expect(fresh).resolves.toBe('0xsigned');
     });
@@ -244,8 +246,11 @@ describe('QRLConnectProvider', () => {
         const tx = { from: authorizedAccount, to: recipientAccount, chainId: '0x301825' };
         const pending = provider.request({ method, params: [tx] });
         tx.chainId = '0x1';
-        const wire = mockCM.sendJsonRpc.mock.calls[0][0];
-        expect(wire.params[0].chainId).toBe('0x301825');
+        const wire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
+        assert(wire.params !== undefined);
+        const transaction = at(wire.params, 0);
+        assert(typeof transaction === 'object' && transaction !== null && 'chainId' in transaction);
+        expect(transaction.chainId).toBe('0x301825');
         mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: '0xtx' });
         await expect(pending).resolves.toBe('0xtx');
       }
@@ -279,7 +284,7 @@ describe('QRLConnectProvider', () => {
       });
       const rejected = expect(queued).rejects.toThrow('chainId does not match');
       mockCM.chainId = '0x1';
-      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const wire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: '0xsigned' });
       await first;
       await rejected;
@@ -389,7 +394,7 @@ describe('QRLConnectProvider', () => {
       );
 
       // Simulate response from wallet
-      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sentRequest.id,
@@ -402,11 +407,12 @@ describe('QRLConnectProvider', () => {
 
     it('should snapshot unrestricted params before caller mutation', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
-      const params = [{ to: 'Q1111', data: '0x01' }, 'latest'];
+      const call = { to: 'Q1111', data: '0x01' };
+      const params = [call, 'latest'];
 
       const requestPromise = provider.request({ method: 'qrl_call', params });
-      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
-      params[0].data = '0x02';
+      const sentRequest = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
+      call.data = '0x02';
       params.push('mutated');
 
       expect(sentRequest.params).toEqual([{ to: 'Q1111', data: '0x01' }, 'latest']);
@@ -426,7 +432,7 @@ describe('QRLConnectProvider', () => {
         params: [{ from: authorizedAccount, to: recipientAccount, value: '0x0' }],
       });
 
-      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sentRequest.id,
@@ -444,7 +450,7 @@ describe('QRLConnectProvider', () => {
           method: 'wallet_switchQrlChain',
           params: [{ chainId: '0x539' }],
         });
-        const sent = mockCM.sendJsonRpc.mock.calls[0][0];
+        const sent = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
         const error = { code, message: 'Wallet declined request', data: { chainId: '0x539' } };
         mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, error });
         await expect(result).rejects.toMatchObject(error);
@@ -465,7 +471,7 @@ describe('QRLConnectProvider', () => {
       });
 
       expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
-      const firstWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const firstWire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: firstWire.id,
@@ -476,7 +482,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
       });
-      const secondWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      const secondWire = at(mockCM.sendJsonRpc.mock.calls, 1)[0];
       expect(secondWire.method).toBe('qrl_signMessage');
       expect(secondWire.id).not.toBe(firstWire.id);
       mockCM.emit('jsonrpc_response', {
@@ -495,7 +501,7 @@ describe('QRLConnectProvider', () => {
         method: 'wallet_switchQrlChain',
         params: [{ chainId: '0x539' }],
       });
-      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const wire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: null });
 
       await expect(switched).rejects.toThrow('did not switch to requested chain 0x539');
@@ -509,7 +515,7 @@ describe('QRLConnectProvider', () => {
         method: 'wallet_switchQrlChain',
         params: [{ chainId: '0x0539' }],
       });
-      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const wire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: null });
 
       await expect(switched).resolves.toBeNull();
@@ -518,11 +524,12 @@ describe('QRLConnectProvider', () => {
     it('should bind the chain-switch postcondition before caller params can change', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       mockCM.chainId = '0x1';
-      const params = [{ chainId: '0x539' }];
+      const chain = { chainId: '0x539' };
+      const params = [chain];
 
       const switched = provider.request({ method: 'wallet_switchQrlChain', params });
-      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
-      params[0].chainId = '0x1';
+      const wire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
+      chain.chainId = '0x1';
       expect(wire.params).toEqual([{ chainId: '0x539' }]);
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: null });
 
@@ -532,15 +539,16 @@ describe('QRLConnectProvider', () => {
     it('should settle and advance the restricted queue after switch params are mutated', async () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       mockCM.chainId = '0x539';
-      const params = [{ chainId: '0x539' }];
+      const chain = { chainId: '0x539' };
+      const params = [chain];
 
       const switched = provider.request({ method: 'wallet_switchQrlChain', params });
       const next = provider.request({
         method: 'qrl_sendTransaction',
         params: [{ from: authorizedAccount, to: recipientAccount, value: '0x0' }],
       });
-      const switchWire = mockCM.sendJsonRpc.mock.calls[0][0];
-      params[0].chainId = 'malformed-after-send';
+      const switchWire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
+      chain.chainId = 'malformed-after-send';
 
       expect(() =>
         mockCM.emit('jsonrpc_response', {
@@ -554,7 +562,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
       });
-      const nextWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      const nextWire = at(mockCM.sendJsonRpc.mock.calls, 1)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: nextWire.id,
@@ -582,7 +590,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
       });
-      const nextWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      const nextWire = at(mockCM.sendJsonRpc.mock.calls, 1)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: nextWire.id,
@@ -610,7 +618,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
       });
-      const wire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const wire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       expect(wire.method).toBe('qrl_signTypedData');
       expect(wire.params).toEqual([ADDRESS_A, payload]);
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: wire.id, result: { signed: true } });
@@ -709,7 +717,7 @@ describe('QRLConnectProvider', () => {
       ).rejects.toThrow('unknown type');
       expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(1);
 
-      const firstWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const firstWire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: firstWire.id,
@@ -731,7 +739,7 @@ describe('QRLConnectProvider', () => {
       });
       expect(mockCM.ensureChannelJoined).toHaveBeenCalledOnce();
 
-      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sentRequest.id,
@@ -788,7 +796,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(mockCM.sendJsonRpc).toHaveBeenCalled();
       });
-      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: null });
       await requestPromise;
     }
@@ -837,7 +845,7 @@ describe('QRLConnectProvider', () => {
       });
       expect(platformMocks.attemptWalletRedirect).not.toHaveBeenCalled();
 
-      const sentRequest = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sentRequest.id,
@@ -864,7 +872,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(optOutCM.sendJsonRpc).toHaveBeenCalled();
       });
-      const sentRequest = optOutCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(optOutCM.sendJsonRpc.mock.calls, 0)[0];
       optOutCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: null });
       await requestPromise;
 
@@ -903,7 +911,7 @@ describe('QRLConnectProvider', () => {
         method: 'qrl_sendTransaction',
         params: [{ from: authorizedAccount, to: recipientAccount, value: '0x0' }],
       });
-      const sentRequest = firstCM.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(firstCM.sendJsonRpc.mock.calls, 0)[0];
       expect(store.has(INFLIGHT_KEY)).toBe(true);
 
       // "Reload": a fresh provider over the same storage, no pending map.
@@ -940,7 +948,7 @@ describe('QRLConnectProvider', () => {
         method: 'qrl_signMessage',
         params: [ADDRESS_A, '0x00'],
       });
-      const sentRequest = cm.sendJsonRpc.mock.calls[0][0];
+      const sentRequest = at(cm.sendJsonRpc.mock.calls, 0)[0];
       expect(store.has(INFLIGHT_KEY)).toBe(true);
 
       cm.emit('jsonrpc_response', { jsonrpc: '2.0', id: sentRequest.id, result: { ok: true } });
@@ -1082,7 +1090,7 @@ describe('QRLConnectProvider', () => {
       await Promise.resolve();
       expect(mockCM.authorizeAccounts).not.toHaveBeenCalled();
 
-      const sent = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sent = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: sent.id,
@@ -1095,7 +1103,7 @@ describe('QRLConnectProvider', () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       mockCM.accounts = [];
       const requestPromise = provider.request({ method: 'qrl_requestAccounts' });
-      const sent = mockCM.sendJsonRpc.mock.calls[0][0];
+      const sent = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       const accounts = [ADDRESS_A];
 
       mockCM.emit('jsonrpc_response', { jsonrpc: '2.0', id: sent.id, result: accounts });
@@ -1109,7 +1117,7 @@ describe('QRLConnectProvider', () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       mockCM.accounts = [];
       const approval = provider.request({ method: 'qrl_requestAccounts' });
-      const approvalWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const approvalWire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: approvalWire.id,
@@ -1124,7 +1132,7 @@ describe('QRLConnectProvider', () => {
       await vi.waitFor(() => {
         expect(mockCM.sendJsonRpc).toHaveBeenCalledTimes(2);
       });
-      const signingWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      const signingWire = at(mockCM.sendJsonRpc.mock.calls, 1)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: signingWire.id,
@@ -1137,7 +1145,7 @@ describe('QRLConnectProvider', () => {
       mockCM.status = ConnectionStatus.CONNECTED;
       mockCM.accounts = [];
       const rejected = provider.request({ method: 'qrl_requestAccounts' });
-      const rejectedWire = mockCM.sendJsonRpc.mock.calls[0][0];
+      const rejectedWire = at(mockCM.sendJsonRpc.mock.calls, 0)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: rejectedWire.id,
@@ -1147,7 +1155,7 @@ describe('QRLConnectProvider', () => {
       expect(mockCM.accounts).toEqual([]);
 
       const malformed = provider.request({ method: 'qrl_requestAccounts' });
-      const malformedWire = mockCM.sendJsonRpc.mock.calls[1][0];
+      const malformedWire = at(mockCM.sendJsonRpc.mock.calls, 1)[0];
       mockCM.emit('jsonrpc_response', {
         jsonrpc: '2.0',
         id: malformedWire.id,

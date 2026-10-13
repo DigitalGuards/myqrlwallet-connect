@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit production dependencies
+        run: node scripts/audit-gate.mjs
+
       - name: Lint
         run: npm run lint
 
@@ -35,6 +38,9 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+
+      - name: Type check tests
+        run: npm run typecheck:test
 
       - name: Run tests
         run: npm test
@@ -65,12 +71,20 @@ jobs:
             package-lock.json
             ui/package-lock.json
 
+      - name: Install SDK dependencies
+        run: npm ci
+
+      - name: Audit SDK production dependencies
+        run: node scripts/audit-gate.mjs
+
       - name: Build the SDK (ui type-checks against its dist)
-        run: npm ci && npm run build
+        run: npm run build
 
       - name: Install ui dependencies
-        run: npm ci
-        working-directory: ui
+        run: npm ci --prefix ui
+
+      - name: Audit UI production dependencies
+        run: node scripts/audit-gate.mjs --dir ui
 
       - name: Lint
         run: npm run lint
@@ -82,6 +96,10 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+        working-directory: ui
+
+      - name: Type check tests
+        run: npm run typecheck:test
         working-directory: ui
 
       - name: Run tests

@@ -1,19 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type { QRLConnectProvider } from '@qrlwallet/connect';
 import { showPairingModal, type PairingProvider } from '../src/show.js';
 import { QRL_PAIRING_MODAL_TAG } from '../src/element.js';
 
-// Compile-time contract: the real provider must satisfy the duck-typed
-// subset this package consumes. Enforced by `npm run typecheck`.
-const _providerSatisfiesInterface = (provider: QRLConnectProvider): PairingProvider => provider;
-
-type Listener = (...args: unknown[]) => void;
+interface PairingEvents {
+  connect: { chainId: string };
+  statusChanged: string;
+}
 
 class FakeProvider implements PairingProvider {
   uri = 'qrlconnect://pair?cid=first';
   mobile = false;
   activeUris = new Set<string>();
-  private readonly listeners = new Map<string, Set<Listener>>();
+  private readonly listeners: {
+    [Event in keyof PairingEvents]: Set<(value: PairingEvents[Event]) => void>;
+  } = {
+    connect: new Set(),
+    statusChanged: new Set(),
+  };
 
   getConnectionURI(): Promise<string> {
     this.activeUris.clear();
@@ -37,24 +41,28 @@ class FakeProvider implements PairingProvider {
     return this.mobile;
   }
 
-  on(event: string, listener: Listener): this {
-    const set = this.listeners.get(event) ?? new Set<Listener>();
-    set.add(listener);
-    this.listeners.set(event, set);
+  on<Event extends keyof PairingEvents>(
+    event: Event,
+    listener: (value: PairingEvents[Event]) => void
+  ): this {
+    this.listeners[event].add(listener);
     return this;
   }
 
-  off(event: string, listener: Listener): this {
-    this.listeners.get(event)?.delete(listener);
+  off<Event extends keyof PairingEvents>(
+    event: Event,
+    listener: (value: PairingEvents[Event]) => void
+  ): this {
+    this.listeners[event].delete(listener);
     return this;
   }
 
-  emit(event: string, ...args: unknown[]): void {
-    for (const listener of this.listeners.get(event) ?? []) listener(...args);
+  emit<Event extends keyof PairingEvents>(event: Event, value: PairingEvents[Event]): void {
+    for (const listener of this.listeners[event]) listener(value);
   }
 
-  listenerCount(event: string): number {
-    return this.listeners.get(event)?.size ?? 0;
+  listenerCount(event: keyof PairingEvents): number {
+    return this.listeners[event].size;
   }
 }
 
@@ -65,6 +73,11 @@ const flush = async (): Promise<void> => {
 const findModal = (): Element | null => document.querySelector(QRL_PAIRING_MODAL_TAG);
 
 describe('showPairingModal', () => {
+  it('accepts the SDK provider interface', () => {
+    // Compile-time contract enforced by `npm run typecheck` and `typecheck:test`.
+    expectTypeOf<QRLConnectProvider>().toExtend<PairingProvider>();
+  });
+
   beforeEach(() => {
     document.body.innerHTML = '';
   });

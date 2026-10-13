@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { at } from './helpers.js';
 import { KeyExchange } from '../src/KeyExchange.js';
 import { KeyExchangeMessageType } from '../src/types.js';
 import { PAIRING_CAPABILITY_LEN, PROTOCOL_VERSION } from '../src/config.js';
@@ -175,7 +176,7 @@ describe('KeyExchange v3', () => {
       const synack = await initiateSynAck();
       // Decode base64, flip a byte in ct, re-encode, and expect tag fail
       const ctBytes = Uint8Array.from(atob(synack.ct), (c) => c.charCodeAt(0));
-      ctBytes[0] ^= 1;
+      ctBytes[0] = at(ctBytes, 0) ^ 1;
       const mutated = btoa(String.fromCharCode(...ctBytes));
       await expect(dapp.onSynAck(CID, { ...synack, ct: mutated })).rejects.toThrow();
       expect(dapp.areKeysExchanged()).toBe(false);
@@ -188,7 +189,7 @@ describe('KeyExchange v3', () => {
     it('rejects a relay impersonation built without the QR capability', async () => {
       const pairing = dapp.initiate();
       const attackerCapability = pairing.capability.slice();
-      attackerCapability[0] ^= 1;
+      attackerCapability[0] = at(attackerCapability, 0) ^ 1;
       const { ct, ss } = kemEncaps(pairing.publicKey);
       try {
         const attackerHtx = await transcriptHash(
@@ -261,7 +262,7 @@ describe('KeyExchange v3', () => {
       const ack = await dapp.onSynAck(CID, synack);
       dapp.confirmOriginatorAckDelivered();
       const c1Bytes = Uint8Array.from(atob(ack!.c1), (c) => c.charCodeAt(0));
-      c1Bytes[0] ^= 1;
+      c1Bytes[0] = at(c1Bytes, 0) ^ 1;
       const tampered = { ...ack!, c1: btoa(String.fromCharCode(...c1Bytes)) };
 
       await expect(wallet.onAck(tampered)).rejects.toThrow();

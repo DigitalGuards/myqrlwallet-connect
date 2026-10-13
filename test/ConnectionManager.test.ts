@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, assert, vi, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'eventemitter3';
 import { ConnectionStatus, KeyExchangeMessageType } from '../src/types.js';
 import * as qrUri from '../src/utils/qrUri.js';
+import { at } from './helpers.js';
 
 // Track latest mock instances (same pattern as QRLConnectProvider.test.ts)
 let latestMockSocket: MockSocketClient;
@@ -285,11 +286,17 @@ describe('ConnectionManager desync teardown', () => {
     await vi.waitFor(() => {
       expect(kex.encryptMessage).toHaveBeenCalledOnce();
     });
-    const payload = JSON.parse(kex.encryptMessage.mock.calls[0][0]) as {
-      originatorInfo: { url: string; redirectUrl: string };
-    };
-    expect(payload.originatorInfo.url).toBe('https://dapp.example/home?mode=1#section');
-    expect(payload.originatorInfo.redirectUrl).toBe(
+    const payload: unknown = JSON.parse(at(kex.encryptMessage.mock.calls, 0)[0]);
+    assert(typeof payload === 'object' && payload !== null && 'originatorInfo' in payload);
+    const { originatorInfo } = payload;
+    assert(
+      typeof originatorInfo === 'object' &&
+        originatorInfo !== null &&
+        'url' in originatorInfo &&
+        'redirectUrl' in originatorInfo
+    );
+    expect(originatorInfo.url).toBe('https://dapp.example/home?mode=1#section');
+    expect(originatorInfo.redirectUrl).toBe(
       'https://return.example/done?flow=mobile#state'
     );
     await cm.disconnect();
@@ -350,7 +357,7 @@ describe('ConnectionManager desync teardown', () => {
       ['http://dev.localhost:5173/app', 'http://localhost:5173/return'],
       ['http://127.0.0.1:5173/app', 'http://127.0.0.1:5173/return'],
       ['http://[::1]:5173/app', 'http://[::1]:5173/return'],
-    ]) {
+    ] as const) {
       const cm = new ConnectionManager({
         dappMetadata: { name: 'Local development', url, redirectUrl },
       });

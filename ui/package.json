@@ -26,7 +26,8 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsup src/index.ts src/wallets.ts --format cjs,esm --dts --clean",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck:test",
+    "typecheck:test": "tsc --noEmit -p tsconfig.eslint.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/ test/ --ext .ts",
