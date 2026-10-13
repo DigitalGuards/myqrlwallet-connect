@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.1] - 2026-10-13
+
 ### Fixed
 
 - Typed-data validation no longer runs in quadratic time on long field types.
