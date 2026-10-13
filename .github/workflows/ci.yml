@@ -30,17 +30,19 @@ jobs:
       - name: Audit production dependencies
         run: node scripts/audit-gate.mjs
 
+      # publish.yml runs the full audit (dev tooling included) and refuses to
+      # publish on a high advisory. Warn here first so it never surprises a release.
+      - name: Full audit, warning only
+        run: npm audit --audit-level=high || echo "::warning::npm audit reports a high advisory in the full tree; publish.yml will refuse to publish until it is fixed"
+
       - name: Lint
         run: npm run lint
 
       - name: Format check
         run: npm run format:check
 
-      - name: Type check
+      - name: Type check (sources and tests)
         run: npm run typecheck
-
-      - name: Type check tests
-        run: npm run typecheck:test
 
       - name: Run tests
         run: npm test
@@ -86,6 +88,10 @@ jobs:
       - name: Audit UI production dependencies
         run: node scripts/audit-gate.mjs --dir ui
 
+      - name: UI full audit, warning only
+        run: npm audit --audit-level=high || echo "::warning::npm audit reports a high advisory in the ui tree; publish.yml will refuse to publish until it is fixed"
+        working-directory: ui
+
       - name: Lint
         run: npm run lint
         working-directory: ui
@@ -94,12 +100,8 @@ jobs:
         run: npm run format:check
         working-directory: ui
 
-      - name: Type check
+      - name: Type check (sources and tests)
         run: npm run typecheck
-        working-directory: ui
-
-      - name: Type check tests
-        run: npm run typecheck:test
         working-directory: ui
 
       - name: Run tests

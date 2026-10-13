@@ -299,7 +299,7 @@ npm run lint
 node test-e2e.mjs
 ```
 
-CI runs `node scripts/audit-gate.mjs` after the SDK install and `node scripts/audit-gate.mjs --dir ui` after the UI install. The gate blocks high and critical production advisories unless a matching, dated exception in `audit-allowlist.json` explains why the advisory cannot reach users.
+CI runs `node scripts/audit-gate.mjs` after the SDK install and `node scripts/audit-gate.mjs --dir ui` after the UI install; both read `audit-allowlist.json` at the repository root. The gate blocks high and critical production advisories unless a matching, dated exception in `audit-allowlist.json` explains why the advisory cannot reach users.
 
 ## Running the example dApp
 
