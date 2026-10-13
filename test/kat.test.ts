@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { at } from './helpers.js';
 import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
 import {
   ML_KEM_768_CT_LEN,
@@ -52,7 +53,7 @@ describe('ML-KEM-768 KAT self-check', () => {
     const { publicKey, secretKey } = ml_kem768.keygen();
     const { cipherText } = ml_kem768.encapsulate(publicKey);
     const tampered = new Uint8Array(cipherText);
-    tampered[0] ^= 0xff;
+    tampered[0] = at(tampered, 0) ^ 0xff;
     expect(() => ml_kem768.decapsulate(tampered, secretKey)).not.toThrow();
     expect(ml_kem768.decapsulate(tampered, secretKey).length).toBe(SHARED_SECRET_LEN);
   });

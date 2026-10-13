@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { at } from './helpers.js';
 import {
   BLOB_LEN,
   CAP_LEN,
@@ -201,14 +202,14 @@ describe('qrUri PQP3', () => {
       expect(fingerprintEquals(fp, await computeFingerprint(cid, pk, capability))).toBe(true);
 
       const cidAlt = cid.slice();
-      cidAlt[0] ^= 1;
+      cidAlt[0] = at(cidAlt, 0) ^ 1;
       expect(fingerprintEquals(fp, await computeFingerprint(cidAlt, pk, capability))).toBe(false);
 
       const { pk: pkAlt } = kemKeygen();
       expect(fingerprintEquals(fp, await computeFingerprint(cid, pkAlt, capability))).toBe(false);
 
       const capabilityAlt = capability.slice();
-      capabilityAlt[0] ^= 1;
+      capabilityAlt[0] = at(capabilityAlt, 0) ^ 1;
       expect(fingerprintEquals(fp, await computeFingerprint(cid, pk, capabilityAlt))).toBe(false);
     });
 

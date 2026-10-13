@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { at } from './helpers.js';
 import {
   AEAD_KEY_LEN,
   DIR_DAPP_TX,
@@ -57,7 +58,7 @@ describe('PQCrypto', () => {
       const { pk, sk } = kemKeygen();
       const { ct } = kemEncaps(pk);
       const tampered = new Uint8Array(ct);
-      tampered[0] ^= 0x01;
+      tampered[0] = at(tampered, 0) ^ 0x01;
       expect(() => kemDecaps(sk, tampered)).not.toThrow();
       const ssBad = kemDecaps(sk, tampered);
       expect(ssBad.length).toBe(SHARED_SECRET_LEN);
@@ -104,7 +105,7 @@ describe('PQCrypto', () => {
         false
       );
       const capabilityAlt = CAPABILITY.slice();
-      capabilityAlt[0] ^= 1;
+      capabilityAlt[0] = at(capabilityAlt, 0) ^ 1;
       expect(constantTimeEquals(base, await transcriptHash(cid, pk, ct, capabilityAlt))).toBe(
         false
       );
@@ -152,7 +153,7 @@ describe('PQCrypto', () => {
       const htx = new Uint8Array(32);
       const ct = await seal(key, DIR_DAPP_TX, 0, htx, new Uint8Array([1, 2, 3]));
       const tampered = new Uint8Array(ct);
-      tampered[0] ^= 0x01;
+      tampered[0] = at(tampered, 0) ^ 0x01;
       await expect(open(key, DIR_DAPP_TX, 0, htx, tampered)).rejects.toBeDefined();
     });
 
