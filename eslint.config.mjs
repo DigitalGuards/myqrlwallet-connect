@@ -125,30 +125,6 @@ export const baseConfig = [
 // BEGIN LINT RATCHET
 export const lintRatchet = [
   {
-    files: ['src/ConnectionManager.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off', 'preserve-caught-error': 'off' },
-  },
-  {
-    files: ['src/KeyExchange.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/QRLConnectProvider.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off', 'preserve-caught-error': 'off' },
-  },
-  {
-    files: ['src/SessionOwnership.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/SocketClient.ts'],
-    rules: { '@typescript-eslint/consistent-type-imports': 'off' },
-  },
-  {
-    files: ['src/crypto/primitives.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
     files: ['src/signing/__tests__/parity.test.ts'],
     rules: {
       '@typescript-eslint/consistent-type-assertions': 'off',
@@ -171,11 +147,6 @@ export const lintRatchet = [
       '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
-  {
-    files: ['src/signing/typedData.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  { files: ['src/utils/qrUri.ts'], rules: { 'preserve-caught-error': 'off' } },
   { files: ['test-e2e.mjs'], rules: { 'no-console': 'off', 'no-empty': 'off' } },
   {
     files: ['test/KeyExchange.test.ts'],

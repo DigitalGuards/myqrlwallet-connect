@@ -208,7 +208,7 @@ function parseURI(uri: string): ParsedURI {
     blob = base45Decode(q);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`qrUri: base45 decode failed: ${msg}`);
+    throw new Error(`qrUri: base45 decode failed: ${msg}`, { cause: err });
   }
 
   try {

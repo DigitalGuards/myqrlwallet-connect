@@ -83,7 +83,8 @@ function canonicalChainId(value: unknown): string {
 }
 
 function requestedSwitchChainId(params: unknown[] | undefined): string {
-  if (params?.length !== 1) {
+  const parameterCount = params?.length;
+  if (parameterCount !== 1) {
     throw new Error('wallet_switchQrlChain requires one chain configuration object');
   }
   const request = params?.[0];
@@ -172,7 +173,7 @@ function snapshotRequestParams(params: unknown[] | undefined): unknown[] | undef
     return snapshot;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Request params must be JSON-serializable: ${detail}`);
+    throw new Error(`Request params must be JSON-serializable: ${detail}`, { cause: error });
   }
 }
 

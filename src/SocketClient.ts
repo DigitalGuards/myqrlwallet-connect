@@ -2,7 +2,7 @@
  * Socket.IO client wrapper for relay communication.
  */
 
-import { io, Socket } from 'socket.io-client';
+import { io, type Socket } from 'socket.io-client';
 import EventEmitter from 'eventemitter3';
 import { RELAY_PATH, normalizeRelayUrl } from './config.js';
 import { ML_KEM_768_PK_LEN, isCanonicalBase64OfLength } from './PQCrypto.js';
