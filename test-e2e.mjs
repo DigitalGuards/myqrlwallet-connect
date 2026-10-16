@@ -30,6 +30,7 @@ import {
   computeMessageDigest,
   computeTypedDataDigest,
   hexToBytes,
+  isQrlSignedTypedDataResult,
   SCHEME_TAG_MSG,
   SCHEME_TAG_TYPED_V2,
   SCHEME_VERSION_MSG,
@@ -447,6 +448,7 @@ async function run() {
       signer: WALLET_ADDRESS,
       digest: bytesToHex(typedDigest),
       schemeVersion: SCHEME_VERSION_TYPED_V2,
+      domain: typedRpcMsg.params[1].domain,
     };
     await sendMessage(
       walletSocket,
@@ -465,6 +467,10 @@ async function run() {
     walletSocket.off('message', countTypedDataWalletMessage);
     assert.equal(typedDataWalletMessages, 1, 'wallet must receive only the valid request');
     assert.deepEqual(typedRpcResult, typedResult);
+    assert.ok(
+      isQrlSignedTypedDataResult(typedRpcResult),
+      'typed-data result must match the qrl_signTypedData wire shape'
+    );
     if (
       !verifyTypedDataForSigner({
         expectedSigner: WALLET_ADDRESS,
@@ -479,7 +485,7 @@ async function run() {
     }
     console.log('    SDK rejected malformed typed data and an unauthorized signer locally');
     console.log('    Wallet received exactly one request with the expected method and params');
-    console.log('    dApp resolved the wallet response; verifyTypedDataForSigner() returned true');
+    console.log('    dApp resolved a well-formed wallet response; verifyTypedDataForSigner() returned true');
 
     console.log('15. Wallet: leaving the relay channel (app backgrounded/closed)');
     const sawWalletLeave = new Promise((resolve) => {
