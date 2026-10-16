@@ -153,7 +153,9 @@ console.log(
 
 async function checkTypeScriptDirectives(git, commit) {
   // Count raw substrings in every changed or untracked file. Comment parsing
-  // can miss effective TypeScript directives after a carriage return.
+  // can miss effective TypeScript directives after a carriage return. The
+  // count ignores letter case: TypeScript applies its no-check directive in
+  // any letter case.
   const changed = git([
     'diff',
     '--no-ext-diff',
@@ -174,8 +176,8 @@ async function checkTypeScriptDirectives(git, commit) {
     const baseline = baseFiles.has(file) ? git(['show', `${commit}:${file}`]) : '';
     for (const name of ['ignore', 'expect-error', 'nocheck']) {
       const directive = `@ts-${name}`;
-      const before = baseline.split(directive).length - 1;
-      const after = current.split(directive).length - 1;
+      const before = baseline.toLowerCase().split(directive).length - 1;
+      const after = current.toLowerCase().split(directive).length - 1;
       if (after > before) grown.push(`${file}: ${directive} ${before} -> ${after}`);
     }
   }

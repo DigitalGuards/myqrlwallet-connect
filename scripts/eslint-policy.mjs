@@ -4,6 +4,12 @@ export const doubleAssertionGuard = {
   message: 'Double type assertions are banned. Narrow unknown input with a guard.',
 };
 
+// TypeScript applies its no-check directive in any letter case and after
+// extra slashes, while ban-ts-comment matches only the lower-case form. The
+// term is assembled from parts so this file adds no directive text to the
+// ratchet's raw directive count.
+const noCheckDirective = ['@ts', 'nocheck'].join('-');
+
 export const hardenedRules = {
   // ESLint 8 recommended enforced both rules with these options. Keep that
   // coverage through the flat-config migration and ESLint's changed defaults.
@@ -23,6 +29,10 @@ export const hardenedRules = {
   '@typescript-eslint/ban-ts-comment': [
     'error',
     { 'ts-ignore': true, 'ts-nocheck': true, 'ts-expect-error': true },
+  ],
+  'no-warning-comments': [
+    'error',
+    { terms: [noCheckDirective], location: 'start', decoration: ['/'] },
   ],
   '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
   'no-console': 'error',
