@@ -26,9 +26,10 @@ import {
 
 describe('ML-KEM-768 KAT self-check', () => {
   it('pins canonical algorithm sizes', () => {
-    expect(ml_kem768.lengths?.publicKey).toBe(ML_KEM_768_PK_LEN);
-    expect(ml_kem768.lengths?.secretKey).toBe(ML_KEM_768_SK_LEN);
-    expect(ml_kem768.lengths?.cipherText).toBe(ML_KEM_768_CT_LEN);
+    const kem: Partial<typeof ml_kem768> = ml_kem768;
+    expect(kem.lengths?.publicKey).toBe(ML_KEM_768_PK_LEN);
+    expect(kem.lengths?.secretKey).toBe(ML_KEM_768_SK_LEN);
+    expect(kem.lengths?.cipherText).toBe(ML_KEM_768_CT_LEN);
   });
 
   it('is deterministic given a 64-byte keygen seed and a 32-byte encap seed', () => {

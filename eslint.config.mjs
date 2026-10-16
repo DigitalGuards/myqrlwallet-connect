@@ -105,6 +105,12 @@ export const baseConfig = [
     rules: { 'no-console': 'error' },
   },
   {
+    // The E2E harness runs in Node and reports progress and failures to the
+    // terminal. Its console diagnostics are the command-line interface.
+    files: ['test-e2e.mjs'],
+    rules: { 'no-console': 'off' },
+  },
+  {
     files: ['*.mjs', 'scripts/**/*.mjs', 'vitest.config.ts', 'example/vite.config.js'],
     languageOptions: { globals: globals.node },
   },
@@ -112,6 +118,13 @@ export const baseConfig = [
     // All SDK console output flows through this boundary.
     files: ['src/utils/logger.ts'],
     rules: { 'no-console': 'off' },
+  },
+  {
+    // One test-only boundary supplies deliberately malformed typed inputs.
+    files: ['test/helpers/malformed.ts'],
+    rules: {
+      '@typescript-eslint/consistent-type-assertions': ['error', { assertionStyle: 'as' }],
+    },
   },
 ];
 
@@ -144,87 +157,10 @@ export const lintRatchet = [
     rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
   },
   {
-    files: ['src/signing/__tests__/parity.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/restrict-plus-operands': 'off',
-    },
-  },
-  {
-    files: ['src/signing/__tests__/schemeParity.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-    },
-  },
-  {
-    files: ['src/signing/__tests__/typedDataSecurity.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-    },
-  },
-  {
     files: ['src/signing/typedData.ts'],
     rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
   },
   { files: ['src/utils/qrUri.ts'], rules: { 'preserve-caught-error': 'off' } },
-  { files: ['test-e2e.mjs'], rules: { 'no-console': 'off', 'no-empty': 'off' } },
-  {
-    files: ['test/ConnectionManager.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-      '@typescript-eslint/no-unsafe-argument': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/no-unsafe-member-access': 'off',
-      '@typescript-eslint/no-unsafe-return': 'off',
-      '@typescript-eslint/unbound-method': 'off',
-      'no-restricted-syntax': 'off',
-    },
-  },
-  {
-    files: ['test/KeyExchange.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-    },
-  },
-  {
-    files: ['test/QRLConnectProvider.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-floating-promises': 'off',
-    },
-  },
-  {
-    files: ['test/SessionOwnership.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      'no-restricted-syntax': 'off',
-    },
-  },
-  {
-    files: ['test/SocketClient.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-unnecessary-condition': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/no-unsafe-call': 'off',
-      '@typescript-eslint/no-unsafe-function-type': 'off',
-      '@typescript-eslint/no-unsafe-return': 'off',
-      '@typescript-eslint/use-unknown-in-catch-callback-variable': 'off',
-    },
-  },
-  {
-    files: ['test/config.test.ts'],
-    rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
-  },
-  { files: ['test/kat.test.ts'], rules: { '@typescript-eslint/no-unnecessary-condition': 'off' } },
-  { files: ['test/logger.test.ts'], rules: { '@typescript-eslint/no-empty-function': 'off' } },
-  { files: ['test/setup.ts'], rules: { 'no-console': 'off' } },
 ];
 // END LINT RATCHET
 

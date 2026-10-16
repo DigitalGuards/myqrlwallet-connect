@@ -5,7 +5,7 @@
  * fails this test on next CI before a release can ship.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, assert } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,34 +44,84 @@ interface MessageVector {
   digestHex: string;
 }
 interface TypedVector {
-  label: string;
   payload: TypedDataPayload;
   encodeTypeString: string;
   typeHashHex: string;
   domainHashHex: string;
-  messageHashHex: string;
-  digestHex: string;
 }
 interface SigningVector {
-  label: string;
   hexSeed: string;
   messageHex?: string;
   payload?: TypedDataPayload;
   signature: string;
   publicKey: string;
   signer: string;
-  digest: string;
 }
 interface Canonical {
-  schemeVersionMsg: 'QRL-SIGN-MSG-v1';
-  schemeVersionTyped: 'QRL-SIGN-TYPED-v1';
   messageVectors: MessageVector[];
   typedVectors: TypedVector[];
   signingVectors: SigningVector[];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTypedDataPayload(value: unknown): value is TypedDataPayload {
+  return (
+    isRecord(value) &&
+    typeof value.primaryType === 'string' &&
+    isRecord(value.types) &&
+    Object.values(value.types).every(
+      (fields: unknown) =>
+        Array.isArray(fields) &&
+        fields.every(
+          (field: unknown) =>
+            isRecord(field) && typeof field.name === 'string' && typeof field.type === 'string'
+        )
+    ) &&
+    isRecord(value.domain) &&
+    isRecord(value.message)
+  );
+}
+
+function isCanonical(value: unknown): value is Canonical {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.messageVectors) &&
+    value.messageVectors.every(
+      (v: unknown) =>
+        isRecord(v) &&
+        typeof v.label === 'string' &&
+        typeof v.messageHex === 'string' &&
+        typeof v.digestHex === 'string'
+    ) &&
+    Array.isArray(value.typedVectors) &&
+    value.typedVectors.every(
+      (v: unknown) =>
+        isRecord(v) &&
+        isTypedDataPayload(v.payload) &&
+        typeof v.encodeTypeString === 'string' &&
+        typeof v.typeHashHex === 'string' &&
+        typeof v.domainHashHex === 'string'
+    ) &&
+    Array.isArray(value.signingVectors) &&
+    value.signingVectors.every(
+      (v: unknown) =>
+        isRecord(v) &&
+        typeof v.hexSeed === 'string' &&
+        (v.messageHex === undefined || typeof v.messageHex === 'string') &&
+        (v.payload === undefined || isTypedDataPayload(v.payload)) &&
+        typeof v.signature === 'string' &&
+        typeof v.publicKey === 'string' &&
+        typeof v.signer === 'string'
+    )
+  );
+}
+
 describe('SDK ↔ wallet parity', () => {
-  const canonical: Canonical = JSON.parse(readFileSync(CANONICAL_PATH, 'utf-8'));
+  const canonical: unknown = JSON.parse(readFileSync(CANONICAL_PATH, 'utf-8'));
+  assert(isCanonical(canonical));
 
   it('messageDigest matches every locked vector', () => {
     for (const v of canonical.messageVectors) {
@@ -81,7 +131,8 @@ describe('SDK ↔ wallet parity', () => {
   });
 
   it('pins ML-DSA-87 wire sizes to the canonical wallet fixture', () => {
-    const vector = canonical.signingVectors[0]!;
+    const vector = canonical.signingVectors[0];
+    assert.isDefined(vector);
     expect(ML_DSA_DESCRIPTOR_BYTES).toBe(3);
     expect(ML_DSA_87_PUBLIC_KEY_BYTES).toBe(2592);
     expect(ML_DSA_87_SIGNATURE_BYTES).toBe(4627);
@@ -139,8 +190,12 @@ describe('SDK ↔ wallet parity', () => {
   });
 
   it('bound verifiers accept current messages and reject legacy typed addresses', () => {
-    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
-    const typed = canonical.signingVectors.find((v) => v.payload !== undefined)!;
+    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined);
+    assert.isDefined(message);
+    assert.isDefined(message.messageHex);
+    const typed = canonical.signingVectors.find((v) => v.payload !== undefined);
+    assert.isDefined(typed);
+    assert.isDefined(typed.payload);
     const messageDescriptor = message.hexSeed.slice(0, 8);
     const typedDescriptor = hexToBytes(typed.hexSeed.slice(0, 8));
 
@@ -150,7 +205,7 @@ describe('SDK ↔ wallet parity', () => {
         descriptor: messageDescriptor,
         signature: message.signature,
         publicKey: message.publicKey,
-        messageBytes: message.messageHex!,
+        messageBytes: message.messageHex,
       })
     ).toBe(true);
     expect(
@@ -159,33 +214,37 @@ describe('SDK ↔ wallet parity', () => {
         descriptor: typedDescriptor,
         signature: typed.signature,
         publicKey: typed.publicKey,
-        payload: typed.payload!,
+        payload: typed.payload,
       })
     ).toBe(false);
   });
 
   it('bound verifiers reject a different current-format signer', () => {
-    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
+    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined);
+    assert.isDefined(message);
+    assert.isDefined(message.messageHex);
     expect(
       verifyMessageForSigner({
         expectedSigner: `Q${'0'.repeat(128)}`,
         descriptor: message.hexSeed.slice(0, 8),
         signature: message.signature,
         publicKey: message.publicKey,
-        messageBytes: message.messageHex!,
+        messageBytes: message.messageHex,
       })
     ).toBe(false);
   });
 
   it('bound verifiers reject a valid ML-DSA descriptor that derives another signer', () => {
-    const typed = canonical.signingVectors.find((v) => v.payload !== undefined)!;
+    const typed = canonical.signingVectors.find((v) => v.payload !== undefined);
+    assert.isDefined(typed);
+    assert.isDefined(typed.payload);
     expect(
       verifyTypedDataForSigner({
         expectedSigner: typed.signer,
         descriptor: '0x010001',
         signature: typed.signature,
         publicKey: typed.publicKey,
-        payload: typed.payload!,
+        payload: typed.payload,
       })
     ).toBe(false);
   });
@@ -193,39 +252,45 @@ describe('SDK ↔ wallet parity', () => {
   it.each(['0x0100', '0x01000000', '0x000000', '010000'])(
     'bound verification rejects malformed or non-ML-DSA descriptor %s',
     (descriptor) => {
-      const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
+      const message = canonical.signingVectors.find((v) => v.messageHex !== undefined);
+      assert.isDefined(message);
+      assert.isDefined(message.messageHex);
       expect(
         verifyMessageForSigner({
           expectedSigner: message.signer,
           descriptor,
           signature: message.signature,
           publicKey: message.publicKey,
-          messageBytes: message.messageHex!,
+          messageBytes: message.messageHex,
         })
       ).toBe(false);
     }
   );
 
   it('bound verification rejects the legacy address format', () => {
-    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
+    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined);
+    assert.isDefined(message);
+    assert.isDefined(message.messageHex);
     expect(
       verifyMessageForSigner({
         expectedSigner: `Q${'a'.repeat(40)}`,
         descriptor: message.hexSeed.slice(0, 8),
         signature: message.signature,
         publicKey: message.publicKey,
-        messageBytes: message.messageHex!,
+        messageBytes: message.messageHex,
       })
     ).toBe(false);
   });
 
   it('bound verification rejects malformed signer and public-key inputs', () => {
-    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
+    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined);
+    assert.isDefined(message);
+    assert.isDefined(message.messageHex);
     const base = {
       descriptor: message.hexSeed.slice(0, 8),
       signature: message.signature,
       publicKey: message.publicKey,
-      messageBytes: message.messageHex!,
+      messageBytes: message.messageHex,
     };
 
     expect(verifyMessageForSigner({ ...base, expectedSigner: 'Q1234' })).toBe(false);
@@ -239,20 +304,24 @@ describe('SDK ↔ wallet parity', () => {
   });
 
   it('bound verification fails closed when a legacy response omits descriptor', () => {
-    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined)!;
+    const message = canonical.signingVectors.find((v) => v.messageHex !== undefined);
+    assert.isDefined(message);
+    assert.isDefined(message.messageHex);
     expect(
       verifyMessageForSigner({
         expectedSigner: message.signer,
         descriptor: undefined,
         signature: message.signature,
         publicKey: message.publicKey,
-        messageBytes: message.messageHex!,
+        messageBytes: message.messageHex,
       })
     ).toBe(false);
   });
 
   it('verifyMessage and verifyMessageSignature reject tampered bytes', () => {
-    const v = canonical.signingVectors.find((s) => s.messageHex !== undefined)!;
+    const v = canonical.signingVectors.find((s) => s.messageHex !== undefined);
+    assert.isDefined(v);
+    assert.isDefined(v.messageHex);
     const params = {
       signature: v.signature,
       publicKey: v.publicKey,
@@ -264,9 +333,12 @@ describe('SDK ↔ wallet parity', () => {
   });
 
   it('verifyTypedData and verifyTypedDataSignature reject tampered payload', () => {
-    const v = canonical.signingVectors.find((s) => s.payload !== undefined)!;
-    const tampered: TypedDataPayload = JSON.parse(JSON.stringify(v.payload));
-    (tampered.message as Record<string, unknown>).issuedAt = '0';
+    const v = canonical.signingVectors.find((s) => s.payload !== undefined);
+    assert.isDefined(v);
+    assert.isDefined(v.payload);
+    const tampered: unknown = JSON.parse(JSON.stringify(v.payload));
+    assert(isTypedDataPayload(tampered));
+    tampered.message.issuedAt = '0';
     const params = {
       signature: v.signature,
       publicKey: v.publicKey,

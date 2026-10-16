@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { malformed } from './helpers/malformed.js';
 import { SessionOwnership } from '../src/SessionOwnership.js';
 
 function deferredLockManager(): {
@@ -11,7 +12,7 @@ function deferredLockManager(): {
     reject: (error: unknown) => void;
   }[] = [];
 
-  const manager = {
+  const manager = malformed<LockManager>({
     request: vi.fn(
       (
         _name: string,
@@ -24,7 +25,7 @@ function deferredLockManager(): {
         });
       }
     ),
-  } as unknown as LockManager;
+  });
 
   return {
     manager,
@@ -44,11 +45,11 @@ function deferredLockManager(): {
 
 describe('SessionOwnership', () => {
   it('fails closed when the lock manager throws synchronously', async () => {
-    const manager = {
+    const manager = malformed<LockManager>({
       request: vi.fn(() => {
         throw new Error('locks unavailable');
       }),
-    } as unknown as LockManager;
+    });
     const ownership = new SessionOwnership('test', manager);
 
     await expect(ownership.acquire()).resolves.toBe(false);

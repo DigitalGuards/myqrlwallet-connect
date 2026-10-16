@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, assert } from 'vitest';
 import { defineQrlPairingModal, QrlPairingModal } from '../src/element.js';
 
 const PAIR_URI = 'qrlconnect://pair?cid=abc&blob=def';
@@ -104,21 +104,24 @@ describe('<qrl-pairing-modal>', () => {
       const el = mount({ uri: PAIR_URI, 'web-wallet-url': '' });
       const link = webLink(el);
       expect(link?.getAttribute('href')).toBeNull();
-      expect((link as HTMLElement).hidden).toBe(true);
+      assert.instanceOf(link, HTMLElement);
+      expect(link.hidden).toBe(true);
     });
 
     it('is hidden for a non-pairing uri', () => {
       const el = mount({ uri: 'javascript:alert(1)' });
       const link = webLink(el);
       expect(link?.getAttribute('href')).toBeNull();
-      expect((link as HTMLElement).hidden).toBe(true);
+      assert.instanceOf(link, HTMLElement);
+      expect(link.hidden).toBe(true);
     });
 
     it('refuses a non-web base URL', () => {
       const el = mount({ uri: PAIR_URI, 'web-wallet-url': 'javascript:alert(1)' });
       const link = webLink(el);
       expect(link?.getAttribute('href')).toBeNull();
-      expect((link as HTMLElement).hidden).toBe(true);
+      assert.instanceOf(link, HTMLElement);
+      expect(link.hidden).toBe(true);
     });
 
     it('rotates the link when the uri attribute changes', () => {
@@ -143,7 +146,8 @@ describe('<qrl-pairing-modal>', () => {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     const el = mount({ uri: PAIR_URI });
     const buttons = shadow(el).querySelectorAll('button.btn');
-    const copy = buttons[0] as HTMLButtonElement;
+    const copy = buttons[0];
+    assert.instanceOf(copy, HTMLButtonElement);
     copy.click();
     await flush();
     expect(writeText).toHaveBeenCalledWith(PAIR_URI);
@@ -155,7 +159,9 @@ describe('<qrl-pairing-modal>', () => {
     const cancelled = vi.fn();
     el.addEventListener('qrl-cancel', cancelled);
     const links = shadow(el).querySelectorAll('button.link');
-    (links[1] as HTMLButtonElement).click();
+    const cancel = links[1];
+    assert.instanceOf(cancel, HTMLButtonElement);
+    cancel.click();
     expect(cancelled).toHaveBeenCalledTimes(1);
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(cancelled).toHaveBeenCalledTimes(2);
@@ -187,7 +193,9 @@ describe('<qrl-pairing-modal>', () => {
     const rotated = vi.fn();
     el.addEventListener('qrl-new-connection', rotated);
     const links = shadow(el).querySelectorAll('button.link');
-    (links[0] as HTMLButtonElement).click();
+    const rotate = links[0];
+    assert.instanceOf(rotate, HTMLButtonElement);
+    rotate.click();
     expect(rotated).toHaveBeenCalledTimes(1);
   });
 

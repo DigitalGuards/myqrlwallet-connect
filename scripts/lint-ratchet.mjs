@@ -2,7 +2,7 @@
 // Existing lint debt, including tests, is a set of exact file/rule pairs.
 // Regeneration removes resolved pairs; CI compares allowances with a Git base.
 import { execFileSync } from 'node:child_process';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -21,7 +21,6 @@ if (!['.', 'ui'].includes(values.dir)) throw new Error('--dir must be . or ui');
 const ui = values.dir === 'ui';
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const root = path.join(repository, values.dir);
-await checkBulkSuppressions();
 const configPath = path.join(root, 'eslint.config.mjs');
 const configFile = ui ? 'ui/eslint.config.mjs' : 'eslint.config.mjs';
 const require = createRequire(configPath);
@@ -67,6 +66,23 @@ if (baseRef !== undefined) {
   }
 }
 
+// Match plain lint's file selection and explicit configuration, with bulk
+// suppressions disabled for every suppression filename and location.
+const lint = new ESLint({ cwd: root, applySuppressions: false, overrideConfigFile: configPath });
+const lintResults = await lint.lintFiles(
+  ui ? ['.'] : ['src', 'test', 'scripts', '*.mjs', 'vitest.config.ts']
+);
+const lintPairs = new Set();
+for (const result of lintResults) {
+  const file = path.relative(root, result.filePath).split(path.sep).join('/');
+  for (const message of result.messages) {
+    if (message.fatal || !message.ruleId) {
+      throw new Error(`${file}:${message.line}: ${message.message}`);
+    }
+    lintPairs.add(`${file}: ${message.ruleId}`);
+  }
+}
+
 const eslint = new ESLint({
   cwd: root,
   applySuppressions: false,
@@ -91,7 +107,7 @@ for (const result of results) {
 const pairs = new Set(
   [...current].flatMap(([file, rules]) => [...rules].map((rule) => `${file}: ${rule}`))
 );
-const added = [...pairs].filter((pair) => !previous.has(pair)).sort();
+const added = [...new Set([...pairs, ...lintPairs])].filter((pair) => !previous.has(pair)).sort();
 const stale = [...previous].filter((pair) => !pairs.has(pair)).sort();
 if (added.length) {
   console.error(`lint-ratchet: fix ${added.length} new file/rule pairs:\n${added.join('\n')}`);
@@ -127,28 +143,6 @@ if (!check && oldBlock !== block) {
 console.log(
   `lint-ratchet: OK (${pairs.size} pairs, ${current.size} files, ${reports} reports${check ? '' : `, ${stale.length} pairs removed`})`
 );
-
-async function checkBulkSuppressions() {
-  // Inspect the filesystem, including ignored files, for both package checks.
-  const files = await readdir(repository, { recursive: true, withFileTypes: true });
-  const violations = files
-    .filter((entry) => entry.name === 'eslint-suppressions.json')
-    .map((entry) => path.relative(repository, path.join(entry.parentPath, entry.name)));
-  for (const file of ['package.json', 'ui/package.json']) {
-    const { scripts } = JSON.parse(await readFile(path.join(repository, file), 'utf8'));
-    for (const [name, command] of Object.entries(scripts)) {
-      if (command.includes('--suppressions-location')) {
-        violations.push(`${file}: scripts.${name} uses --suppressions-location`);
-      }
-    }
-  }
-  if (violations.length) {
-    console.error(
-      `lint-ratchet: bulk suppressions are forbidden:\n${violations.sort().join('\n')}`
-    );
-    process.exit(1);
-  }
-}
 
 async function checkTypeScriptDirectives(git, commit) {
   // Count raw substrings in every changed or untracked file. Comment parsing

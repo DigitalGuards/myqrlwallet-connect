@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, assert } from 'vitest';
 import { at } from './helpers.js';
+import { malformed } from './helpers/malformed.js';
 import { KeyExchange } from '../src/KeyExchange.js';
 import { KeyExchangeMessageType } from '../src/types.js';
 import { PAIRING_CAPABILITY_LEN, PROTOCOL_VERSION } from '../src/config.js';
@@ -47,9 +48,9 @@ describe('KeyExchange v3', () => {
       expect(typeof synack.c0).toBe('string');
 
       const ack = await dapp.onSynAck(CID, synack);
-      expect(ack).not.toBeNull();
-      expect(ack!.type).toBe(KeyExchangeMessageType.ACK);
-      expect(ack!.v).toBe(PROTOCOL_VERSION);
+      assert.isNotNull(ack);
+      expect(ack.type).toBe(KeyExchangeMessageType.ACK);
+      expect(ack.v).toBe(PROTOCOL_VERSION);
       expect(dapp.areKeysExchanged()).toBe(false);
       expect(dappKx).not.toHaveBeenCalled();
       expect(await dapp.exportPersisted()).toBeNull();
@@ -57,7 +58,7 @@ describe('KeyExchange v3', () => {
       dapp.confirmOriginatorAckDelivered();
       expect(dappKx).toHaveBeenCalledOnce();
 
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
       expect(walletKx).toHaveBeenCalledOnce();
 
       expect(dapp.areKeysExchanged()).toBe(true);
@@ -73,8 +74,9 @@ describe('KeyExchange v3', () => {
 
       const synack = await wallet.receiveQR(CID, qrPk, qrCapability);
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
 
       expect(dapp.areKeysExchanged()).toBe(true);
       expect(wallet.areKeysExchanged()).toBe(true);
@@ -83,8 +85,9 @@ describe('KeyExchange v3', () => {
     it('is bidirectionally encrypted after handshake', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
 
       const req = JSON.stringify({ method: 'qrl_chainId' });
       const encReq = await dapp.encryptMessage(req);
@@ -98,8 +101,9 @@ describe('KeyExchange v3', () => {
     it('assigns distinct nonces to concurrent encrypts (no AES-GCM nonce reuse)', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
 
       // Fire several encrypts WITHOUT awaiting between them. Before the
       // synchronous seq reservation, all of these read the same sendSeq and
@@ -110,9 +114,9 @@ describe('KeyExchange v3', () => {
       // All ciphertexts decrypt, in order, on the wallet side: each consumed
       // a unique contiguous seq.
       for (let i = 0; i < plains.length; i++) {
-        expect(await wallet.decryptMessage(cts[i]!)).toBe(plains[i]);
+        expect(await wallet.decryptMessage(at(cts, i))).toBe(plains[i]);
       }
-      expect(dapp.getSession()!.sendSeq).toBe(1 + plains.length);
+      expect(dapp.getSession()?.sendSeq).toBe(1 + plains.length);
     });
 
     it('answers a retransmitted SYNACK with the cached ACK (lost-ACK recovery)', async () => {
@@ -121,10 +125,10 @@ describe('KeyExchange v3', () => {
       // dApp completes its side; pretend the wallet never received this ACK
       // (its socket flapped right after sending SYNACK).
       const lostAck = await dapp.onSynAck(CID, synack);
-      expect(lostAck).not.toBeNull();
+      assert.isNotNull(lostAck);
       expect(wallet.areKeysExchanged()).toBe(false);
       dapp.confirmOriginatorAckDelivered();
-      lostAck!.c1 = 'mutated-by-consumer';
+      lostAck.c1 = 'mutated-by-consumer';
 
       // Wallet retransmits the identical SYNACK on rejoin. The dApp ignores
       // it as a duplicate but exposes the cached ACK for the manager to
@@ -132,13 +136,16 @@ describe('KeyExchange v3', () => {
       const dup = await dapp.onSynAck(CID, synack);
       expect(dup).toBeNull();
       const cached = dapp.getLastAck();
-      expect(cached?.c1).not.toBe('mutated-by-consumer');
-      const cachedBytes = cached!.c1;
-      cached!.c1 = 'second-consumer-mutation';
+      assert.isNotNull(cached);
+      expect(cached.c1).not.toBe('mutated-by-consumer');
+      const cachedBytes = cached.c1;
+      cached.c1 = 'second-consumer-mutation';
       expect(dapp.getLastAck()?.c1).toBe(cachedBytes);
 
       // The re-sent cached ACK finalizes the wallet side.
-      await wallet.onAck(dapp.getLastAck()!);
+      const lastAck = dapp.getLastAck();
+      assert.isNotNull(lastAck);
+      await wallet.onAck(lastAck);
       expect(wallet.areKeysExchanged()).toBe(true);
     });
 
@@ -161,8 +168,9 @@ describe('KeyExchange v3', () => {
 
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
-      await wallet.onAck(ack!);
-      await wallet.onAck(ack!);
+      assert.isNotNull(ack);
+      await wallet.onAck(ack);
+      await wallet.onAck(ack);
       expect(walletKx).toHaveBeenCalledOnce();
     });
 
@@ -231,8 +239,9 @@ describe('KeyExchange v3', () => {
 
       const validSynAck = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, validSynAck);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await expect(wallet.onAck({ ...ack!, v: 2 })).rejects.toThrow(/protocol v3/);
+      await expect(wallet.onAck({ ...ack, v: 2 })).rejects.toThrow(/protocol v3/);
       expect(wallet.getSession()).toBeNull();
     });
 
@@ -260,15 +269,16 @@ describe('KeyExchange v3', () => {
     it('retires the responder session after a tampered ACK', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      const c1Bytes = Uint8Array.from(atob(ack!.c1), (c) => c.charCodeAt(0));
+      const c1Bytes = Uint8Array.from(atob(ack.c1), (c) => c.charCodeAt(0));
       c1Bytes[0] = at(c1Bytes, 0) ^ 1;
-      const tampered = { ...ack!, c1: btoa(String.fromCharCode(...c1Bytes)) };
+      const tampered = { ...ack, c1: btoa(String.fromCharCode(...c1Bytes)) };
 
       await expect(wallet.onAck(tampered)).rejects.toThrow();
       expect(wallet.areKeysExchanged()).toBe(false);
       expect(wallet.getSession()).toBeNull();
-      await expect(wallet.onAck(ack!)).resolves.toBeUndefined();
+      await expect(wallet.onAck(ack)).resolves.toBeUndefined();
       expect(wallet.areKeysExchanged()).toBe(false);
     });
   });
@@ -314,8 +324,9 @@ describe('KeyExchange v3', () => {
     it('exports and reimports a working session', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
 
       // Send once so seq counters diverge from the initial value.
       const m1 = await dapp.encryptMessage('{"m":1}');
@@ -323,16 +334,16 @@ describe('KeyExchange v3', () => {
 
       const persistedDapp = await dapp.exportPersisted();
       const persistedWallet = await wallet.exportPersisted();
-      expect(persistedDapp).not.toBeNull();
-      expect(persistedWallet).not.toBeNull();
+      assert.isNotNull(persistedDapp);
+      assert.isNotNull(persistedWallet);
 
       const restoredDapp = new KeyExchange(
         true,
-        await KeyExchange.sessionFromPersisted(persistedDapp!)
+        await KeyExchange.sessionFromPersisted(persistedDapp)
       );
       const restoredWallet = new KeyExchange(
         false,
-        await KeyExchange.sessionFromPersisted(persistedWallet!)
+        await KeyExchange.sessionFromPersisted(persistedWallet)
       );
 
       const m2 = await restoredDapp.encryptMessage('{"m":2}');
@@ -344,19 +355,23 @@ describe('KeyExchange v3', () => {
     it('rejects pre-v3 persisted sessions at the low-level hydration boundary', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
-      const persisted = (await dapp.exportPersisted())!;
-      persisted.protocolVersion = 2 as 3;
+      await wallet.onAck(ack);
+      const persisted = await dapp.exportPersisted();
+      assert.isNotNull(persisted);
+      persisted.protocolVersion = malformed<3>(2);
       await expect(KeyExchange.sessionFromPersisted(persisted)).rejects.toThrow(/pre-v3/);
     });
 
     it('rejects persisted key material whose decoded fields have the wrong width', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
-      const persisted = (await dapp.exportPersisted())!;
+      await wallet.onAck(ack);
+      const persisted = await dapp.exportPersisted();
+      assert.isNotNull(persisted);
 
       await expect(
         KeyExchange.sessionFromPersisted({ ...persisted, cid: 'AA==' })
@@ -378,10 +393,12 @@ describe('KeyExchange v3', () => {
     it('rejects exhausted send and receive counters before cryptographic use', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
 
-      const dappPersisted = (await dapp.exportPersisted())!;
+      const dappPersisted = await dapp.exportPersisted();
+      assert.isNotNull(dappPersisted);
       dappPersisted.sendSeq = Number.MAX_SAFE_INTEGER;
       const exhaustedSender = new KeyExchange(
         true,
@@ -391,7 +408,8 @@ describe('KeyExchange v3', () => {
         'send counter exhausted'
       );
 
-      const walletPersisted = (await wallet.exportPersisted())!;
+      const walletPersisted = await wallet.exportPersisted();
+      assert.isNotNull(walletPersisted);
       walletPersisted.recvSeq = Number.MAX_SAFE_INTEGER;
       const exhaustedReceiver = new KeyExchange(
         false,
@@ -405,16 +423,18 @@ describe('KeyExchange v3', () => {
     it('does not expose mutable references to live session counters or AAD', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
+      assert.isNotNull(ack);
       dapp.confirmOriginatorAckDelivered();
-      await wallet.onAck(ack!);
+      await wallet.onAck(ack);
 
-      const exposed = dapp.getSession()!;
+      const exposed = dapp.getSession();
+      assert.isNotNull(exposed);
       exposed.sendSeq = 0;
       exposed.htx.fill(0);
 
       const ciphertext = await dapp.encryptMessage('still-bound');
       await expect(wallet.decryptMessage(ciphertext)).resolves.toBe('still-bound');
-      expect(dapp.getSession()!.sendSeq).toBe(2);
+      expect(dapp.getSession()?.sendSeq).toBe(2);
     });
   });
 
@@ -422,7 +442,8 @@ describe('KeyExchange v3', () => {
     it('wipes session state', async () => {
       const synack = await initiateSynAck();
       const ack = await dapp.onSynAck(CID, synack);
-      await wallet.onAck(ack!);
+      assert.isNotNull(ack);
+      await wallet.onAck(ack);
 
       dapp.reset();
       expect(dapp.areKeysExchanged()).toBe(false);

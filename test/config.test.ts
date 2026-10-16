@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, assert } from 'vitest';
 import { toChecksumAddress } from '@theqrl/wallet.js';
 import {
   RESTRICTED_METHODS,
@@ -120,7 +120,8 @@ describe('config', () => {
     });
 
     it('does not let consumers mutate the provider authorization policy', () => {
-      const publicSnapshot = RESTRICTED_METHODS as Set<string>;
+      const publicSnapshot = RESTRICTED_METHODS;
+      assert.instanceOf(publicSnapshot, Set);
       publicSnapshot.add('qrl_sendRawTransaction');
       try {
         expect(classifyRpcMethod('qrl_sendRawTransaction')).toBe('unsupported');
