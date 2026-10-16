@@ -10,9 +10,9 @@ describe('logger', () => {
 
   beforeEach(() => {
     consoleSpy = {
-      log: vi.spyOn(console, 'log').mockImplementation(() => {}),
-      warn: vi.spyOn(console, 'warn').mockImplementation(() => {}),
-      error: vi.spyOn(console, 'error').mockImplementation(() => {}),
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      warn: vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
     };
   });
 

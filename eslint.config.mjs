@@ -114,62 +114,28 @@ export const baseConfig = [
     rules: { 'no-console': 'off' },
   },
   {
+    // The test console filter: this setup file wraps console.warn and
+    // console.error so the SDK's tagged output stays out of test logs.
+    files: ['test/setup.ts'],
+    rules: { 'no-console': 'off' },
+  },
+  {
     // Tests use this boundary to pass deliberately malformed values to typed APIs.
     files: ['test/helpers/malformed.ts'],
     rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
+  },
+  {
+    // The E2E harness runs in Node and reports progress and failures to the
+    // terminal. Its console diagnostics are the command-line interface.
+    files: ['test-e2e.mjs'],
+    rules: { 'no-console': 'off' },
   },
 ];
 
 // Existing lint debt, including tests. Entries may only be removed.
 // Regenerate with npm run lint:ratchet:update after fixing a file/rule pair.
 // BEGIN LINT RATCHET
-export const lintRatchet = [
-  {
-    files: ['src/signing/__tests__/parity.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/restrict-plus-operands': 'off',
-    },
-  },
-  {
-    files: ['src/signing/__tests__/schemeParity.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-    },
-  },
-  {
-    files: ['src/signing/__tests__/typedDataSecurity.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-    },
-  },
-  { files: ['test-e2e.mjs'], rules: { 'no-console': 'off', 'no-empty': 'off' } },
-  {
-    files: ['test/KeyExchange.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-    },
-  },
-  {
-    files: ['test/SessionOwnership.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      'no-restricted-syntax': 'off',
-    },
-  },
-  {
-    files: ['test/config.test.ts'],
-    rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
-  },
-  { files: ['test/kat.test.ts'], rules: { '@typescript-eslint/no-unnecessary-condition': 'off' } },
-  { files: ['test/logger.test.ts'], rules: { '@typescript-eslint/no-empty-function': 'off' } },
-  { files: ['test/setup.ts'], rules: { 'no-console': 'off' } },
-];
+export const lintRatchet = [];
 // END LINT RATCHET
 
 export default [...baseConfig, ...lintRatchet];

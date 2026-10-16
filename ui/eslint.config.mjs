@@ -73,12 +73,7 @@ export const baseConfig = [
 // Existing lint debt, including tests. Entries may only be removed.
 // Regenerate with npm run lint:ratchet:update after fixing a file/rule pair.
 // BEGIN LINT RATCHET
-export const lintRatchet = [
-  {
-    files: ['test/element.test.ts'],
-    rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
-  },
-];
+export const lintRatchet = [];
 // END LINT RATCHET
 
 export default [...baseConfig, ...lintRatchet];

@@ -118,7 +118,7 @@ function sendMessage(socket, channelId, clientType, message) {
   });
 }
 
-/** Persistent message queue on a socket — events are NEVER lost. */
+/** Persistent message queue on a socket: events are NEVER lost. */
 function makeMessageQueue(socket) {
   const buffered = [];
   const waiters = [];
@@ -204,7 +204,7 @@ async function run() {
     console.log('   Wallet: verifying PK fingerprint against QR out-of-band commitment');
     const expectedFp = await computeFingerprint(cid, pk, pairingCapability);
     if (!fingerprintEquals(fp, expectedFp)) {
-      throw new Error('Fingerprint mismatch — relay may have substituted the PK');
+      throw new Error('Fingerprint mismatch: relay may have substituted the PK');
     }
 
     console.log('5. Wallet: running receiveQR → Encaps + seal HELLO_WALLET');
@@ -555,7 +555,9 @@ async function run() {
     pairingCapability?.fill(0);
     try {
       dapp?.disconnect();
-    } catch {}
+    } catch {
+      // Continue releasing relay resources after a disconnect failure.
+    }
     walletSocket?.disconnect();
     // createRelayServer returns { io, channelManager, destroy } since the
     // backend's TS migration; destroy() also tears down the channelManager.

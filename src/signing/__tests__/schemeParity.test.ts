@@ -9,7 +9,7 @@
  * verify the wallet's signatures.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, assert } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +40,6 @@ interface SchemeVector {
 
 interface SchemeSigningVector {
   label: string;
-  hexSeed: string;
   payload: TypedDataPayload;
   schemeVersion: TypedDataSchemeVersion;
   signature: string;
@@ -50,10 +49,67 @@ interface SchemeSigningVector {
   digest: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTypedDataPayload(value: unknown): value is TypedDataPayload {
+  return (
+    isRecord(value) &&
+    typeof value.primaryType === 'string' &&
+    isRecord(value.types) &&
+    Object.values(value.types).every(
+      (fields: unknown) =>
+        Array.isArray(fields) &&
+        fields.every(
+          (field: unknown) =>
+            isRecord(field) && typeof field.name === 'string' && typeof field.type === 'string'
+        )
+    ) &&
+    isRecord(value.domain) &&
+    isRecord(value.message)
+  );
+}
+
+function isCanonical(
+  value: unknown
+): value is { schemeVectors: SchemeVector[]; schemeSigningVectors: SchemeSigningVector[] } {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.schemeVectors) &&
+    value.schemeVectors.every(
+      (v: unknown) =>
+        isRecord(v) &&
+        typeof v.label === 'string' &&
+        (v.schemeVersion === 'QRL-SIGN-TYPED-v1' || v.schemeVersion === 'QRL-SIGN-TYPED-v2') &&
+        isTypedDataPayload(v.payload) &&
+        typeof v.encodeTypeString === 'string' &&
+        typeof v.typeHashHex === 'string' &&
+        typeof v.domainHashHex === 'string' &&
+        typeof v.messageHashHex === 'string' &&
+        typeof v.digestHex === 'string'
+    ) &&
+    Array.isArray(value.schemeSigningVectors) &&
+    value.schemeSigningVectors.every(
+      (v: unknown) =>
+        isRecord(v) &&
+        typeof v.label === 'string' &&
+        isTypedDataPayload(v.payload) &&
+        (v.schemeVersion === 'QRL-SIGN-TYPED-v1' || v.schemeVersion === 'QRL-SIGN-TYPED-v2') &&
+        typeof v.signature === 'string' &&
+        typeof v.publicKey === 'string' &&
+        typeof v.descriptor === 'string' &&
+        typeof v.signer === 'string' &&
+        typeof v.digest === 'string'
+    )
+  );
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
-const canonical = JSON.parse(
+const canonical: unknown = JSON.parse(
   readFileSync(join(here, '..', '__fixtures__', 'canonical.json'), 'utf-8')
-) as { schemeVectors: SchemeVector[]; schemeSigningVectors: SchemeSigningVector[] };
+);
+assert(isCanonical(canonical));
 
 describe('typed-data scheme parity with the wallet', () => {
   it.each(canonical.schemeVectors.map((v) => [v.label, v] as const))(
@@ -112,9 +168,10 @@ describe('typed-data scheme parity with the wallet', () => {
   });
 
   it('a v2 signature fails once the signed payload changes', () => {
-    const v2 = canonical.schemeSigningVectors.find((v) => v.schemeVersion === 'QRL-SIGN-TYPED-v2')!;
+    const v2 = canonical.schemeSigningVectors.find((v) => v.schemeVersion === 'QRL-SIGN-TYPED-v2');
+    assert.isDefined(v2);
     const altered = structuredClone(v2.payload);
-    (altered.message as Record<string, unknown>).nonce = '8';
+    altered.message.nonce = '8';
     expect(
       verifyTypedDataSignature({
         signature: v2.signature,

@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, assert } from 'vitest';
 
 import { computeTypedDataDigest } from '../index.js';
 
-function validPayload(): Record<string, unknown> {
+function validPayload(): {
+  types: {
+    Payload: { name: string; type: string; label?: string }[];
+    [name: string]: { name: string; type: string }[];
+  };
+  primaryType: string;
+  domain: { name: string };
+  message: { value: number };
+} {
   return {
     types: {
       QRLDomain: [{ name: 'name', type: 'string' }],
@@ -23,8 +31,9 @@ describe('typed-data ambiguity rejection', () => {
 
   it('rejects unknown keys on a typed field declaration', () => {
     const payload = validPayload();
-    const types = payload.types as Record<string, Record<string, unknown>[]>;
-    types.Payload![0]!.label = 'display-only';
+    const types = payload.types;
+    assert.isDefined(types.Payload[0]);
+    types.Payload[0].label = 'display-only';
 
     expect(() => computeTypedDataDigest(payload)).toThrow(/struct map/);
   });
@@ -33,8 +42,9 @@ describe('typed-data ambiguity rejection', () => {
     'rejects a struct that shadows atomic type %s',
     (reservedName) => {
       const payload = validPayload();
-      const types = payload.types as Record<string, Record<string, unknown>[]>;
-      types.Payload![0]!.type = reservedName;
+      const types = payload.types;
+      assert.isDefined(types.Payload[0]);
+      types.Payload[0].type = reservedName;
       types[reservedName] = [{ name: 'hidden', type: 'uint8' }];
 
       expect(() => computeTypedDataDigest(payload)).toThrow(/reserved by an atomic type/);
