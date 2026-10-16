@@ -10,6 +10,13 @@ import { canRatchet } from './eslint-policy.mjs';
 import { parseArgs } from 'node:util';
 import { format, resolveConfig } from 'prettier';
 
+// With CI=true, typescript-eslint infers a single run and treats a second
+// parse of the same file as an autofix pass: it then lints that file without
+// type information. This script lints every file twice, once with bulk
+// suppressions disabled and once for the bookkeeping, so both scans keep the
+// project service in CI, the same as a local run.
+process.env.TSESTREE_SINGLE_RUN = 'false';
+
 const { values } = parseArgs({
   options: {
     check: { type: 'boolean' },
