@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, assert, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock socket.io-client before importing SocketClient
 const mockSocket = {
   connected: false,
-  on: vi.fn(),
-  emit: vi.fn(),
+  on: vi.fn<(event: string, callback: (...args: unknown[]) => void) => void>(),
+  emit: vi.fn<
+    (event: string, payload: unknown, callback?: (response: unknown) => void) => void
+  >(),
   disconnect: vi.fn(),
   removeAllListeners: vi.fn(),
 };
@@ -94,7 +96,7 @@ describe('SocketClient', () => {
       // Simulate socket connect event
       const connectHandler = mockSocket.on.mock.calls.find(
         (c: unknown[]) => c[0] === 'connect'
-      )?.[1] as Function;
+      )?.[1];
       connectHandler?.();
 
       expect(connectedSpy).toHaveBeenCalledOnce();
@@ -107,7 +109,7 @@ describe('SocketClient', () => {
 
       const disconnectHandler = mockSocket.on.mock.calls.find(
         (c: unknown[]) => c[0] === 'disconnect'
-      )?.[1] as Function;
+      )?.[1];
       disconnectHandler?.('transport close');
 
       expect(disconnectedSpy).toHaveBeenCalledWith('transport close');
@@ -120,7 +122,7 @@ describe('SocketClient', () => {
 
       const messageHandler = mockSocket.on.mock.calls.find(
         (c: unknown[]) => c[0] === 'message'
-      )?.[1] as Function;
+      )?.[1];
       const testData = { id: 'chan-1', message: 'encrypted', clientType: 'wallet' };
       messageHandler?.(testData);
 
@@ -134,7 +136,7 @@ describe('SocketClient', () => {
 
       const handler = mockSocket.on.mock.calls.find(
         (c: unknown[]) => c[0] === 'participants_changed'
-      )?.[1] as Function;
+      )?.[1];
       handler?.({ event: 'join', clientType: 'wallet' });
 
       expect(participantsSpy).toHaveBeenCalledWith({
@@ -159,7 +161,7 @@ describe('SocketClient', () => {
       client.connect();
       const buffered = [{ id: 'chan', message: 'msg1' }];
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, bufferedMessages: buffered });
           }
@@ -171,7 +173,7 @@ describe('SocketClient', () => {
 
       const connectHandler = mockSocket.on.mock.calls.find(
         (c: unknown[]) => c[0] === 'connect'
-      )?.[1] as Function;
+      )?.[1];
       mockSocket.connected = true;
       connectHandler?.();
 
@@ -186,7 +188,7 @@ describe('SocketClient', () => {
 
       // Mock the callback response
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, bufferedMessages: [] });
           }
@@ -208,7 +210,7 @@ describe('SocketClient', () => {
 
       const buffered = [{ id: 'chan', message: 'msg1' }];
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, bufferedMessages: buffered });
           }
@@ -223,7 +225,7 @@ describe('SocketClient', () => {
       client.connect();
       mockSocket.connected = true;
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({
               success: true,
@@ -236,7 +238,7 @@ describe('SocketClient', () => {
       expect(client.getChannelId()).toBeNull();
 
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, participants: ['wallet', 'wallet'] });
           }
@@ -250,7 +252,7 @@ describe('SocketClient', () => {
       client.connect();
       mockSocket.connected = true;
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, channelPublicKey: 'AA==' });
           }
@@ -259,7 +261,7 @@ describe('SocketClient', () => {
       await expect(client.joinChannel('test-channel')).rejects.toThrow(/channel public key/);
 
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, terminated: 'yes' });
           }
@@ -273,7 +275,7 @@ describe('SocketClient', () => {
       mockSocket.connected = true;
 
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: false, error: 'Channel is full' });
           }
@@ -287,7 +289,7 @@ describe('SocketClient', () => {
     it('should reject deferred join when connect-time join fails', async () => {
       client.connect();
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: false, error: 'Channel is full' });
           }
@@ -297,7 +299,7 @@ describe('SocketClient', () => {
       const joinPromise = client.joinChannel('test-channel');
       const connectHandler = mockSocket.on.mock.calls.find(
         (c: unknown[]) => c[0] === 'connect'
-      )?.[1] as Function;
+      )?.[1];
       mockSocket.connected = true;
       connectHandler?.();
 
@@ -316,16 +318,16 @@ describe('SocketClient', () => {
         const joinPromise = client.joinChannel('test-channel');
         // Attach a handler so vitest doesn't warn about unhandled rejection
         // while we're advancing the clock.
-        const caught = joinPromise.catch((e) => e);
+        const caught = joinPromise.catch((e: unknown) => e);
         await vi.advanceTimersByTimeAsync(21000);
         const err = await caught;
-        expect((err as Error).message).toMatch(/timed out/i);
+        expect(err).toHaveProperty('message', expect.stringMatching(/timed out/i));
         expect(client.getChannelId()).toBeNull();
         expect(mockSocket.disconnect).toHaveBeenCalledOnce();
 
         const connectHandler = mockSocket.on.mock.calls.find(
           (call: unknown[]) => call[0] === 'connect'
-        )?.[1] as Function;
+        )?.[1];
         mockSocket.connected = true;
         connectHandler?.();
         expect(mockSocket.emit).not.toHaveBeenCalledWith(
@@ -346,12 +348,13 @@ describe('SocketClient', () => {
         mockSocket.emit.mockImplementation(() => undefined);
 
         const join = client.joinChannel('test-channel');
-        const caught = join.catch((error) => error);
+        const caught = join.catch((error: unknown) => error);
         await vi.advanceTimersByTimeAsync(PENDING_JOIN_TIMEOUT_MS + 1);
 
-        await expect(caught).resolves.toMatchObject({
-          message: expect.stringMatching(/joinChannel acknowledgement timed out/i),
-        });
+        await expect(caught).resolves.toHaveProperty(
+          'message',
+          expect.stringMatching(/joinChannel acknowledgement timed out/i)
+        );
         expect(client.getChannelId()).toBeNull();
         expect(mockSocket.emit).toHaveBeenCalledWith('leave_channel', {
           channelId: 'test-channel',
@@ -367,19 +370,20 @@ describe('SocketClient', () => {
       mockSocket.emit.mockImplementation(() => undefined);
 
       const join = client.joinChannel('test-channel');
-      const caught = join.catch((error) => error);
+      const caught = join.catch((error: unknown) => error);
       client.leaveChannel();
 
-      await expect(caught).resolves.toMatchObject({
-        message: expect.stringMatching(/Channel left before join completed/i),
-      });
+      await expect(caught).resolves.toHaveProperty(
+        'message',
+        expect.stringMatching(/Channel left before join completed/i)
+      );
     });
 
     it('should reject and abandon malformed relay join acknowledgements', async () => {
       client.connect();
       mockSocket.connected = true;
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) callback(undefined);
         }
       );
@@ -395,11 +399,11 @@ describe('SocketClient', () => {
       try {
         client.connect();
         const joinPromise = client.joinChannel('test-channel');
-        const caught = joinPromise.catch((e) => e);
+        const caught = joinPromise.catch((e: unknown) => e);
         // User abandons the pairing before connect fires.
         client.leaveChannel();
         const err = await caught;
-        expect((err as Error).message).toMatch(/Channel left/i);
+        expect(err).toHaveProperty('message', expect.stringMatching(/Channel left/i));
         // Advance past the watchdog deadline - a lingering timer would
         // reject again and this test would fail on an unhandled promise.
         await vi.advanceTimersByTimeAsync(25000);
@@ -421,7 +425,7 @@ describe('SocketClient', () => {
       mockSocket.connected = true;
 
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'message' && callback) {
             callback({ success: true, buffered: false });
           }
@@ -441,7 +445,7 @@ describe('SocketClient', () => {
       mockSocket.connected = true;
 
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'message' && callback) {
             callback({ success: false, error: 'Rate limit exceeded' });
           }
@@ -462,7 +466,7 @@ describe('SocketClient', () => {
       client.connect();
       mockSocket.connected = true;
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'message' && callback) callback(response);
         }
       );
@@ -476,7 +480,7 @@ describe('SocketClient', () => {
       client.connect();
       mockSocket.connected = true;
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'message' && callback) {
             callback({ success: false, error: 'x'.repeat(4096) });
           }
@@ -486,8 +490,8 @@ describe('SocketClient', () => {
       const error = await client
         .sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' })
         .catch((reason: unknown) => reason);
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message.length).toBe(512);
+      assert(error instanceof Error);
+      expect(error.message.length).toBe(512);
     });
 
     it('should reject after a bounded wait when the relay never acknowledges', async () => {
@@ -498,12 +502,13 @@ describe('SocketClient', () => {
         mockSocket.emit.mockImplementation(() => undefined);
 
         const send = client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' });
-        const caught = send.catch((error) => error);
+        const caught = send.catch((error: unknown) => error);
         await vi.advanceTimersByTimeAsync(MESSAGE_ACK_TIMEOUT_MS + 1);
 
-        await expect(caught).resolves.toMatchObject({
-          message: expect.stringMatching(/acknowledgement timed out/i),
-        });
+        await expect(caught).resolves.toHaveProperty(
+          'message',
+          expect.stringMatching(/acknowledgement timed out/i)
+        );
       } finally {
         vi.useRealTimers();
       }
@@ -515,12 +520,13 @@ describe('SocketClient', () => {
       mockSocket.emit.mockImplementation(() => undefined);
 
       const send = client.sendMessage({ id: 'chan', clientType: 'dapp', message: 'test' });
-      const caught = send.catch((error) => error);
+      const caught = send.catch((error: unknown) => error);
       client.disconnect();
 
-      await expect(caught).resolves.toMatchObject({
-        message: expect.stringMatching(/disconnected before relay acknowledgement/i),
-      });
+      await expect(caught).resolves.toHaveProperty(
+        'message',
+        expect.stringMatching(/disconnected before relay acknowledgement/i)
+      );
     });
   });
 
@@ -530,7 +536,7 @@ describe('SocketClient', () => {
       mockSocket.connected = true;
 
       mockSocket.emit.mockImplementation(
-        (event: string, _payload: unknown, callback?: Function) => {
+        (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
           if (event === 'join_channel' && callback) {
             callback({ success: true, bufferedMessages: [] });
           }

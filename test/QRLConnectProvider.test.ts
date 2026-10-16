@@ -101,7 +101,7 @@ describe('QRLConnectProvider', () => {
   });
 
   afterEach(() => {
-    provider.disconnect();
+    void provider.disconnect();
     vi.clearAllMocks();
   });
 
@@ -302,7 +302,7 @@ describe('QRLConnectProvider', () => {
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
     });
 
-    it.each([
+    it.each<[string, unknown[]]>([
       ['qrl_sendTransaction', [{ to: authorizedAccount, value: '0x0' }]],
       ['qrl_signTransaction', [{ from: authorizedAccount, to: authorizedAccount }]],
       ['qrl_signMessage', [authorizedAccount, '0x00']],
@@ -326,7 +326,7 @@ describe('QRLConnectProvider', () => {
       mockCM.paired = true;
       mockCM.accounts = [];
 
-      await expect(provider.request({ method, params: params as unknown[] })).rejects.toThrow(
+      await expect(provider.request({ method, params })).rejects.toThrow(
         'call qrl_requestAccounts first'
       );
       expect(mockCM.sendJsonRpc).not.toHaveBeenCalled();
@@ -1167,7 +1167,7 @@ describe('QRLConnectProvider', () => {
 
       const promise = provider.request({ method: 'qrl_blockNumber' });
 
-      provider.disconnect();
+      void provider.disconnect();
 
       await expect(promise).rejects.toThrow('Disconnected');
       expect(mockCM.disconnect).toHaveBeenCalled();
