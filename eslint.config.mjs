@@ -113,36 +113,17 @@ export const baseConfig = [
     files: ['src/utils/logger.ts'],
     rules: { 'no-console': 'off' },
   },
+  {
+    // Tests use this boundary to pass deliberately malformed values to typed APIs.
+    files: ['test/helpers/malformed.ts'],
+    rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
+  },
 ];
 
 // Existing lint debt, including tests. Entries may only be removed.
 // Regenerate with npm run lint:ratchet:update after fixing a file/rule pair.
 // BEGIN LINT RATCHET
 export const lintRatchet = [
-  {
-    files: ['src/ConnectionManager.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off', 'preserve-caught-error': 'off' },
-  },
-  {
-    files: ['src/KeyExchange.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/QRLConnectProvider.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off', 'preserve-caught-error': 'off' },
-  },
-  {
-    files: ['src/SessionOwnership.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/SocketClient.ts'],
-    rules: { '@typescript-eslint/consistent-type-imports': 'off' },
-  },
-  {
-    files: ['src/crypto/primitives.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
   {
     files: ['src/signing/__tests__/parity.test.ts'],
     rules: {
@@ -166,25 +147,7 @@ export const lintRatchet = [
       '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
-  {
-    files: ['src/signing/typedData.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  { files: ['src/utils/qrUri.ts'], rules: { 'preserve-caught-error': 'off' } },
   { files: ['test-e2e.mjs'], rules: { 'no-console': 'off', 'no-empty': 'off' } },
-  {
-    files: ['test/ConnectionManager.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
-      '@typescript-eslint/no-unsafe-argument': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/no-unsafe-member-access': 'off',
-      '@typescript-eslint/no-unsafe-return': 'off',
-      '@typescript-eslint/unbound-method': 'off',
-      'no-restricted-syntax': 'off',
-    },
-  },
   {
     files: ['test/KeyExchange.test.ts'],
     rules: {
@@ -193,29 +156,10 @@ export const lintRatchet = [
     },
   },
   {
-    files: ['test/QRLConnectProvider.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-floating-promises': 'off',
-    },
-  },
-  {
     files: ['test/SessionOwnership.test.ts'],
     rules: {
       '@typescript-eslint/consistent-type-assertions': 'off',
       'no-restricted-syntax': 'off',
-    },
-  },
-  {
-    files: ['test/SocketClient.test.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': 'off',
-      '@typescript-eslint/no-unnecessary-condition': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/no-unsafe-call': 'off',
-      '@typescript-eslint/no-unsafe-function-type': 'off',
-      '@typescript-eslint/no-unsafe-return': 'off',
-      '@typescript-eslint/use-unknown-in-catch-callback-variable': 'off',
     },
   },
   {

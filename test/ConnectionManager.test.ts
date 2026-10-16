@@ -1,8 +1,10 @@
 import { describe, it, expect, assert, vi, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'eventemitter3';
 import { ConnectionStatus, KeyExchangeMessageType } from '../src/types.js';
+import type { KeyExchange } from '../src/KeyExchange.js';
 import * as qrUri from '../src/utils/qrUri.js';
 import { at } from './helpers.js';
+import { malformed } from './helpers/malformed.js';
 
 // Track latest mock instances (same pattern as QRLConnectProvider.test.ts)
 let latestMockSocket: MockSocketClient;
@@ -27,7 +29,19 @@ const PERSISTED_KEX = {
   recvSeq: 7,
 };
 
-function fakeLockManager(): LockManager {
+interface MockLockManager {
+  request: (
+    name: string,
+    options: LockOptions,
+    callback: (lock: Lock | null) => void | PromiseLike<void>
+  ) => Promise<unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function fakeLockManager(): MockLockManager {
   let held = false;
   return {
     request: vi.fn(
@@ -45,11 +59,11 @@ function fakeLockManager(): LockManager {
         }
       }
     ),
-  } as unknown as LockManager;
+  };
 }
 
 function deferredLockManager(): {
-  manager: LockManager;
+  manager: MockLockManager;
   dispatch: () => Promise<void>;
 } {
   let callback: ((lock: Lock | null) => void | PromiseLike<void>) | null = null;
@@ -69,7 +83,7 @@ function deferredLockManager(): {
         });
       }
     ),
-  } as unknown as LockManager;
+  };
 
   return {
     manager,
@@ -92,7 +106,7 @@ function installBrowserStorage(
     failReads?: boolean;
     failWrites?: boolean;
     failRemoves?: boolean;
-    lockManager?: LockManager;
+    lockManager?: MockLockManager;
   } = {}
 ): Map<string, string> {
   const values = new Map<string, string>();
@@ -182,8 +196,8 @@ class MockKeyExchange extends EventEmitter {
   areKeysExchanged() {
     return this.exchanged;
   }
-  decryptMessage = vi.fn();
-  encryptMessage = vi.fn().mockResolvedValue('ciphertext');
+  decryptMessage = vi.fn<KeyExchange['decryptMessage']>();
+  encryptMessage = vi.fn<KeyExchange['encryptMessage']>().mockResolvedValue('ciphertext');
   exportPersisted = vi.fn().mockResolvedValue(null);
   onSynAck = vi.fn();
   getLastAck = vi.fn(() => null);
@@ -481,7 +495,9 @@ describe('ConnectionManager desync teardown', () => {
 
     const failedKex = latestMockKex;
     const failedSocket = latestMockSocket;
-    const initiated = failedKex.initiate.mock.results[0]!.value;
+    const initiatedResult = at(failedKex.initiate.mock.results, 0);
+    assert(initiatedResult.type === 'return');
+    const initiated = initiatedResult.value;
     expect(Array.from(initiated.capability)).toEqual(new Array(32).fill(0));
     expect(failedKex.reset).toHaveBeenCalledOnce();
     expect(failedSocket.leaveChannel).toHaveBeenCalledOnce();
@@ -592,7 +608,7 @@ describe('ConnectionManager desync teardown', () => {
       expect(kex.encryptMessage).toHaveBeenCalledTimes(2);
     });
     const encryptedPayloads = kex.encryptMessage.mock.calls.map(
-      ([plaintext]) => JSON.parse(plaintext) as { type: string; method?: string }
+      ([plaintext]): unknown => JSON.parse(plaintext)
     );
     expect(encryptedPayloads).toEqual([
       expect.objectContaining({ type: 'originator_info' }),
@@ -1115,9 +1131,8 @@ describe('ConnectionManager desync teardown', () => {
     const account = ADDRESS_A;
     await cm.authorizeAccounts([account]);
 
-    const stored = JSON.parse(values.get('@qrlwallet/connect:session') ?? '{}') as {
-      connectedAccounts?: unknown;
-    };
+    const stored: unknown = JSON.parse(values.get('@qrlwallet/connect:session') ?? '{}');
+    assert(isRecord(stored));
     expect(stored.connectedAccounts).toEqual([account]);
     await cm.disconnect();
   });
@@ -1181,14 +1196,14 @@ describe('ConnectionManager desync teardown', () => {
     const values = installBrowserStorage();
     values.set('@qrlwallet/connect:session', storedSession());
     const hydrate = vi.mocked(
-      (await import('../src/KeyExchange.js')).KeyExchange.sessionFromPersisted
-    );
+      (await import('../src/KeyExchange.js')).KeyExchange
+    ).sessionFromPersisted;
     let finishHydration!: () => void;
     hydrate.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finishHydration = () => {
-            resolve(undefined as never);
+            resolve(malformed(undefined));
           };
         })
     );
@@ -1216,8 +1231,8 @@ describe('ConnectionManager desync teardown', () => {
     const values = installBrowserStorage({ lockManager: locks.manager });
     values.set('@qrlwallet/connect:session', storedSession());
     const hydrate = vi.mocked(
-      (await import('../src/KeyExchange.js')).KeyExchange.sessionFromPersisted
-    );
+      (await import('../src/KeyExchange.js')).KeyExchange
+    ).sessionFromPersisted;
     const cm = new ConnectionManager({
       dappMetadata: { name: 'Pending ownership', url: 'https://ownership.invalid' },
     });
@@ -1245,8 +1260,8 @@ describe('ConnectionManager desync teardown', () => {
     const values = installBrowserStorage({ lockManager: locks.manager });
     values.set('@qrlwallet/connect:session', storedSession());
     const hydrate = vi.mocked(
-      (await import('../src/KeyExchange.js')).KeyExchange.sessionFromPersisted
-    );
+      (await import('../src/KeyExchange.js')).KeyExchange
+    ).sessionFromPersisted;
     const cm = new ConnectionManager({
       dappMetadata: { name: 'Fresh pairing', url: 'https://fresh.invalid' },
     });
@@ -1325,8 +1340,8 @@ describe('ConnectionManager desync teardown', () => {
     await expect(cm.reconnect()).resolves.toBe(true);
 
     const hydrate = vi.mocked(
-      (await import('../src/KeyExchange.js')).KeyExchange.sessionFromPersisted
-    );
+      (await import('../src/KeyExchange.js')).KeyExchange
+    ).sessionFromPersisted;
     expect(hydrate).toHaveBeenCalledWith(expect.objectContaining({ sendSeq: 19 }));
     await cm.disconnect();
   });
@@ -1342,8 +1357,8 @@ describe('ConnectionManager desync teardown', () => {
     const values = installBrowserStorage(storageOptions);
     values.set('@qrlwallet/connect:session', storedSession());
     const hydrate = vi.mocked(
-      (await import('../src/KeyExchange.js')).KeyExchange.sessionFromPersisted
-    );
+      (await import('../src/KeyExchange.js')).KeyExchange
+    ).sessionFromPersisted;
     const first = new ConnectionManager({
       dappMetadata: { name: 'Idempotent restore', url: 'https://idempotent.invalid' },
     });
@@ -1378,8 +1393,8 @@ describe('ConnectionManager desync teardown', () => {
     const values = installBrowserStorage(storageOptions);
     values.set('@qrlwallet/connect:session', storedSession());
     const hydrate = vi.mocked(
-      (await import('../src/KeyExchange.js')).KeyExchange.sessionFromPersisted
-    );
+      (await import('../src/KeyExchange.js')).KeyExchange
+    ).sessionFromPersisted;
     hydrate.mockRejectedValueOnce(new Error('key import failed'));
     const first = new ConnectionManager({
       dappMetadata: { name: 'Hydration failure', url: 'https://hydrate.invalid' },
@@ -1447,7 +1462,8 @@ describe('ConnectionManager desync teardown', () => {
 
   it('drops pre-PQP3 version 4 sessions instead of restoring their keys', async () => {
     const values = installBrowserStorage();
-    const legacy = JSON.parse(storedSession()) as Record<string, unknown>;
+    const legacy: unknown = JSON.parse(storedSession());
+    assert(isRecord(legacy));
     legacy.version = 4;
     values.set('@qrlwallet/connect:session', JSON.stringify(legacy));
 
@@ -1462,9 +1478,8 @@ describe('ConnectionManager desync teardown', () => {
 
   it('drops a version 5 record whose inner key exchange predates protocol v3', async () => {
     const values = installBrowserStorage();
-    const legacy = JSON.parse(storedSession()) as {
-      keyExchange: Record<string, unknown>;
-    };
+    const legacy: unknown = JSON.parse(storedSession());
+    assert(isRecord(legacy) && isRecord(legacy.keyExchange));
     legacy.keyExchange.protocolVersion = 2;
     values.set('@qrlwallet/connect:session', JSON.stringify(legacy));
 
@@ -1481,9 +1496,8 @@ describe('ConnectionManager desync teardown', () => {
     const fields = ['cid', 'kAeadRaw', 'htx', 'sendDir', 'recvDir'] as const;
     for (const field of fields) {
       const values = installBrowserStorage();
-      const malformed = JSON.parse(storedSession()) as {
-        keyExchange: Record<string, unknown>;
-      };
+      const malformed: unknown = JSON.parse(storedSession());
+      assert(isRecord(malformed) && isRecord(malformed.keyExchange));
       malformed.keyExchange[field] = 'AA==';
       values.set('@qrlwallet/connect:session', JSON.stringify(malformed));
 
@@ -1499,11 +1513,13 @@ describe('ConnectionManager desync teardown', () => {
   it('drops poisoned stored metadata, chain ids, and timestamps', async () => {
     const poisoners: ((session: Record<string, unknown>) => void)[] = [
       (session) => {
-        const metadata = session.dappMetadata as Record<string, unknown>;
+        const metadata = session.dappMetadata;
+        assert(isRecord(metadata));
         metadata.name = 'x'.repeat(129);
       },
       (session) => {
-        const metadata = session.dappMetadata as Record<string, unknown>;
+        const metadata = session.dappMetadata;
+        assert(isRecord(metadata));
         metadata.url = 'javascript:alert(1)';
       },
       (session) => {
@@ -1523,7 +1539,8 @@ describe('ConnectionManager desync teardown', () => {
 
     for (const poison of poisoners) {
       const values = installBrowserStorage();
-      const session = JSON.parse(storedSession()) as Record<string, unknown>;
+      const session: unknown = JSON.parse(storedSession());
+      assert(isRecord(session));
       poison(session);
       values.set('@qrlwallet/connect:session', JSON.stringify(session));
 
@@ -1554,7 +1571,8 @@ describe('ConnectionManager desync teardown', () => {
     ['legacy Q plus 40', `Q${'a'.repeat(40)}`],
   ])('drops a persisted session containing a %s account', async (_label, account) => {
     const values = installBrowserStorage();
-    const malformed = JSON.parse(storedSession()) as Record<string, unknown>;
+    const malformed: unknown = JSON.parse(storedSession());
+    assert(isRecord(malformed));
     malformed.connectedAccounts = [account];
     values.set('@qrlwallet/connect:session', JSON.stringify(malformed));
 

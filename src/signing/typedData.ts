@@ -271,7 +271,8 @@ function collectDependencies(primary: string, types: TypeMap): Set<string> {
 }
 
 function validateTypeMap(types: TypeMap): void {
-  const entries = Object.entries(types);
+  const entries: [string, readonly ({ name?: unknown; type?: unknown } | null | undefined)[]][] =
+    Object.entries(types);
   if (entries.length === 0 || entries.length > TYPED_DATA_LIMITS.maxTypes) {
     throw new Error(`typed data must contain 1-${TYPED_DATA_LIMITS.maxTypes} struct types`);
   }
