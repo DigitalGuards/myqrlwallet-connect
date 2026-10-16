@@ -131,12 +131,6 @@ class MockSocketClient extends EventEmitter {
   channelId: string | null = null;
   connected = false;
 
-  constructor() {
-    super();
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    latestMockSocket = this;
-  }
-
   setPublicKey = vi.fn();
   connect = vi.fn(() => {
     this.connected = true;
@@ -178,12 +172,6 @@ class MockSocketClient extends EventEmitter {
 class MockKeyExchange extends EventEmitter {
   exchanged = false;
 
-  constructor() {
-    super();
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    latestMockKex = this;
-  }
-
   initiate = vi.fn(() => ({
     publicKey: new Uint8Array(1184),
     capability: new Uint8Array(32).fill(0xa5),
@@ -208,7 +196,8 @@ class MockKeyExchange extends EventEmitter {
 
 vi.mock('../src/SocketClient.js', () => ({
   SocketClient: vi.fn().mockImplementation(function () {
-    return new MockSocketClient();
+    latestMockSocket = new MockSocketClient();
+    return latestMockSocket;
   }),
 }));
 
@@ -216,7 +205,8 @@ vi.mock('../src/KeyExchange.js', () => ({
   SYNACK_C0_LEN: 31,
   KeyExchange: Object.assign(
     vi.fn().mockImplementation(function () {
-      return new MockKeyExchange();
+      latestMockKex = new MockKeyExchange();
+      return latestMockKex;
     }),
     { sessionFromPersisted: vi.fn() }
   ),

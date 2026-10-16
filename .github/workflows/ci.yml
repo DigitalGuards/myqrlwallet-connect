@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -38,6 +40,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check lint ratchet
+        env:
+          LINT_RATCHET_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: npm run lint:ratchet -- --base-ref "$LINT_RATCHET_BASE"
+
       - name: Format check
         run: npm run format:check
 
@@ -45,7 +52,7 @@ jobs:
         run: npm run typecheck
 
       - name: Run tests
-        run: npm test
+        run: env -u DISPLAY -u WAYLAND_DISPLAY npm test -- --maxWorkers=4
 
       - name: Build
         run: npm run build
@@ -63,6 +70,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -96,6 +105,12 @@ jobs:
         run: npm run lint
         working-directory: ui
 
+      - name: Check lint ratchet
+        env:
+          LINT_RATCHET_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: npm run lint:ratchet -- --base-ref "$LINT_RATCHET_BASE"
+        working-directory: ui
+
       - name: Format check
         run: npm run format:check
         working-directory: ui
@@ -105,7 +120,7 @@ jobs:
         working-directory: ui
 
       - name: Run tests
-        run: npm test
+        run: env -u DISPLAY -u WAYLAND_DISPLAY npm test -- --maxWorkers=4
         working-directory: ui
 
       - name: Build

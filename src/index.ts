@@ -39,11 +39,17 @@ export {
   typeHash,
   hashStruct,
   encodeField,
-  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
+  /**
+   * @deprecated Use verifyMessageSignature for a key-only check, or
+   * verifyMessageForSigner when signer identity matters.
+   */
   verifyMessage,
   verifyMessageSignature,
   verifyMessageForSigner,
-  // eslint-disable-next-line @typescript-eslint/no-deprecated -- compatibility export
+  /**
+   * @deprecated Use verifyTypedDataSignature for a key-only check, or
+   * verifyTypedDataForSigner when signer identity matters.
+   */
   verifyTypedData,
   verifyTypedDataSignature,
   verifyTypedDataForSigner,
