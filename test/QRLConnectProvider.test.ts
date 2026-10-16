@@ -33,12 +33,6 @@ class MockConnectionManager extends EventEmitter {
   paired = false;
   walletPresent = false;
 
-  constructor() {
-    super();
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    latestMockCM = this;
-  }
-
   getStatus() {
     return this.status;
   }
@@ -80,7 +74,8 @@ class MockConnectionManager extends EventEmitter {
 
 vi.mock('../src/ConnectionManager.js', () => ({
   ConnectionManager: vi.fn().mockImplementation(function (..._args: unknown[]) {
-    return new MockConnectionManager();
+    latestMockCM = new MockConnectionManager();
+    return latestMockCM;
   }),
 }));
 

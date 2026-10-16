@@ -5,13 +5,15 @@
  * fails this test on next CI before a release can ship.
  */
 
-/* eslint-disable @typescript-eslint/no-deprecated -- deprecated aliases need compatibility tests */
-
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCurrentQrlAddress } from '../../config.js';
+import {
+  verifyMessage as verifyMessageFromSdk,
+  verifyTypedData as verifyTypedDataFromSdk,
+} from '../../index.js';
 import {
   bytesToHex,
   computeMessageDigest,
@@ -122,6 +124,7 @@ describe('SDK ↔ wallet parity', () => {
         };
         expect(verifyMessageSignature(params)).toBe(true);
         expect(verifyMessage(params)).toBe(true);
+        expect(verifyMessageFromSdk(params)).toBe(true);
       } else if (v.payload) {
         const params = {
           signature: v.signature,
@@ -130,6 +133,7 @@ describe('SDK ↔ wallet parity', () => {
         };
         expect(verifyTypedDataSignature(params)).toBe(false);
         expect(verifyTypedData(params)).toBe(false);
+        expect(verifyTypedDataFromSdk(params)).toBe(false);
       }
     }
   });
@@ -247,27 +251,29 @@ describe('SDK ↔ wallet parity', () => {
     ).toBe(false);
   });
 
-  it('verifyMessage rejects tampered bytes', () => {
+  it('verifyMessage and verifyMessageSignature reject tampered bytes', () => {
     const v = canonical.signingVectors.find((s) => s.messageHex !== undefined)!;
-    expect(
-      verifyMessage({
-        signature: v.signature,
-        publicKey: v.publicKey,
-        messageBytes: v.messageHex + 'ff',
-      })
-    ).toBe(false);
+    const params = {
+      signature: v.signature,
+      publicKey: v.publicKey,
+      messageBytes: v.messageHex + 'ff',
+    };
+    expect(verifyMessageSignature(params)).toBe(false);
+    expect(verifyMessage(params)).toBe(false);
+    expect(verifyMessageFromSdk(params)).toBe(false);
   });
 
-  it('verifyTypedData rejects tampered payload', () => {
+  it('verifyTypedData and verifyTypedDataSignature reject tampered payload', () => {
     const v = canonical.signingVectors.find((s) => s.payload !== undefined)!;
     const tampered: TypedDataPayload = JSON.parse(JSON.stringify(v.payload));
     (tampered.message as Record<string, unknown>).issuedAt = '0';
-    expect(
-      verifyTypedData({
-        signature: v.signature,
-        publicKey: v.publicKey,
-        payload: tampered,
-      })
-    ).toBe(false);
+    const params = {
+      signature: v.signature,
+      publicKey: v.publicKey,
+      payload: tampered,
+    };
+    expect(verifyTypedDataSignature(params)).toBe(false);
+    expect(verifyTypedData(params)).toBe(false);
+    expect(verifyTypedDataFromSdk(params)).toBe(false);
   });
 });

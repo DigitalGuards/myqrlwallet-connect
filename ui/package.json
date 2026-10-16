@@ -30,12 +30,14 @@
     "typecheck:test": "tsc --noEmit -p tsconfig.eslint.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/ test/ --ext .ts",
-    "lint:fix": "eslint src/ test/ --ext .ts --fix",
+    "lint": "eslint --config eslint.config.mjs . --report-unused-disable-directives --max-warnings 0",
+    "lint:fix": "eslint --config eslint.config.mjs . --report-unused-disable-directives --max-warnings 0 --fix",
     "format": "prettier --write src/ test/",
     "format:check": "prettier --check src/ test/",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build",
+    "lint:ratchet": "node ../scripts/lint-ratchet.mjs --dir ui --check",
+    "lint:ratchet:update": "node ../scripts/lint-ratchet.mjs --dir ui"
   },
   "keywords": [
     "qrl",
@@ -68,12 +70,14 @@
     }
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@qrlwallet/connect": "file:..",
     "@types/qrcode": "^1.5.5",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^8.57.0",
+    "eslint": "^10.12.0",
     "eslint-config-prettier": "^9.1.0",
+    "globals": "^17.13.0",
     "jsdom": "^25.0.1",
     "prettier": "^3.4.0",
     "tsup": "^8.4.0",

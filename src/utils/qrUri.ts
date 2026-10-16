@@ -148,8 +148,14 @@ function startsWith(buf: Uint8Array, prefix: Uint8Array): boolean {
   return true;
 }
 
-// eslint-disable-next-line @typescript-eslint/require-await -- public API stays async; parsing may grow async verification steps without a breaking change
-export async function parseConnectionURI(uri: string): Promise<ParsedURI> {
+export function parseConnectionURI(uri: string): Promise<ParsedURI> {
+  // Parse immediately and turn validation failures into Promise rejections.
+  return new Promise((resolve) => {
+    resolve(parseURI(uri));
+  });
+}
+
+function parseURI(uri: string): ParsedURI {
   if (typeof uri !== 'string' || uri.length === 0) {
     throw new Error('qrUri: empty URI');
   }
