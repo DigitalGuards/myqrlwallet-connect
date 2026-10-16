@@ -114,6 +114,12 @@ export const baseConfig = [
     rules: { 'no-console': 'off' },
   },
   {
+    // The test console filter: this setup file wraps console.warn and
+    // console.error so the SDK's tagged output stays out of test logs.
+    files: ['test/setup.ts'],
+    rules: { 'no-console': 'off' },
+  },
+  {
     // Tests use this boundary to pass deliberately malformed values to typed APIs.
     files: ['test/helpers/malformed.ts'],
     rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
