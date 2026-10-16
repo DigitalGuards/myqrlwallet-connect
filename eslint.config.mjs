@@ -105,12 +105,6 @@ export const baseConfig = [
     rules: { 'no-console': 'error' },
   },
   {
-    // The E2E harness runs in Node and reports progress and failures to the
-    // terminal. Its console diagnostics are the command-line interface.
-    files: ['test-e2e.mjs'],
-    rules: { 'no-console': 'off' },
-  },
-  {
     files: ['*.mjs', 'scripts/**/*.mjs', 'vitest.config.ts', 'example/vite.config.js'],
     languageOptions: { globals: globals.node },
   },
@@ -120,11 +114,15 @@ export const baseConfig = [
     rules: { 'no-console': 'off' },
   },
   {
-    // One test-only boundary supplies deliberately malformed typed inputs.
+    // Tests use this boundary to pass deliberately malformed values to typed APIs.
     files: ['test/helpers/malformed.ts'],
-    rules: {
-      '@typescript-eslint/consistent-type-assertions': ['error', { assertionStyle: 'as' }],
-    },
+    rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
+  },
+  {
+    // The E2E harness runs in Node and reports progress and failures to the
+    // terminal. Its console diagnostics are the command-line interface.
+    files: ['test-e2e.mjs'],
+    rules: { 'no-console': 'off' },
   },
 ];
 
