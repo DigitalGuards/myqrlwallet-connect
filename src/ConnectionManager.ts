@@ -483,7 +483,8 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
 
     socketClient.on('participants_changed', (data) => {
       if (!isCurrentSocket()) return;
-      if (data.clientType !== 'wallet') return;
+      const clientType = data.clientType;
+      if (clientType !== 'wallet') return;
       if (data.event === 'join' && data.clientType === 'wallet') {
         this.walletPresent = true;
         log('ConnectionManager', 'Wallet joined channel');
@@ -704,7 +705,9 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       log('ConnectionManager', `Generated v3 connection URI for channel ${context.channelId}`);
       return uri;
     } catch (err) {
-      if (context ? this.isSessionWorkCurrent(context) : this.keyExchange !== null) {
+      // Session work can retire the key exchange while an await is pending.
+      const keyExchange: unknown = this.keyExchange;
+      if (context ? this.isSessionWorkCurrent(context) : keyExchange !== null) {
         this.invalidateSessionWork();
         this.keyExchange = null;
         this.socketClient.leaveChannel();
@@ -1737,7 +1740,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
     // pairing may have retired this generation and released its lock while the
     // export was in flight; never resurrect or overwrite state afterward.
     this.assertSessionWorkCurrent(context);
-    if (!this.sessionOwnership?.isOwned()) {
+    if (!this.sessionOwnership.isOwned()) {
       throw new Error('Browser-tab ownership changed while persisting AEAD counters');
     }
 
@@ -1758,7 +1761,7 @@ export class ConnectionManager extends EventEmitter<ConnectionManagerEvents> {
       this.persistenceBroken = true;
       this.removeStoredSession();
       logError('ConnectionManager', 'Failed to persist AEAD counters:', err);
-      throw new Error('Failed to persist AEAD counters');
+      throw new Error('Failed to persist AEAD counters', { cause: err });
     }
   }
 

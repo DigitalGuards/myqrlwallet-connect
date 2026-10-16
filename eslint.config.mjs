@@ -129,37 +129,7 @@ export const baseConfig = [
 // Existing lint debt, including tests. Entries may only be removed.
 // Regenerate with npm run lint:ratchet:update after fixing a file/rule pair.
 // BEGIN LINT RATCHET
-export const lintRatchet = [
-  {
-    files: ['src/ConnectionManager.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off', 'preserve-caught-error': 'off' },
-  },
-  {
-    files: ['src/KeyExchange.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/QRLConnectProvider.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off', 'preserve-caught-error': 'off' },
-  },
-  {
-    files: ['src/SessionOwnership.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/SocketClient.ts'],
-    rules: { '@typescript-eslint/consistent-type-imports': 'off' },
-  },
-  {
-    files: ['src/crypto/primitives.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  {
-    files: ['src/signing/typedData.ts'],
-    rules: { '@typescript-eslint/no-unnecessary-condition': 'off' },
-  },
-  { files: ['src/utils/qrUri.ts'], rules: { 'preserve-caught-error': 'off' } },
-];
+export const lintRatchet = [];
 // END LINT RATCHET
 
 export default [...baseConfig, ...lintRatchet];

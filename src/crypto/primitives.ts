@@ -37,7 +37,8 @@ export interface EncapsResult {
 }
 
 function webCrypto(): Crypto {
-  const c = globalThis.crypto;
+  const environment: { crypto?: Crypto | null } = globalThis;
+  const c = environment.crypto;
   if (!c) {
     throw new Error('crypto: WebCrypto is not available in this environment');
   }
@@ -45,7 +46,7 @@ function webCrypto(): Crypto {
 }
 
 function subtle(): SubtleCrypto {
-  const c = webCrypto();
+  const c: { subtle?: SubtleCrypto | null } = webCrypto();
   if (!c.subtle) {
     throw new Error('crypto: WebCrypto SubtleCrypto is not available in this environment');
   }

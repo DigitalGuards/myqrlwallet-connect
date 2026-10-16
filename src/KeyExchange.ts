@@ -134,7 +134,8 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
     super();
     this.isOriginator = isOriginator;
     if (restored) {
-      if (restored.protocolVersion !== PROTOCOL_VERSION) {
+      const protocolVersion: unknown = restored.protocolVersion;
+      if (protocolVersion !== PROTOCOL_VERSION) {
         throw new Error('KeyExchange: cannot restore a pre-v3 session');
       }
       this.session = snapshotSession(restored);
@@ -512,7 +513,8 @@ export class KeyExchange extends EventEmitter<KeyExchangeEvents> {
 
   /** Rehydrate a Session from its persisted form. */
   static async sessionFromPersisted(p: PersistedSession): Promise<Session> {
-    if (p.protocolVersion !== PROTOCOL_VERSION) {
+    const protocolVersion: unknown = p.protocolVersion;
+    if (protocolVersion !== PROTOCOL_VERSION) {
       throw new Error('KeyExchange: cannot hydrate a pre-v3 session');
     }
     const kAeadRaw = fromBase64Exact(p.kAeadRaw, 32, 'persisted AEAD key');

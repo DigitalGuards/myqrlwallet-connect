@@ -20,7 +20,8 @@ export function getBrowserStorage(): Storage | null {
 export function getBrowserLockManager(): LockManager | null {
   try {
     if (typeof navigator === 'undefined') return null;
-    return navigator.locks ?? null;
+    const browserNavigator: { locks?: LockManager | null } = navigator;
+    return browserNavigator.locks ?? null;
   } catch {
     return null;
   }
