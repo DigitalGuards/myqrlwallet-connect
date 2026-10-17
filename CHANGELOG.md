@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-10-17
+
+No public API change. Existing integrations keep working unchanged.
+
+### Changed
+
+- Three errors now carry the underlying error as `cause`: a failed base45
+  decode in `parseConnectionURI`, request params that cannot be serialized to
+  JSON, and a failure to persist the AEAD counters. Their messages are
+  unchanged.
+- The compatibility re-exports `verifyMessage` and `verifyTypedData` carry
+  `@deprecated` JSDoc pointing to `verifyMessageSignature` /
+  `verifyMessageForSigner` and `verifyTypedDataSignature` /
+  `verifyTypedDataForSigner`, so editors flag them.
+
+### Internal
+
+- The SDK and the pairing UI now pass the full strict type-aware lint rule set
+  with no exceptions; CI rejects any new finding, including findings hidden by
+  bulk-suppression files or a TypeScript no-check directive in any letter
+  case.
+- The end-to-end harness covers the QIP-55 typed-data round trip and runs all
+  of its reconnect and desync scenarios again.
+
 ## [5.1.1] - 2026-10-13
 
 ### Fixed
