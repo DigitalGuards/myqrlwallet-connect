@@ -5,7 +5,7 @@ import globals from 'globals';
 import { fileURLToPath } from 'node:url';
 import { doubleAssertionGuard, hardenedRules } from './scripts/eslint-policy.mjs';
 
-const typedFiles = ['src/**/*.ts', 'test/**/*.ts', 'vitest.config.ts'];
+const typedFiles = ['src/**/*.{ts,tsx,mts,cts}', 'test/**/*.{ts,tsx,mts,cts}', 'vitest.config.ts'];
 // Match the complete file selection used by npm run lint.
 export const strictFiles = ['src', 'test', 'scripts', '*.mjs', 'vitest.config.ts'];
 
@@ -36,11 +36,11 @@ export const baseConfig = [
     },
   },
   {
-    files: ['src/**/*.ts', 'example/*.js'],
+    files: ['src/**/*.{ts,tsx,mts,cts}', 'example/*.js'],
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.{ts,tsx,mts,cts}'],
     ignores: ['src/crypto/**'],
     rules: {
       'no-restricted-imports': [
@@ -79,12 +79,16 @@ export const baseConfig = [
     },
   },
   {
-    files: ['test/**/*.ts', 'src/**/__tests__/**/*.ts', 'example/*.test.js'],
+    files: [
+      'test/**/*.{ts,tsx,mts,cts}',
+      'src/**/__tests__/**/*.{ts,tsx,mts,cts}',
+      'example/*.test.js',
+    ],
     languageOptions: { globals: { ...globals.node, ...globals.vitest } },
   },
   {
     // These are compatibility tests for the deprecated verifier wrappers.
-    files: ['src/signing/__tests__/parity.test.ts'],
+    files: ['src/signing/__tests__/parity.test.{ts,tsx,mts,cts}'],
     rules: {
       '@typescript-eslint/no-deprecated': [
         'error',
@@ -110,18 +114,18 @@ export const baseConfig = [
   },
   {
     // All SDK console output flows through this boundary.
-    files: ['src/utils/logger.ts'],
+    files: ['src/utils/logger.{ts,tsx,mts,cts}'],
     rules: { 'no-console': 'off' },
   },
   {
     // The test console filter: this setup file wraps console.warn and
     // console.error so the SDK's tagged output stays out of test logs.
-    files: ['test/setup.ts'],
+    files: ['test/setup.{ts,tsx,mts,cts}'],
     rules: { 'no-console': 'off' },
   },
   {
     // Tests use this boundary to pass deliberately malformed values to typed APIs.
-    files: ['test/helpers/malformed.ts'],
+    files: ['test/helpers/malformed.{ts,tsx,mts,cts}'],
     rules: { '@typescript-eslint/consistent-type-assertions': 'off' },
   },
   {

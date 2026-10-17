@@ -5,7 +5,7 @@ import globals from 'globals';
 import { fileURLToPath } from 'node:url';
 import { doubleAssertionGuard, hardenedRules } from '../scripts/eslint-policy.mjs';
 
-const typedFiles = ['src/**/*.ts', 'test/**/*.ts', 'vitest.config.ts'];
+const typedFiles = ['src/**/*.{ts,tsx,mts,cts}', 'test/**/*.{ts,tsx,mts,cts}', 'vitest.config.ts'];
 // Match the complete file selection used by npm run lint.
 export const strictFiles = ['.'];
 
@@ -57,11 +57,11 @@ export const baseConfig = [
     },
   },
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.{ts,tsx,mts,cts}', 'test/**/*.{ts,tsx,mts,cts}'],
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ['test/**/*.ts'],
+    files: ['test/**/*.{ts,tsx,mts,cts}'],
     languageOptions: { globals: { ...globals.node, ...globals.vitest } },
   },
   {
