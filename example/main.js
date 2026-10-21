@@ -603,8 +603,8 @@ async function showMobileFallback(uri) {
   desktopActions.classList.remove('hidden');
 }
 
-// Keep the selected extension while account actions are unavailable. An empty
-// account list can mean locked or ungranted; a later event restores the session.
+// Keep the selected extension through lock and pending approval. The helper's
+// passive grant check clears the session when an unlocked wallet removes access.
 function showExtensionUnavailable(status) {
   connectedAccount = null;
   connectedChainId = null;
@@ -672,6 +672,7 @@ async function connectViaExtension(detail, restore = false) {
   const walletName = detail.info.name;
   let previousState = null;
   const session = createExtensionSession(detail.provider, {
+    validateAccount: isCurrentQrlAddress,
     onStateChange(state) {
       if (extensionSession !== session) return;
       rememberExtension(state.intent ? detail.info.rdns : null);
@@ -694,7 +695,7 @@ async function connectViaExtension(detail, restore = false) {
         if (state.status === 'pending') {
           setStatus('yellow', restore ? `Checking ${walletName}...` : `Waiting for ${walletName} approval...`);
         } else if (state.status === 'locked') {
-          setStatus('yellow', 'Wallet locked or access removed. Unlock or connect again.');
+          setStatus('yellow', 'Wallet locked. Unlock to check access.');
         } else {
           setStatus('yellow', 'Disconnecting...');
         }

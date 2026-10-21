@@ -198,14 +198,38 @@ try {
   };
   const unavailable = async () => {
     await expect(page.locator('#account-info')).toBeHidden();
-    await expect(page.locator('#status-text')).toContainText('Wallet locked or access removed');
+    await expect(page.locator('#status-text')).toContainText(
+      'Wallet locked. Unlock to check access.'
+    );
     for (const id of ['btn-send', 'btn-sign', 'btn-sign-typed', 'btn-rpc']) {
       await expect(page.locator(`#${id}`)).toBeDisabled();
     }
   };
-  const approve = async () => {
+  const disconnected = async () => {
+    await expect(page.locator('#status-text')).toHaveText('Disconnected');
+    await expect(page.locator('#account-info')).toBeHidden();
+    for (const id of ['btn-send', 'btn-sign', 'btn-sign-typed', 'btn-rpc']) {
+      await expect(page.locator(`#${id}`)).toBeDisabled();
+    }
+    assert.equal(
+      await page.evaluate(() => globalThis.sessionStorage.getItem('qrlconnect:extension')),
+      null
+    );
+  };
+  const probeAccounts = () =>
+    page.evaluate(async () => {
+      try {
+        return { accounts: await globalThis.__sessionProvider.request({ method: 'qrl_accounts' }) };
+      } catch (error) {
+        return { code: error.code };
+      }
+    });
+  const approveRequest = async () => {
     await extensionPage.getByRole('button', { name: 'Yes', exact: true }).click();
     await expect.poll(pending).toBeNull();
+  };
+  const approve = async () => {
+    await approveRequest();
     await connected();
   };
 
@@ -239,16 +263,9 @@ try {
 
   await page.locator('#btn-disconnect').click();
   await expect.poll(grant).toBeNull();
-  await expect(page.locator('#status-text')).toHaveText('Disconnected');
-  const afterRevoke = await page.evaluate(async () => {
-    try {
-      return { accounts: await globalThis.__sessionProvider.request({ method: 'qrl_accounts' }) };
-    } catch (error) {
-      return { code: error.code };
-    }
-  });
+  await disconnected();
   // Extension 1.3.0 denies this probe with 4100 when unlocked and ungranted.
-  assert.ok(afterRevoke.code === 4100 || afterRevoke.accounts?.length === 0);
+  await expect.poll(probeAccounts).toEqual({ code: 4100 });
   await lock();
   await unlock();
   await extensionPage.getByRole('heading', { name: 'Active account' }).waitFor();
@@ -268,8 +285,30 @@ try {
   await extensionPage.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await extensionPage.getByRole('button', { name: 'Confirm Disconnect', exact: true }).click();
   await expect.poll(grant).toBeNull();
-  await unavailable();
-  record('extension Disconnect reaches the page and disables account actions');
+  await disconnected();
+  await expect.poll(probeAccounts).toEqual({ code: 4100 });
+  record('extension Disconnect while unlocked shows Disconnected and clears intent');
+
+  await page.reload();
+  await expect(
+    page.locator('#wallet-list button').filter({ hasText: 'Browser extension' }).first()
+  ).toBeVisible();
+  await disconnected();
+  await expect.poll(probeAccounts).toEqual({ code: 4100 });
+  assert.equal(await pending(), null);
+  record('reload after extension Disconnect shows Disconnected without an approval');
+
+  // A saved selection can outlive a grant removed while the page was closed.
+  await page.evaluate(() =>
+    globalThis.sessionStorage.setItem('qrlconnect:extension', 'com.qrlwallet.extension')
+  );
+  await page.reload();
+  await expect
+    .poll(() => page.evaluate(() => globalThis.sessionStorage.getItem('qrlconnect:extension')))
+    .toBeNull();
+  await disconnected();
+  assert.equal(await pending(), null);
+  record('reload with stale intent handles ungranted restore 4100 quietly');
 
   await connect();
   await approve();
@@ -280,6 +319,38 @@ try {
   await expect.poll(grant).toBeNull();
   await expect(page.locator('#status-text')).toHaveText('Disconnected');
   record('page Disconnect revokes while the extension is locked');
+
+  await connect();
+  await expect.poll(pending).toBe('qrl_requestAccounts');
+  await page.locator('#btn-disconnect').click();
+  await disconnected();
+  await expect.poll(grant).toBeNull();
+  assert.equal(await pending(), 'qrl_requestAccounts');
+  await unlock();
+  await approveRequest();
+  await expect.poll(probeAccounts).toEqual({ code: 4100 });
+  await expect.poll(grant).toBeNull();
+  await disconnected();
+  const connectedOrigins = await worker.evaluate(
+    async (key) =>
+      Object.keys((await globalThis.chrome.storage.local.get(key))[key]?.ALL_DAPPS ?? {}),
+    `${prefix}DAPPS`
+  );
+  assert.ok(!connectedOrigins.includes(origin));
+  await page.bringToFront();
+  await extensionPage.locator('a[href="/dapp-connectivity"] button').click();
+  await expect(extensionPage.getByText('Not Connected', { exact: true })).toBeVisible();
+  await expect(extensionPage.getByRole('button', { name: 'Disconnect', exact: true })).toHaveCount(
+    0
+  );
+  record(
+    'Connect while locked, page Disconnect, unlock and approve leaves no grant or connected site',
+    {
+      accountsProbe: { code: 4100 },
+      originInConnectedSites: false,
+      pageStatus: 'Disconnected',
+    }
+  );
 
   assert.deepEqual(report.pageErrors, []);
 } catch (error) {

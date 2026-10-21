@@ -157,8 +157,10 @@ SDK and pairing modal APIs.
 
 ```ts
 import { createExtensionSession } from '@qrlwallet/connect-ui/extension';
+import { isCurrentQrlAddress } from '@qrlwallet/connect';
 
 const session = createExtensionSession(detail.provider, {
+  validateAccount: isCurrentQrlAddress, // Optional QIP-55 checksum validation.
   onStateChange(state) {
     renderConnection(state);
     setAccountActionsEnabled(state.status === 'connected');
@@ -195,27 +197,53 @@ request responses. Provider `connect` events do not grant account access.
 | --- | --- |
 | `idle` | No connection intent yet. |
 | `pending` | Awaiting `qrl_requestAccounts` or the `qrl_accounts` restore probe. Disable account actions. |
-| `connected` | Accounts are available. Enable account actions. |
-| `locked` | Wallet locked or site ungranted. Accounts are empty. Keep the provider, subscriptions, and intent; disable account actions. |
+| `connected` | Valid accounts are available. Enable account actions. |
+| `locked` | Accounts are empty. Keep the provider, subscriptions, and intent; disable account actions while the wallet is locked or the passive grant check is inconclusive. |
 | `rejected` | Connect returned code `4001`, including dismissal or approval timeout. Show rejection and allow another Connect click. |
 | `error` | Another request or invalid provider payload failed. Inspect `state.error` and allow a retry. |
 | `disconnecting` | Explicit revocation is pending; account actions are disabled and old events are ignored. |
-| `disconnected` | Local cleanup finished, or the provider emitted `disconnect`. Inspect `state.error` for failures. |
+| `disconnected` | Local cleanup finished, the wallet removed access, or the provider emitted a permanent disconnect. Intent is false. Inspect `state.error` for failures. |
 
-`accountsChanged([])` after connection enters `locked`. Locking and revocation
-share this event, so the helper cannot distinguish them. Later account events
-restore `connected` without another click. A fresh locked `connect()` waits
-for its original approval promise even if unlock emits previously granted
-accounts; it has no retry loop or extra timeout. Repeated Connect calls share
-that pending request. `connect()` can supersede a pending restore.
+`accountsChanged([])` after connection enters `locked` and probes `qrl_accounts`.
+An empty response retains the provider, listeners, and intent. Valid accounts
+restore `connected`; code `4100` ends the session quietly as `disconnected`,
+with `intent: false` and `error: null`. Other probe failures keep the locked
+state. `restore()` also treats `4100` as a quiet disconnect. A newer account
+event always wins over an older probe response or rejection.
+
+MyQRLWallet extension 1.3.0 returns `[]` for every origin while locked. The
+helper therefore cannot distinguish a lock from removed access while the
+wallet is locked, by design. When unlocked, `qrl_accounts` returns the granted
+accounts or `4100` for an ungranted origin. Lock/unlock account events recover
+the connection without another click.
+
+A fresh locked `connect()` waits for its original approval promise even if
+unlock emits previously granted accounts; it has no retry loop or extra
+timeout. Repeated Connect calls share that pending request. `connect()` can
+supersede a pending restore. Provider `disconnect` code `1013` is recoverable
+and preserves the session and its state. Other disconnect codes end the session.
+
+The default account check requires uppercase `Q` followed by exactly 128 hex
+digits, the QRL 2.0 text form. An invalid account rejects the entire list.
+`handlers.validateAccount` optionally adds a check for every account in a
+request, event, or probe. Pass the SDK's `isCurrentQrlAddress` to validate
+mixed-case QIP-55 checksums; the UI helper has no runtime dependency on the SDK.
 
 **Revocation happens only on explicit `disconnect()`.** It sends
 `wallet_revokePermissions` with `params: [{ qrl_accounts: {} }]`. Code `-32601`
 uses local cleanup as a compatibility fallback. Every other revocation error,
 including `4200`, appears in the final disconnected state's `error`; local
 cleanup still completes. A new Connect waits for an in-progress revocation
-to finish. Lock, empty accounts, provider disconnect, and `dispose()` never
-call revocation.
+to finish. If Disconnect retires a pending approval, it revokes immediately
+and resolves after that revocation, without waiting for approval. If the old
+request later returns accounts, the helper revokes again. This cleanup survives
+`dispose()` and keeps local state disconnected. A later `connect()` for the
+same provider, including on a replacement helper, cancels the late revocation
+so the new grant survives. Both revocation attempts are best effort; a late
+failure is reported only while that disconnected helper remains active.
+Locking preserves subscriptions. Permanent provider disconnect and `dispose()`
+perform local cleanup; an earlier explicit Disconnect can still finish its
+revocation.
 
 `getState()` returns an immutable snapshot with `status`, `accounts`,
 `chainId`, `intent`, and `error`. `chainId` is the most recent `chainChanged`
@@ -223,7 +251,10 @@ value, initially `null`; a dApp can separately request `qrl_chainId` when it
 needs the initial chain. Errors contain `operation`, numeric `code` (or
 `null`), `message`, and the original `cause`. `connect()`, `restore()`, and
 `disconnect()` resolve to the current snapshot and report provider failures
-through state. `onStateChange` runs synchronously and should not throw.
+through state. Pending `connect()` and `restore()` calls also settle on local
+Disconnect, permanent provider disconnect, failure, supersession, or `dispose()`,
+even if the provider never answers. Calls queued behind revocation settle on
+disposal too. `onStateChange` runs synchronously and should not throw.
 `dispose()` is terminal, clears local state, removes listeners, and silences
 callbacks. Subsequent calls on a disposed helper return its disconnected
 snapshot.
@@ -241,8 +272,10 @@ source checkout containing the public E2E fixture. The test imports Playwright
 from `PLAYWRIGHT_MODULE` (defaults to `playwright/test`); `CHROMIUM_EXECUTABLE` can
 select an installed Chromium. `QRL_BROWSER_REPORT` optionally selects the JSON
 report path. It uses a temporary browser profile, a public test account, and
-a local RPC fixture. It exercises pending locked approval, lock/unlock and
-reload recovery, page revocation, and extension-side disconnect.
+a local RPC fixture. It exercises pending locked approval, late approval after
+page Disconnect, lock/unlock and reload recovery, page revocation, and
+extension-side disconnect followed by reload. Revocation checks cover both
+`qrl_accounts` returning `4100` and the extension's connected-sites view.
 
 ## Theming
 

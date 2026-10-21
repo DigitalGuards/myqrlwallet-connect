@@ -15,14 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exported from the package index and the DOM-free `/extension` subpath.
 - Explicit extension `disconnect()` revokes `qrl_accounts` permissions,
   falls back to local cleanup on `-32601`, and surfaces other errors while
-  completing cleanup. Empty accounts and `dispose()` preserve wallet grants.
+  completing cleanup. A pending approval that later returns accounts triggers
+  another revocation, including after disposal. A subsequent Connect for the
+  same provider preserves its new grant.
+- Extension accounts require the QRL 2.0 text form (`Q` plus 128 hex digits).
+  Optional `handlers.validateAccount` accepts the SDK's `isCurrentQrlAddress`
+  for checksum validation without a runtime SDK dependency in the UI helper.
 
 ### Fixed
 
-- The reference dApp retains extension connection intent through account loss
-  and page reloads, disables account actions while locked or ungranted, and
-  recovers when accounts return. A locked Connect awaits its original approval
-  request. The Disconnect button revokes the site's grant.
+- Empty account events probe `qrl_accounts`: `[]` retains locked intent,
+  accounts restore the connection, and `4100` quietly clears the session.
+  Restore also treats `4100` as a quiet disconnect. Newer account events take
+  precedence over older probe replies and failures. Locked wallets conceal
+  whether the origin has a grant by design.
+- Pending Connect and Restore calls settle when retired, including on
+  disconnect, failure, supersession, and disposal with an unanswered provider
+  request. Recoverable provider disconnect code `1013` preserves session state.
+- The reference dApp uses the SDK checksum validator, retains locked intent
+  across reloads, recovers on unlock, and shows Disconnected when the extension
+  removes access. A locked Connect awaits its original approval request.
 - Extension lifecycle unit tests and a headless Chromium regression harness
   cover both disconnect directions and recovery with a real extension build.
   The SDK public API, relay pairing, and existing UI exports are unchanged.
