@@ -1,5 +1,15 @@
 export { QrlPairingModal, defineQrlPairingModal, QRL_PAIRING_MODAL_TAG } from './element.js';
 export {
+  createExtensionSession,
+  type ExtensionSession,
+  type ExtensionSessionProvider,
+  type ExtensionSessionEvent,
+  type ExtensionSessionStatus,
+  type ExtensionSessionState,
+  type ExtensionSessionError,
+  type ExtensionSessionHandlers,
+} from './extension.js';
+export {
   showPairingModal,
   type PairingProvider,
   type PairingResult,

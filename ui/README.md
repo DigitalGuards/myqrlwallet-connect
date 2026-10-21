@@ -1,11 +1,12 @@
 # @qrlwallet/connect-ui
 
-The MyQRLWallet pairing dialog as a framework-free web component, for dApps using [`@qrlwallet/connect`](https://github.com/DigitalGuards/myqrlwallet-connect). One import replaces the QR modal every dApp used to hand-copy.
+Shared wallet connection helpers and the MyQRLWallet pairing dialog, for dApps using [`@qrlwallet/connect`](https://github.com/DigitalGuards/myqrlwallet-connect).
 
 - `<qrl-pairing-modal>`: shadow-DOM custom element with the MyQRLWallet QRL Blue palette (deep navy, sky-blue accent, ice-blue links), themeable with CSS custom properties.
 - `showPairingModal(provider)`: one-line helper that wires the modal to a connect provider and resolves when pairing finishes.
+- `createExtensionSession(provider, handlers)`: extension approval, restore, lock recovery, and explicit permission revocation.
 - Zero framework dependencies; works in React, Vue, Svelte and plain HTML alike. Only runtime dependency is the `qrcode` encoder.
-- Purely presentational: consumes only the SDK's public API and contains no cryptography. Keys, sessions and protocol live in `@qrlwallet/connect`.
+- Relay UI consumes the SDK's public API. Extension sessions consume EIP-1193 account and permission methods. Relay keys and protocol live in `@qrlwallet/connect`.
 
 ## Install
 
@@ -146,6 +147,102 @@ merged entry (or `null`) for pickers that keep their own list shape,
 Render the row as one button with the extra action as a second, separately
 focusable button, so keyboard and screen-reader users reach both paths and the
 accessible name of each says which one it takes.
+
+## Extension sessions
+
+Use `createExtensionSession` with the extension provider from an EIP-6963
+announcement. It is exported from the package index and the DOM-free
+`@qrlwallet/connect-ui/extension` subpath. Relay providers continue to use the
+SDK and pairing modal APIs.
+
+```ts
+import { createExtensionSession } from '@qrlwallet/connect-ui/extension';
+
+const session = createExtensionSession(detail.provider, {
+  onStateChange(state) {
+    renderConnection(state);
+    setAccountActionsEnabled(state.status === 'connected');
+    if (state.error) showWalletError(state.error.message);
+  },
+});
+
+// Connect keeps its original request pending through unlock and approval.
+connectButton.addEventListener('click', () => { void session.connect(); });
+
+// Only an explicit Disconnect button requests permission revocation.
+disconnectButton.addEventListener('click', () => { void session.disconnect(); });
+
+// On page restoration, use the remembered extension's new announcement:
+// await session.restore();
+
+// Component teardown or switching providers performs local cleanup.
+// session.dispose();
+```
+
+The buttons, render function, and error function above belong to your dApp. Create one session
+for the selected extension and dispose the previous helper when selecting a
+different provider. Persist the selected wallet's identifier only while
+`state.intent` is true, and rediscover its provider before calling `restore()`.
+The reference example uses session storage for this intent across page reloads.
+
+The helper installs `accountsChanged`, `chainChanged`, and `disconnect`
+listeners before requesting or probing accounts. Old listeners and pending
+replies are guarded by session generation, including when the same provider
+is selected again. New account events take precedence over older probe or
+request responses. Provider `connect` events do not grant account access.
+
+| State | Meaning and dApp behavior |
+| --- | --- |
+| `idle` | No connection intent yet. |
+| `pending` | Awaiting `qrl_requestAccounts` or the `qrl_accounts` restore probe. Disable account actions. |
+| `connected` | Accounts are available. Enable account actions. |
+| `locked` | Wallet locked or site ungranted. Accounts are empty. Keep the provider, subscriptions, and intent; disable account actions. |
+| `rejected` | Connect returned code `4001`, including dismissal or approval timeout. Show rejection and allow another Connect click. |
+| `error` | Another request or invalid provider payload failed. Inspect `state.error` and allow a retry. |
+| `disconnecting` | Explicit revocation is pending; account actions are disabled and old events are ignored. |
+| `disconnected` | Local cleanup finished, or the provider emitted `disconnect`. Inspect `state.error` for failures. |
+
+`accountsChanged([])` after connection enters `locked`. Locking and revocation
+share this event, so the helper cannot distinguish them. Later account events
+restore `connected` without another click. A fresh locked `connect()` waits
+for its original approval promise even if unlock emits previously granted
+accounts; it has no retry loop or extra timeout. Repeated Connect calls share
+that pending request. `connect()` can supersede a pending restore.
+
+**Revocation happens only on explicit `disconnect()`.** It sends
+`wallet_revokePermissions` with `params: [{ qrl_accounts: {} }]`. Code `-32601`
+uses local cleanup as a compatibility fallback. Every other revocation error,
+including `4200`, appears in the final disconnected state's `error`; local
+cleanup still completes. A new Connect waits for an in-progress revocation
+to finish. Lock, empty accounts, provider disconnect, and `dispose()` never
+call revocation.
+
+`getState()` returns an immutable snapshot with `status`, `accounts`,
+`chainId`, `intent`, and `error`. `chainId` is the most recent `chainChanged`
+value, initially `null`; a dApp can separately request `qrl_chainId` when it
+needs the initial chain. Errors contain `operation`, numeric `code` (or
+`null`), `message`, and the original `cause`. `connect()`, `restore()`, and
+`disconnect()` resolve to the current snapshot and report provider failures
+through state. `onStateChange` runs synchronously and should not throw.
+`dispose()` is terminal, clears local state, removes listeners, and silences
+callbacks. Subsequent calls on a disposed helper return its disconnected
+snapshot.
+
+Exported types: `ExtensionSession`, `ExtensionSessionProvider`,
+`ExtensionSessionEvent`, `ExtensionSessionStatus`, `ExtensionSessionState`,
+`ExtensionSessionError`, and `ExtensionSessionHandlers`.
+
+### Browser regression test
+
+After building the SDK, UI, and example, run
+`node scripts/extension-session-browser.mjs` with `QRL_EXTENSION_DIR` pointing
+to an unpacked MyQRLWallet extension build. Set `QRL_EXTENSION_SOURCE` to its
+source checkout containing the public E2E fixture. The test imports Playwright
+from `PLAYWRIGHT_MODULE` (defaults to `playwright/test`); `CHROMIUM_EXECUTABLE` can
+select an installed Chromium. `QRL_BROWSER_REPORT` optionally selects the JSON
+report path. It uses a temporary browser profile, a public test account, and
+a local RPC fixture. It exercises pending locked approval, lock/unlock and
+reload recovery, page revocation, and extension-side disconnect.
 
 ## Theming
 

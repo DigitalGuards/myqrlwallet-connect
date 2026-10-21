@@ -16,6 +16,7 @@ import {
 // the dependency-free `/wallets` subpath because it renders its own picker and
 // never loads the pairing modal, so the QR encoder stays out of the bundle.
 import { groupMyQrlWallet } from '@qrlwallet/connect-ui/wallets';
+import { createExtensionSession } from '@qrlwallet/connect-ui/extension';
 import QRCode from 'qrcode';
 import { canonicalChainId, makeTypedDemoPayload, parseQuanta } from './demo-utils.js';
 
@@ -225,6 +226,26 @@ let relayAccountRequest = null;
 let typedEdited = false; // becomes true once the user edits the typed-data box
 let activeProvider = null;       // The wallet provider currently in use.
 let activeProviderInfo = null;   // EIP-6963 info for the active wallet.
+let extensionSession = null;
+const EXTENSION_SESSION_KEY = 'qrlconnect:extension';
+
+function rememberExtension(rdns) {
+  try {
+    if (rdns) sessionStorage.setItem(EXTENSION_SESSION_KEY, rdns);
+    else sessionStorage.removeItem(EXTENSION_SESSION_KEY);
+  } catch { /* Session storage is optional. */ }
+}
+
+function rememberedExtension() {
+  try { return sessionStorage.getItem(EXTENSION_SESSION_KEY); }
+  catch { return null; }
+}
+
+function disposeExtensionSession() {
+  extensionSession?.dispose();
+  extensionSession = null;
+  rememberExtension(null);
+}
 
 const qrl = new QRLConnect({
   dappMetadata: {
@@ -247,6 +268,9 @@ window.addEventListener('eip6963:announceProvider', (event) => {
   discovered.set(detail.info.uuid, detail);
   log(`Wallet detected: ${detail.info.name} (${detail.info.rdns})`, 'info');
   renderWalletPicker();
+  if (detail.info.rdns === rememberedExtension() && !activeProvider && !qrl.hasStoredSession()) {
+    void connectViaExtension(detail, true);
+  }
 });
 
 // Spec: dispatch requestProvider after listener is registered so any wallet
@@ -264,8 +288,10 @@ function showConnectedUI(accounts, providerInfo) {
   connectedChainId = null;
   const provider = activeProvider;
   const account = connectedAccount;
+  const extensionState = extensionSession?.getState();
   void provider.request({ method: 'qrl_chainId' }).then(chainId => {
     if (activeProvider !== provider || connectedAccount !== account) return;
+    if (provider !== qrl && extensionSession?.getState() !== extensionState) return;
     connectedChainId = canonicalChainId(chainId);
     if (!typedEdited) refreshTypedPlaceholder();
   }).catch(error => log(`Could not read wallet chain: ${error.message}`, 'error'));
@@ -577,36 +603,29 @@ async function showMobileFallback(uri) {
   desktopActions.classList.remove('hidden');
 }
 
-// Track which extension providers we've already wired EIP-1193 listeners to,
-// so reconnecting via the picker doesn't stack duplicate handlers.
-const wiredProviders = new WeakSet();
-
-function wireExtensionProviderEvents(detail) {
-  if (typeof detail.provider.on !== 'function') return;
-  if (wiredProviders.has(detail.provider)) return;
-  wiredProviders.add(detail.provider);
-
-  detail.provider.on('accountsChanged', (newAccounts) => {
-    if (activeProvider !== detail.provider) return;
-    log(
-      `[ext] accountsChanged: ${accountListForDisplay(newAccounts)}`,
-      'info',
-      newAccounts.join(', '),
-    );
-    if (newAccounts.length === 0) {
-      showDisconnectedUI();
-      setStatus('red', 'Disconnected');
-    } else {
-      showConnectedUI(newAccounts, detail.info);
-    }
-  });
-  detail.provider.on('chainChanged', (chainId) => {
-    if (activeProvider !== detail.provider) return;
-    log(`[ext] chainChanged: ${chainId}`, 'info');
-    connectedChainId = null;
-    try { connectedChainId = canonicalChainId(chainId); } catch { /* Next request rechecks the chain. */ }
-    if (!typedEdited) refreshTypedPlaceholder();
-  });
+// Keep the selected extension while account actions are unavailable. An empty
+// account list can mean locked or ungranted; a later event restores the session.
+function showExtensionUnavailable(status) {
+  connectedAccount = null;
+  connectedChainId = null;
+  accountAddr.textContent = 'Account unavailable';
+  accountAddr.title = '';
+  accountInfo.classList.add('hidden');
+  qrContainer.classList.add('hidden');
+  uriDisplay.classList.add('hidden');
+  desktopActions.classList.add('hidden');
+  btnNewConn.classList.add('hidden');
+  btnDisconnect.classList.remove('hidden');
+  btnSwitchWallet.classList.remove('hidden');
+  btnDisconnect.disabled = status === 'disconnecting';
+  btnSwitchWallet.disabled = status === 'disconnecting';
+  btnSend.disabled = true;
+  btnSign.disabled = true;
+  btnSignTyped.disabled = true;
+  btnRpc.disabled = true;
+  if (!typedEdited) refreshTypedPlaceholder();
+  if (status === 'locked') showPicker();
+  else hidePicker();
 }
 
 // ─── Connect dispatch ────────────────────────────────────
@@ -617,6 +636,7 @@ async function connectMyQrlWallet(entry, transport) {
 }
 
 async function connectWith(detail) {
+  disposeExtensionSession();
   hidePicker();
   if (detail.info.rdns === QRL_CONNECT_RDNS) {
     await connectViaRelay(detail);
@@ -645,62 +665,79 @@ async function connectViaRelay(detail) {
   }
 }
 
-async function connectViaExtension(detail) {
+async function connectViaExtension(detail, restore = false) {
+  disposeExtensionSession();
   activeProvider = detail.provider;
   activeProviderInfo = detail.info;
   const walletName = detail.info.name;
-  log(`Requesting accounts from ${walletName}...`, 'info');
-  setStatus('yellow', `Waiting for ${walletName} approval...`);
-
-  // Some extensions (incl. QRL Web3 Wallet on MV3) silently swallow
-  // `browser.action.openPopup()` failures and the request just hangs while
-  // the user has no idea a popup was attempted. Surface a hint after 3s so
-  // the user knows to click the toolbar icon manually.
+  let previousState = null;
+  const session = createExtensionSession(detail.provider, {
+    onStateChange(state) {
+      if (extensionSession !== session) return;
+      rememberExtension(state.intent ? detail.info.rdns : null);
+      if (state.status === 'connected') {
+        const accountsChanged = state.accounts.join(',') !== previousState?.accounts.join(',');
+        if (previousState?.status !== 'connected' || accountsChanged) {
+          log(`Connected via ${walletName}: ${accountListForDisplay(state.accounts)}`, 'success', state.accounts.join(', '));
+          showConnectedUI(state.accounts, detail.info);
+          if (!connectedAccount) { disposeExtensionSession(); return; }
+        }
+        setStatus('green', `Connected via ${walletName}`);
+        if (state.chainId !== null) {
+          connectedChainId = null;
+          try { connectedChainId = canonicalChainId(state.chainId); }
+          catch { /* Account actions recheck the chain before use. */ }
+          if (!typedEdited) refreshTypedPlaceholder();
+        }
+      } else if (state.intent || state.status === 'disconnecting') {
+        showExtensionUnavailable(state.status);
+        if (state.status === 'pending') {
+          setStatus('yellow', restore ? `Checking ${walletName}...` : `Waiting for ${walletName} approval...`);
+        } else if (state.status === 'locked') {
+          setStatus('yellow', 'Wallet locked or access removed. Unlock or connect again.');
+        } else {
+          setStatus('yellow', 'Disconnecting...');
+        }
+      } else {
+        disposeExtensionSession();
+        showDisconnectedUI();
+        if (state.status === 'rejected') {
+          log(`${walletName}: connection request rejected or timed out.`, 'error');
+          setStatus('red', 'Connection rejected or timed out');
+        } else if (state.error) {
+          log(`${walletName}: ${state.error.message}`, 'error');
+          setStatus('red', state.error.operation === 'disconnect'
+            ? 'Disconnected locally. Wallet reported: ' + state.error.message
+            : 'Wallet connection failed: ' + state.error.message);
+        } else {
+          log('Disconnected', 'info');
+          setStatus('red', 'Disconnected');
+        }
+      }
+      previousState = state;
+    },
+  });
+  extensionSession = session;
+  btnDisconnect.disabled = false;
+  btnSwitchWallet.disabled = false;
+  log(`${restore ? 'Restoring connection to' : 'Requesting accounts from'} ${walletName}...`, 'info');
+  // The extension can keep its original request pending through unlock and
+  // approval. The hint helps users find a blocked popup in the toolbar.
   const hintTimer = setTimeout(() => {
-    log(
-      `If no approval window appeared, click the ${walletName} icon in your browser toolbar to approve the connection.`,
-      'info',
-    );
-    setStatus('yellow', `Approve in ${walletName} (toolbar icon)`);
+    if (restore || extensionSession !== session || session.getState().status !== 'pending') return;
+    log(`Open the ${walletName} toolbar icon to unlock and approve the connection.`, 'info');
+    setStatus('yellow', `Unlock and approve in ${walletName} (toolbar icon)`);
   }, 3000);
-
   try {
-    const accounts = await detail.provider.request({ method: 'qrl_requestAccounts' });
+    await (restore ? session.restore() : session.connect());
+  } finally {
     clearTimeout(hintTimer);
-    if (!accounts || accounts.length === 0) {
-      log('Extension returned no accounts', 'error');
-      setStatus('red', 'No accounts returned');
-      showDisconnectedUI();
-      return;
-    }
-    log(
-      `Connected via ${walletName}: ${accountListForDisplay(accounts)}`,
-      'success',
-      accounts.join(', '),
-    );
-    setStatus('green', `Connected via ${walletName}`);
-    showConnectedUI(accounts, detail.info);
-
-    // Wire EIP-1193 events once per provider: extension provider objects are
-    // long-lived singletons, so re-wiring on every connect would stack
-    // duplicate handlers and produce duplicate log lines on each event.
-    wireExtensionProviderEvents(detail);
-  } catch (err) {
-    clearTimeout(hintTimer);
-    const code = err?.code;
-    if (code === 4001) {
-      log(`${walletName}: connection request rejected by user.`, 'error');
-      setStatus('red', 'Rejected');
-    } else {
-      log(`${walletName} connect failed: ${err.message ?? err}`, 'error');
-      setStatus('red', 'Connect failed');
-    }
-    showDisconnectedUI();
   }
 }
 
 // ─── Switch wallet (re-open picker) ──────────────────────
 btnSwitchWallet.addEventListener('click', async () => {
+  disposeExtensionSession();
   if (activeProvider === qrl) {
     const retired = await retireRelaySession('Unable to switch wallets');
     if (!retired) return;
@@ -743,6 +780,12 @@ btnNewConn.addEventListener('click', async () => {
 
 // ─── Disconnect ──────────────────────────────────────────
 btnDisconnect.addEventListener('click', async () => {
+  if (extensionSession) {
+    await extensionSession.disconnect();
+    btnDisconnect.disabled = false;
+    btnSwitchWallet.disabled = false;
+    return;
+  }
   if (activeProvider === qrl) {
     const retired = await retireRelaySession('Unable to disconnect');
     if (!retired) return;
@@ -861,7 +904,7 @@ btnSend.addEventListener('click', async () => {
     txResult.textContent = `Error: ${err.message}`;
     txResult.classList.remove('hidden');
   } finally {
-    btnSend.disabled = false;
+    btnSend.disabled = activeProvider !== qrl && !connectedAccount;
     btnSend.textContent = 'Send Transaction';
   }
 });
@@ -926,7 +969,7 @@ btnSign.addEventListener('click', async () => {
     signResult.textContent = `Error: ${err.message}`;
     signResult.classList.remove('hidden');
   } finally {
-    btnSign.disabled = false;
+    btnSign.disabled = activeProvider !== qrl && !connectedAccount;
     btnSign.textContent = 'Sign Message';
   }
 });
@@ -989,7 +1032,7 @@ btnSignTyped.addEventListener('click', async () => {
     signTypedResult.textContent = `Error: ${err.message}`;
     signTypedResult.classList.remove('hidden');
   } finally {
-    btnSignTyped.disabled = !activeProvider;
+    btnSignTyped.disabled = !activeProvider || (activeProvider !== qrl && !connectedAccount);
     btnSignTyped.textContent = 'Sign Typed Data';
   }
 });
@@ -1022,7 +1065,7 @@ btnRpc.addEventListener('click', async () => {
     rpcResult.textContent = `Error: ${err.message}`;
     rpcResult.classList.remove('hidden');
   } finally {
-    btnRpc.disabled = false;
+    btnRpc.disabled = activeProvider !== qrl && !connectedAccount;
   }
 });
 

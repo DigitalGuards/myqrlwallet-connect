@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@qrlwallet/connect-ui` 0.4.0: `createExtensionSession(provider, handlers)`
+  manages EIP-6963 extension providers with typed state, pending approval,
+  passive restore, lock/unlock recovery, and guarded event subscriptions.
+  Exported from the package index and the DOM-free `/extension` subpath.
+- Explicit extension `disconnect()` revokes `qrl_accounts` permissions,
+  falls back to local cleanup on `-32601`, and surfaces other errors while
+  completing cleanup. Empty accounts and `dispose()` preserve wallet grants.
+
+### Fixed
+
+- The reference dApp retains extension connection intent through account loss
+  and page reloads, disables account actions while locked or ungranted, and
+  recovers when accounts return. A locked Connect awaits its original approval
+  request. The Disconnect button revokes the site's grant.
+- Extension lifecycle unit tests and a headless Chromium regression harness
+  cover both disconnect directions and recovery with a real extension build.
+  The SDK public API, relay pairing, and existing UI exports are unchanged.
+
 ## [5.1.2] - 2026-10-17
 
 No public API change. Existing integrations keep working unchanged.

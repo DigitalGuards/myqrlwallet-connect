@@ -1,6 +1,6 @@
 {
   "name": "@qrlwallet/connect-ui",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "packageManager": "npm@10.9.8",
   "description": "Framework-agnostic pairing modal for @qrlwallet/connect: <qrl-pairing-modal> web component plus a one-line showPairingModal() helper",
   "main": "dist/index.js",
@@ -17,6 +17,11 @@
       "import": "./dist/wallets.mjs",
       "require": "./dist/wallets.js"
     },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.mjs",
+      "require": "./dist/extension.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -25,7 +30,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts src/wallets.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts src/wallets.ts src/extension.ts --format cjs,esm --dts --clean",
     "typecheck": "tsc --noEmit && npm run typecheck:test",
     "typecheck:test": "tsc --noEmit -p tsconfig.eslint.json",
     "test": "vitest run",
