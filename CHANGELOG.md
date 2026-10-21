@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@qrlwallet/connect-ui` 0.4.0: `createExtensionSession(provider, handlers)`
+  manages EIP-6963 extension providers with typed state, pending approval,
+  passive restore, lock/unlock recovery, and guarded event subscriptions.
+  Exported from the package index and the DOM-free `/extension` subpath.
+- Extension `disconnect()` revokes this origin's existing grant and ends the
+  session. An open wallet prompt stays open. Later approval leaves a grant the
+  page has no intent for; a later `connect()` returns it without a new prompt.
+  Wallets that reject the origin's pending account requests on
+  `wallet_revokePermissions` close that gap (MyQRLWallet extension: planned).
+  Code `-32601` falls back to local cleanup; other errors appear in state.
+- Each extension helper keeps its own state, with no module-level coordination
+  across the package index and `/extension` entry points in ESM or CommonJS.
+- Extension accounts require the QRL 2.0 text form (`Q` plus 128 hex digits).
+  Optional `handlers.validateAccount` accepts the SDK's `isCurrentQrlAddress`
+  for checksum validation without a runtime SDK dependency in the UI helper.
+
+### Fixed
+
+- Empty account events probe `qrl_accounts`: `[]` retains locked intent,
+  accounts restore the connection, and `4100` quietly clears the session.
+  Restore also treats `4100` as a quiet disconnect. Newer account events take
+  precedence over older probe replies and failures. Locked wallets conceal
+  whether the origin has a grant by design.
+- Pending Connect and Restore calls settle when retired, including on
+  disconnect, failure, supersession, and disposal with an unanswered provider
+  request. Recoverable provider disconnect code `1013` preserves session state.
+- A second Disconnect during revocation drops a queued Connect or Restore.
+  Disposal also settles a pending Disconnect when the provider never answers.
+- The reference dApp uses the SDK checksum validator, retains locked intent
+  across reloads, recovers on unlock, and shows Disconnected when the extension
+  removes access. A locked Connect awaits its original approval request.
+- Extension lifecycle unit tests and a headless Chromium regression harness
+  cover both disconnect directions and recovery with a real extension build.
+  The SDK public API, relay pairing, and existing UI exports are unchanged.
+
 ## [5.1.2] - 2026-10-17
 
 No public API change. Existing integrations keep working unchanged.
