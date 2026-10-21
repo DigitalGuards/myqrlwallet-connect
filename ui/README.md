@@ -229,18 +229,22 @@ digits, the QRL 2.0 text form. An invalid account rejects the entire list.
 request, event, or probe. Pass the SDK's `isCurrentQrlAddress` to validate
 mixed-case QIP-55 checksums; the UI helper has no runtime dependency on the SDK.
 
+`disconnect()` revokes this origin's existing grant and ends the session.
+A wallet prompt still open at that moment stays open in the wallet. If the user
+approves it later, the wallet holds a grant the page has no intent for, and a
+later `connect()` returns it without a new prompt. Wallets that reject an origin's
+pending account requests on `wallet_revokePermissions` close that gap
+(MyQRLWallet extension: planned).
+
 **Revocation happens only on explicit `disconnect()`.** It sends
 `wallet_revokePermissions` with `params: [{ qrl_accounts: {} }]`. Code `-32601`
 uses local cleanup as a compatibility fallback. Every other revocation error,
 including `4200`, appears in the final disconnected state's `error`; local
-cleanup still completes. A new Connect waits for an in-progress revocation
-to finish. If Disconnect retires a pending approval, it revokes immediately
-and resolves after that revocation, without waiting for approval. If the old
-request later returns accounts, the helper revokes again. This cleanup survives
-`dispose()` and keeps local state disconnected. A later `connect()` for the
-same provider, including on a replacement helper, cancels the late revocation
-so the new grant survives. Both revocation attempts are best effort; a late
-failure is reported only while that disconnected helper remains active.
+cleanup still completes. On the same helper, a new Connect waits for revocation
+to finish. Another Disconnect during revocation drops that queued request.
+Each helper keeps its own state; entry points and replacement helpers share no
+coordination state. When revoking before replacement, await `disconnect()` before
+calling `dispose()`.
 Locking preserves subscriptions. Permanent provider disconnect and `dispose()`
 perform local cleanup; an earlier explicit Disconnect can still finish its
 revocation.
@@ -253,8 +257,9 @@ needs the initial chain. Errors contain `operation`, numeric `code` (or
 `disconnect()` resolve to the current snapshot and report provider failures
 through state. Pending `connect()` and `restore()` calls also settle on local
 Disconnect, permanent provider disconnect, failure, supersession, or `dispose()`,
-even if the provider never answers. Calls queued behind revocation settle on
-disposal too. `onStateChange` runs synchronously and should not throw.
+even if the provider never answers. Pending `disconnect()` and calls queued
+behind revocation also settle on disposal. `onStateChange` runs synchronously
+and should not throw.
 `dispose()` is terminal, clears local state, removes listeners, and silences
 callbacks. Subsequent calls on a disposed helper return its disconnected
 snapshot.
@@ -273,8 +278,9 @@ from `PLAYWRIGHT_MODULE` (defaults to `playwright/test`); `CHROMIUM_EXECUTABLE` 
 select an installed Chromium. `QRL_BROWSER_REPORT` optionally selects the JSON
 report path. It uses a temporary browser profile, a public test account, and
 a local RPC fixture. It exercises pending locked approval, late approval after
-page Disconnect, lock/unlock and reload recovery, page revocation, and
-extension-side disconnect followed by reload. Revocation checks cover both
+page Disconnect followed by Connect reusing the grant, lock/unlock and reload
+recovery, page revocation, and extension-side disconnect followed by reload.
+Revocation checks cover both
 `qrl_accounts` returning `4100` and the extension's connected-sites view.
 
 ## Theming

@@ -49,9 +49,9 @@ export interface ExtensionSession {
   connect(): Promise<ExtensionSessionState>;
   /** Probe qrl_accounts; retain locked intent and quietly end an ungranted session. */
   restore(): Promise<ExtensionSessionState>;
-  /** Explicit user disconnect: revoke the origin's grant and clean up locally. */
+  /** Revoke this origin's existing grant and end the session. Open wallet prompts remain. */
   disconnect(): Promise<ExtensionSessionState>;
-  /** Terminal local teardown. An earlier disconnect's late-approval cleanup still runs. */
+  /** Terminal local teardown that settles pending calls. */
   dispose(): void;
 }
 
@@ -91,21 +91,20 @@ function readAccounts(
   });
 }
 
-// A replacement helper for the same provider also expresses new Connect intent.
-const connectIntents = new WeakMap<ExtensionSessionProvider, object>();
-const revocations = new WeakMap<ExtensionSessionProvider, Promise<ExtensionSessionError | null>>();
-
-interface AccountRequest {
-  operation: 'connect' | 'restore';
+interface PendingRequest {
+  operation: 'connect' | 'restore' | 'disconnect';
   promise: Promise<ExtensionSessionState>;
   settle(): void;
 }
 
 /**
  * Framework-free extension lifecycle. Listeners precede every request or probe.
- * Empty accounts trigger a passive grant check. Only explicit disconnect intent
- * revokes permissions, including grants from a late approval. Provider errors
- * are reported in state, including disconnect errors after local cleanup.
+ * Empty accounts trigger a passive grant check. Provider errors appear in state.
+ * disconnect() revokes this origin's existing grant and ends the session. A wallet
+ * prompt still open then stays open. Later approval leaves a grant the page has
+ * no intent for; a later connect() returns it without a new prompt. Wallets that
+ * reject the origin's pending account requests on wallet_revokePermissions close
+ * this gap (MyQRLWallet extension: planned). Each helper keeps its own state.
  */
 export function createExtensionSession(
   provider: ExtensionSessionProvider,
@@ -121,12 +120,11 @@ export function createExtensionSession(
   let generation = 0;
   let disposed = false;
   let unsubscribe: (() => void) | undefined;
-  let flight: AccountRequest | undefined;
-  let queued: AccountRequest | undefined;
-  let closing: Promise<ExtensionSessionState> | undefined;
-  const approvals = new Set<{ revokeAfter?: { intent: object; token: number } }>();
+  let flight: PendingRequest | undefined;
+  let queued: PendingRequest | undefined;
+  let closing: PendingRequest | undefined;
 
-  function accountRequest(operation: AccountRequest['operation']): AccountRequest {
+  function pendingRequest(operation: PendingRequest['operation']): PendingRequest {
     let resolve: ((snapshot: ExtensionSessionState) => void) | undefined;
     const promise = new Promise<ExtensionSessionState>((done) => {
       resolve = done;
@@ -176,38 +174,29 @@ export function createExtensionSession(
     retire({ status: 'disconnected', accounts: [], chainId: null, intent: false, error });
   }
 
-  function revoke(intent?: object): Promise<ExtensionSessionError | null> {
-    const promise = Promise.resolve(revocations.get(provider)).then(async () => {
-      if (intent && connectIntents.get(provider) !== intent) return null;
-      try {
-        await provider.request({
-          method: 'wallet_revokePermissions',
-          params: [{ qrl_accounts: {} }],
-        });
-        return null;
-      } catch (cause) {
-        const error = sessionError(cause, 'disconnect');
-        return error.code === -32601 ? null : error;
-      }
-    });
-    revocations.set(provider, promise);
-    void promise.then(() => {
-      if (revocations.get(provider) === promise) revocations.delete(provider);
-    });
-    return promise;
+  async function revoke(): Promise<ExtensionSessionError | null> {
+    try {
+      await provider.request({
+        method: 'wallet_revokePermissions',
+        params: [{ qrl_accounts: {} }],
+      });
+      return null;
+    } catch (cause) {
+      const error = sessionError(cause, 'disconnect');
+      return error.code === -32601 ? null : error;
+    }
   }
 
   function start(operation: 'connect' | 'restore'): Promise<ExtensionSessionState> {
     if (disposed) return Promise.resolve(state);
     // A new request waits for revocation to finish, so its new grant survives.
-    const revocation = closing ?? revocations.get(provider);
-    if (revocation) {
+    if (closing) {
       if (queued && (queued.operation === 'connect' || operation === 'restore'))
         return queued.promise;
       queued?.settle();
-      const waiting = accountRequest(operation);
+      const waiting = pendingRequest(operation);
       queued = waiting;
-      void revocation.then(async () => {
+      void closing.promise.then(async () => {
         if (queued !== waiting) return;
         queued = undefined;
         await start(operation);
@@ -219,7 +208,7 @@ export function createExtensionSession(
       return flight.promise;
     retire();
     const token = generation;
-    const request = accountRequest(operation);
+    const request = pendingRequest(operation);
     flight = request;
     let latestAccounts: string[] | undefined;
     let accountRevision = 0;
@@ -285,22 +274,10 @@ export function createExtensionSession(
 
     void Promise.resolve().then(async () => {
       if (!current(token)) return;
-      const approval: { revokeAfter?: { intent: object; token: number } } = {};
-      if (operation === 'connect') approvals.add(approval);
       try {
         const value = await provider.request({
           method: operation === 'connect' ? 'qrl_requestAccounts' : 'qrl_accounts',
         });
-        const cleanup = approval.revokeAfter;
-        if (
-          cleanup &&
-          connectIntents.get(provider) === cleanup.intent &&
-          Array.isArray(value) &&
-          value.length
-        ) {
-          const error = await revoke(cleanup.intent);
-          if (error && current(cleanup.token)) update({ error });
-        }
         if (!current(token)) return;
         const accounts = latestAccounts ?? readAccounts(value, handlers.validateAccount);
         awaitingReply = false;
@@ -317,7 +294,6 @@ export function createExtensionSession(
           fail(error, operation);
         }
       } finally {
-        approvals.delete(approval);
         request.settle();
       }
     });
@@ -327,7 +303,12 @@ export function createExtensionSession(
 
   function disconnect(): Promise<ExtensionSessionState> {
     if (disposed) return Promise.resolve(state);
-    if (closing) return closing;
+    if (closing) {
+      const waiting = queued;
+      queued = undefined;
+      waiting?.settle();
+      return closing.promise;
+    }
     // Invalidate callbacks immediately, including events emitted by revocation.
     // Publish the disconnecting state after installing closing, so handlers can
     // safely queue another Connect or dispose the helper synchronously.
@@ -337,32 +318,32 @@ export function createExtensionSession(
     queued = undefined;
     retire();
     const token = generation;
-    const intent = connectIntents.get(provider);
-    if (intent) for (const approval of approvals) approval.revokeAfter = { intent, token };
-    const promise = revoke().then((error) => {
-      closing = undefined;
-      if (current(token)) update({ status: 'disconnected', error });
-      return state;
-    });
-    closing = promise;
+    const request = pendingRequest('disconnect');
+    closing = request;
+    void Promise.resolve()
+      .then(revoke)
+      .then((error) => {
+        if (closing === request) closing = undefined;
+        if (current(token)) update({ status: 'disconnected', error });
+        request.settle();
+      });
     update({ status: 'disconnecting', accounts: [], chainId: null, intent: false, error: null });
     pending?.settle();
     waiting?.settle();
-    return promise;
+    return request.promise;
   }
 
   return {
     provider,
     getState: () => state,
-    connect: () => {
-      if (!disposed) connectIntents.set(provider, {});
-      return start('connect');
-    },
+    connect: () => start('connect'),
     restore: () => start('restore'),
     disconnect,
     dispose: () => {
       disposed = true;
       end();
+      closing?.settle();
+      closing = undefined;
     },
   };
 }

@@ -366,6 +366,51 @@ describe('extension session', () => {
     expect(provider.granted).toBe(true);
   });
 
+  it.each(['connect', 'restore'] as const)(
+    'a second disconnect drops a queued %s while revocation is pending',
+    async (operation) => {
+      const { provider, session } = setup();
+      await session.restore();
+      provider.revocation = deferred<unknown>();
+      const closing = session.disconnect();
+      const request = session[operation]();
+      expect(session.disconnect()).toBe(closing);
+      await expectSettled(request, session.getState());
+      provider.revocation.resolve(null);
+      expect(await closing).toMatchObject({ status: 'disconnected', intent: false });
+      await tick();
+      expect(provider.requests.map((r) => r.method)).toEqual([
+        'qrl_accounts',
+        'wallet_revokePermissions',
+      ]);
+      provider.unlock();
+      provider.approve();
+      expect(session.getState()).toMatchObject({ status: 'disconnected', intent: false });
+    }
+  );
+
+  it.each(['silent', 'success', 'failure'] as const)(
+    'disposal settles Disconnect before the provider replies: %s',
+    async (reply) => {
+      const { provider, session, states } = setup();
+      await session.restore();
+      provider.revocation = deferred<unknown>();
+      const closing = session.disconnect();
+      await tick();
+      session.dispose();
+      const snapshot = session.getState();
+      const notifications = states.length;
+      await expectSettled(closing, snapshot);
+      if (reply === 'success') provider.revocation.resolve(null);
+      if (reply === 'failure') provider.revocation.reject(rpcError(4200));
+      await tick();
+      expect(snapshot).toMatchObject({ status: 'disconnected', intent: false, error: null });
+      expect(session.getState()).toBe(snapshot);
+      expect(states).toHaveLength(notifications);
+      expect(events.map((event) => provider.listeners.get(event)?.size)).toEqual([0, 0, 0]);
+    }
+  );
+
   it('reports chain changes and provider disconnect, with no revoke', async () => {
     const { provider, session } = setup();
     await session.restore();
@@ -439,30 +484,6 @@ describe('extension session', () => {
     expect(await request).toMatchObject({ status: 'error', accounts: [], intent: false });
   });
 
-  it.each([false, true])(
-    'revokes a late approval after Disconnect (disposed: %s)',
-    async (dispose) => {
-      const { provider, session, states } = setup();
-      const request = session.connect();
-      await tick();
-      const closing = session.disconnect();
-      await expectSettled(request, session.getState());
-      await expectSettled(closing, { ...session.getState(), status: 'disconnected' });
-      if (dispose) session.dispose();
-      provider.unlock();
-      provider.approve();
-      await tick();
-      expect(provider.granted).toBe(false);
-      expect(provider.requests.map((r) => r.method)).toEqual([
-        'qrl_requestAccounts',
-        'wallet_revokePermissions',
-        'wallet_revokePermissions',
-      ]);
-      expect(session.getState()).toMatchObject({ status: 'disconnected', intent: false });
-      expect(states.some((state) => state.status === 'connected')).toBe(false);
-    }
-  );
-
   it.each(['same session', 'replacement session', 'during revocation'] as const)(
     'preserves a new Connect after Disconnect: %s',
     async (mode) => {
@@ -492,7 +513,7 @@ describe('extension session', () => {
   );
 
   it.each(['empty', 'rejected'] as const)(
-    'skips late revocation for an %s approval',
+    'ignores a late %s approval after Disconnect',
     async (reply) => {
       const { provider, session } = setup();
       void session.connect();
@@ -507,71 +528,6 @@ describe('extension session', () => {
       expect(session.getState().status).toBe('disconnected');
     }
   );
-
-  it('contains a failed late revocation without restoring accounts', async () => {
-    const { provider, session } = setup();
-    void session.connect();
-    await tick();
-    await session.disconnect();
-    provider.revokeError = rpcError(4200);
-    provider.approve();
-    await tick();
-    expect(session.getState()).toMatchObject({
-      status: 'disconnected',
-      accounts: [],
-      intent: false,
-    });
-    expect(provider.requests.filter((r) => r.method === 'wallet_revokePermissions')).toHaveLength(
-      2
-    );
-  });
-
-  it.each([false, true])(
-    'waits for late revocation before Connect (replacement: %s)',
-    async (replacement) => {
-      const { provider, session } = setup();
-      void session.connect();
-      await tick();
-      await session.disconnect();
-      provider.revocation = deferred<unknown>();
-      provider.unlock();
-      provider.approve();
-      await tick();
-      const next = replacement ? createExtensionSession(provider) : session;
-      if (replacement) session.dispose();
-      const request = next.connect();
-      await tick();
-      expect(provider.requests.filter((r) => r.method === 'qrl_requestAccounts')).toHaveLength(1);
-      provider.revocation.resolve(null);
-      await tick();
-      provider.approve();
-      expect(await request).toMatchObject({ status: 'connected', accounts });
-      expect(provider.granted).toBe(true);
-      next.dispose();
-    }
-  );
-
-  it('serializes an immediate replacement Connect after the first revocation', async () => {
-    const { provider, session } = setup();
-    provider.locked = false;
-    provider.granted = true;
-    await session.connect();
-    provider.revocation = deferred<unknown>();
-    const closing = session.disconnect();
-    session.dispose();
-    const replacement = createExtensionSession(provider);
-    const request = replacement.connect();
-    await tick();
-    expect(provider.requests.filter((r) => r.method === 'qrl_requestAccounts')).toHaveLength(1);
-    provider.revocation.resolve(null);
-    await closing;
-    await tick();
-    provider.approve();
-    expect(await request).toMatchObject({ status: 'connected', accounts });
-    expect(replacement.getState().status).toBe('connected');
-    expect(provider.granted).toBe(true);
-    replacement.dispose();
-  });
 
   it('restores an unlocked grant and quietly disconnects an ungranted origin', async () => {
     const { provider, session } = setup();
@@ -749,6 +705,20 @@ describe('extension session', () => {
     expect(events.map((event) => provider.listeners.get(event)?.size)).toEqual([0, 0, 0]);
   });
 
+  it('settles Disconnect when its state handler disposes synchronously', async () => {
+    const provider = new MockProvider();
+    provider.revocation = deferred<unknown>();
+    const session = createExtensionSession(provider, {
+      onStateChange: (state) => {
+        if (state.status === 'disconnecting') session.dispose();
+      },
+    });
+    const closing = session.disconnect();
+    await expectSettled(closing, session.getState());
+    expect(session.getState()).toMatchObject({ status: 'disconnected', intent: false });
+    expect(provider.requests.map((r) => r.method)).toEqual(['wallet_revokePermissions']);
+  });
+
   it.each(['connect', 'restore'] as const)(
     'settles a queued %s on dispose before revocation answers',
     async (operation) => {
@@ -759,6 +729,7 @@ describe('extension session', () => {
       const request = session[operation]();
       session.dispose();
       await expectSettled(request, session.getState());
+      await expectSettled(closing, session.getState());
       provider.revocation.resolve(null);
       await closing;
       await tick();

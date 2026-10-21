@@ -157,6 +157,9 @@ try {
   const unlock = async () => {
     await extensionPage.getByLabel('Enter password').fill(password);
     await extensionPage.getByRole('button', { name: 'Unlock', exact: true }).click();
+    await extensionPage.getByRole('heading', { name: 'MyQRLWallet', exact: true }).waitFor({
+      state: 'hidden',
+    });
   };
   const grant = () =>
     worker.evaluate(
@@ -269,6 +272,14 @@ try {
   await lock();
   await unlock();
   await extensionPage.getByRole('heading', { name: 'Active account' }).waitFor();
+  await page.bringToFront();
+  await extensionPage.locator('a[href="/dapp-connectivity"] button').click();
+  await expect(extensionPage.getByText('Not Connected', { exact: true })).toBeVisible();
+  await expect(extensionPage.getByRole('button', { name: 'Disconnect', exact: true })).toHaveCount(
+    0
+  );
+  await extensionPage.getByRole('button', { name: 'Back', exact: true }).click();
+  await extensionPage.getByRole('heading', { name: 'Active account' }).waitFor();
   await expect(page.locator('#account-info')).toBeHidden();
   await expect(page.locator('#btn-sign')).toBeDisabled();
   assert.equal(
@@ -328,27 +339,31 @@ try {
   assert.equal(await pending(), 'qrl_requestAccounts');
   await unlock();
   await approveRequest();
-  await expect.poll(probeAccounts).toEqual({ code: 4100 });
-  await expect.poll(grant).toBeNull();
+  await expect.poll(probeAccounts).toEqual({ accounts: [account] });
+  assert.equal((await grant()).accounts[0], account);
   await disconnected();
   const connectedOrigins = await worker.evaluate(
     async (key) =>
       Object.keys((await globalThis.chrome.storage.local.get(key))[key]?.ALL_DAPPS ?? {}),
     `${prefix}DAPPS`
   );
-  assert.ok(!connectedOrigins.includes(origin));
+  assert.ok(connectedOrigins.includes(origin));
   await page.bringToFront();
   await extensionPage.locator('a[href="/dapp-connectivity"] button').click();
-  await expect(extensionPage.getByText('Not Connected', { exact: true })).toBeVisible();
-  await expect(extensionPage.getByRole('button', { name: 'Disconnect', exact: true })).toHaveCount(
-    0
-  );
+  await expect(extensionPage.getByText(origin, { exact: true })).toBeVisible();
+  await disconnected();
+  await connect();
+  await connected();
+  assert.equal(await pending(), null);
+  await expect(extensionPage.getByRole('button', { name: 'Yes', exact: true })).toHaveCount(0);
   record(
-    'Connect while locked, page Disconnect, unlock and approve leaves no grant or connected site',
+    'Connect while locked, page Disconnect, late approval keeps the page Disconnected; later Connect reuses the grant without a prompt',
     {
-      accountsProbe: { code: 4100 },
-      originInConnectedSites: false,
-      pageStatus: 'Disconnected',
+      accountsProbe: { accounts: [account] },
+      originInConnectedSites: true,
+      pageStatusAfterApproval: 'Disconnected',
+      pageStatusAfterConnect: 'Connected',
+      pendingAfterConnect: null,
     }
   );
 

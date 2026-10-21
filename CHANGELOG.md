@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manages EIP-6963 extension providers with typed state, pending approval,
   passive restore, lock/unlock recovery, and guarded event subscriptions.
   Exported from the package index and the DOM-free `/extension` subpath.
-- Explicit extension `disconnect()` revokes `qrl_accounts` permissions,
-  falls back to local cleanup on `-32601`, and surfaces other errors while
-  completing cleanup. A pending approval that later returns accounts triggers
-  another revocation, including after disposal. A subsequent Connect for the
-  same provider preserves its new grant.
+- Extension `disconnect()` revokes this origin's existing grant and ends the
+  session. An open wallet prompt stays open. Later approval leaves a grant the
+  page has no intent for; a later `connect()` returns it without a new prompt.
+  Wallets that reject the origin's pending account requests on
+  `wallet_revokePermissions` close that gap (MyQRLWallet extension: planned).
+  Code `-32601` falls back to local cleanup; other errors appear in state.
+- Each extension helper keeps its own state, with no module-level coordination
+  across the package index and `/extension` entry points in ESM or CommonJS.
 - Extension accounts require the QRL 2.0 text form (`Q` plus 128 hex digits).
   Optional `handlers.validateAccount` accepts the SDK's `isCurrentQrlAddress`
   for checksum validation without a runtime SDK dependency in the UI helper.
@@ -32,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pending Connect and Restore calls settle when retired, including on
   disconnect, failure, supersession, and disposal with an unanswered provider
   request. Recoverable provider disconnect code `1013` preserves session state.
+- A second Disconnect during revocation drops a queued Connect or Restore.
+  Disposal also settles a pending Disconnect when the provider never answers.
 - The reference dApp uses the SDK checksum validator, retains locked intent
   across reloads, recovers on unlock, and shows Disconnected when the extension
   removes access. A locked Connect awaits its original approval request.
