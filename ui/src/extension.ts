@@ -121,7 +121,7 @@ export function createExtensionSession(
   const { revokeTimeoutMs = DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS } = handlers;
   if (
     !Number.isFinite(revokeTimeoutMs) ||
-    revokeTimeoutMs <= 0 ||
+    revokeTimeoutMs < 1 ||
     revokeTimeoutMs > MAX_REVOKE_TIMEOUT_MS
   ) {
     throw new RangeError('revokeTimeoutMs must be a positive number up to 2147483647');

@@ -955,7 +955,7 @@ describe('extension revocation deadline', () => {
     }
   );
 
-  it.each([0, -1, NaN, Infinity, -Infinity, 2 ** 31, 1e12])(
+  it.each([0, 0.5, Number.MIN_VALUE, -1, NaN, Infinity, -Infinity, 2 ** 31, 1e12])(
     'rejects an invalid revocation deadline: %s',
     (revokeTimeoutMs) => {
       const provider = new MockProvider();
