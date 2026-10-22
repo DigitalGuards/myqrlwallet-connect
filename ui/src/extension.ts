@@ -1,3 +1,9 @@
+/** Default deadline for wallet_revokePermissions, in milliseconds. */
+export const DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS = 10_000;
+
+// Larger setTimeout delays overflow and fire almost immediately.
+const MAX_REVOKE_TIMEOUT_MS = 2_147_483_647;
+
 /** The EIP-1193 events used by an extension session. */
 export type ExtensionSessionEvent = 'accountsChanged' | 'chainChanged' | 'disconnect';
 
@@ -40,6 +46,8 @@ export interface ExtensionSessionHandlers {
   onStateChange?: (state: ExtensionSessionState) => void;
   /** Optional additional check, such as the SDK's isCurrentQrlAddress checksum validator. */
   validateAccount?: (account: string) => boolean;
+  /** Revocation deadline in milliseconds, from 1 to 2,147,483,647. Defaults to 10,000. */
+  revokeTimeoutMs?: number;
 }
 
 export interface ExtensionSession {
@@ -110,6 +118,14 @@ export function createExtensionSession(
   provider: ExtensionSessionProvider,
   handlers: ExtensionSessionHandlers = {}
 ): ExtensionSession {
+  const { revokeTimeoutMs = DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS } = handlers;
+  if (
+    !Number.isFinite(revokeTimeoutMs) ||
+    revokeTimeoutMs <= 0 ||
+    revokeTimeoutMs > MAX_REVOKE_TIMEOUT_MS
+  ) {
+    throw new RangeError('revokeTimeoutMs must be a positive number up to 2147483647');
+  }
   let state: ExtensionSessionState = Object.freeze({
     status: 'idle',
     accounts: Object.freeze([]),
@@ -123,6 +139,12 @@ export function createExtensionSession(
   let flight: PendingRequest | undefined;
   let queued: PendingRequest | undefined;
   let closing: PendingRequest | undefined;
+  let revokeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function clearRevokeTimer(): void {
+    if (revokeTimer !== undefined) clearTimeout(revokeTimer);
+    revokeTimer = undefined;
+  }
 
   function pendingRequest(operation: PendingRequest['operation']): PendingRequest {
     let resolve: ((snapshot: ExtensionSessionState) => void) | undefined;
@@ -189,7 +211,7 @@ export function createExtensionSession(
 
   function start(operation: 'connect' | 'restore'): Promise<ExtensionSessionState> {
     if (disposed) return Promise.resolve(state);
-    // A new request waits for revocation to finish, so its new grant survives.
+    // Wait for revocation's reply or deadline before starting a new request.
     if (closing) {
       if (queued && (queued.operation === 'connect' || operation === 'restore'))
         return queued.promise;
@@ -320,13 +342,25 @@ export function createExtensionSession(
     const token = generation;
     const request = pendingRequest('disconnect');
     closing = request;
-    void Promise.resolve()
-      .then(revoke)
-      .then((error) => {
-        if (closing === request) closing = undefined;
-        if (current(token)) update({ status: 'disconnected', error });
-        request.settle();
-      });
+    const finish = (error: ExtensionSessionError | null): void => {
+      if (!current(token)) return;
+      clearRevokeTimer();
+      closing = undefined;
+      // Retire this revocation even when its provider promise is still pending.
+      generation += 1;
+      update({ status: 'disconnected', error });
+      request.settle();
+    };
+    // Install before notifying handlers so synchronous disposal clears it too.
+    revokeTimer = setTimeout(() => {
+      finish(
+        sessionError(
+          new Error('Wallet did not confirm the disconnect before the revocation deadline'),
+          'disconnect'
+        )
+      );
+    }, revokeTimeoutMs);
+    void Promise.resolve().then(revoke).then(finish);
     update({ status: 'disconnecting', accounts: [], chainId: null, intent: false, error: null });
     pending?.settle();
     waiting?.settle();
@@ -341,6 +375,7 @@ export function createExtensionSession(
     disconnect,
     dispose: () => {
       disposed = true;
+      clearRevokeTimer();
       end();
       closing?.settle();
       closing = undefined;
