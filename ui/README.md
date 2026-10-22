@@ -161,6 +161,7 @@ import { isCurrentQrlAddress } from '@qrlwallet/connect';
 
 const session = createExtensionSession(detail.provider, {
   validateAccount: isCurrentQrlAddress, // Optional QIP-55 checksum validation.
+  revokeTimeoutMs: 10_000, // Optional revocation deadline in milliseconds.
   onStateChange(state) {
     renderConnection(state);
     setAccountActionsEnabled(state.status === 'connected');
@@ -240,8 +241,23 @@ pending account requests on `wallet_revokePermissions` close that gap
 `wallet_revokePermissions` with `params: [{ qrl_accounts: {} }]`. Code `-32601`
 uses local cleanup as a compatibility fallback. Every other revocation error,
 including `4200`, appears in the final disconnected state's `error`; local
-cleanup still completes. On the same helper, a new Connect waits for revocation
-to finish. Another Disconnect during revocation drops that queued request.
+cleanup still completes.
+
+Revocation waits up to `DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS` (10,000 ms), exported
+from both the package index and `/extension`. Set `handlers.revokeTimeoutMs` to
+override it with a number from 1 to 2,147,483,647 (the largest delay `setTimeout`
+honours); any other value throws a `RangeError` when creating the helper. At the deadline, `disconnect()` resolves
+as `disconnected` with `intent: false` and an error whose `operation` is
+`disconnect`, whose `code` is `null`, and whose message says the wallet did not
+confirm the disconnect. A Connect or Restore queued on the same helper proceeds
+after the revocation reply or deadline. Another Disconnect during revocation
+drops that queued request.
+
+The deadline ends the local wait. The wallet request can still complete later,
+and its late success or failure is ignored by the retired generation. If a late
+revocation removes a newer Connect's grant, the current `accountsChanged([])`
+handler enters `locked` and probes `qrl_accounts`; `4100` then ends the session
+as `disconnected`. An empty probe retains locked intent as described above.
 Each helper keeps its own state; entry points and replacement helpers share no
 coordination state. When revoking before replacement, await `disconnect()` before
 calling `dispose()`.
@@ -260,9 +276,10 @@ Disconnect, permanent provider disconnect, failure, supersession, or `dispose()`
 even if the provider never answers. Pending `disconnect()` and calls queued
 behind revocation also settle on disposal. `onStateChange` runs synchronously
 and should not throw.
-`dispose()` is terminal, clears local state, removes listeners, and silences
-callbacks. Subsequent calls on a disposed helper return its disconnected
-snapshot.
+`dispose()` is terminal, clears local state and the revocation deadline timer,
+removes listeners, and silences callbacks. Revocation success, failure, and
+expiry also clear the timer. Subsequent calls on a disposed helper return its
+disconnected snapshot.
 
 Exported types: `ExtensionSession`, `ExtensionSessionProvider`,
 `ExtensionSessionEvent`, `ExtensionSessionStatus`, `ExtensionSessionState`,

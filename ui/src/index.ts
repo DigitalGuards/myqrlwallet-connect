@@ -1,6 +1,7 @@
 export { QrlPairingModal, defineQrlPairingModal, QRL_PAIRING_MODAL_TAG } from './element.js';
 export {
   createExtensionSession,
+  DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS,
   type ExtensionSession,
   type ExtensionSessionProvider,
   type ExtensionSessionEvent,

@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isCurrentQrlAddress, qip55AddressFromBytes } from '@qrlwallet/connect';
 import {
   createExtensionSession,
+  DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS,
   type ExtensionSessionEvent,
   type ExtensionSessionProvider,
   type ExtensionSessionState,
@@ -894,4 +895,255 @@ describe('extension session', () => {
     expect(events.map((event) => provider.listeners.get(event)?.size)).toEqual([0, 0, 0]);
     expect(provider.requests).toHaveLength(1);
   });
+});
+
+describe('extension revocation deadline', () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it('settles an unanswered revocation at the default deadline', async () => {
+    const { provider, session, states } = setup();
+    await session.restore();
+    provider.revocation = deferred<unknown>();
+    const closing = session.disconnect();
+    const settled = vi.fn();
+    void closing.then(settled);
+    expect(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS).toBe(10_000);
+    await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS - 1);
+    expect(session.getState().status).toBe('disconnecting');
+    expect(settled).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await closing;
+    expect(result).toMatchObject({
+      status: 'disconnected',
+      accounts: [],
+      chainId: null,
+      intent: false,
+      error: {
+        operation: 'disconnect',
+        code: null,
+        message: 'Wallet did not confirm the disconnect before the revocation deadline',
+      },
+    });
+    expect(result.error?.cause).toBeInstanceOf(Error);
+    expect(settled).toHaveBeenCalledExactlyOnceWith(session.getState());
+    expect(states.map((state) => state.status)).toEqual([
+      'pending',
+      'locked',
+      'disconnecting',
+      'disconnected',
+    ]);
+    expect(events.map((event) => provider.listeners.get(event)?.size)).toEqual([0, 0, 0]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([1, 250, 60_000, 2 ** 31 - 1])(
+    'uses the configured %s ms deadline',
+    async (revokeTimeoutMs) => {
+      const provider = new MockProvider();
+      provider.revocation = deferred<unknown>();
+      const session = createExtensionSession(provider, { revokeTimeoutMs });
+      const closing = session.disconnect();
+      await vi.advanceTimersByTimeAsync(revokeTimeoutMs - 1);
+      expect(session.getState().status).toBe('disconnecting');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await closing).toMatchObject({
+        status: 'disconnected',
+        error: { operation: 'disconnect' },
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it.each([0, 0.5, Number.MIN_VALUE, -1, NaN, Infinity, -Infinity, 2 ** 31, 1e12])(
+    'rejects an invalid revocation deadline: %s',
+    (revokeTimeoutMs) => {
+      const provider = new MockProvider();
+      expect(() => createExtensionSession(provider, { revokeTimeoutMs })).toThrow(
+        new RangeError('revokeTimeoutMs must be a positive number up to 2147483647')
+      );
+      expect(provider.requests).toHaveLength(0);
+      expect(provider.listeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it.each(['connect', 'restore'] as const)(
+    'starts a queued %s when revocation times out',
+    async (operation) => {
+      const { provider, session } = setup();
+      await session.restore();
+      provider.revocation = deferred<unknown>();
+      const closing = session.disconnect();
+      const request = session[operation]();
+      await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS - 1);
+      expect(provider.requests.map((r) => r.method)).toEqual([
+        'qrl_accounts',
+        'wallet_revokePermissions',
+      ]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await closing).toMatchObject({
+        status: 'disconnected',
+        error: { operation: 'disconnect' },
+      });
+      if (operation === 'connect') {
+        provider.unlock();
+        provider.approve();
+      }
+      expect(await request).toMatchObject({
+        status: operation === 'connect' ? 'connected' : 'locked',
+        intent: true,
+        error: null,
+      });
+      expect(provider.requests.map((r) => r.method)).toEqual([
+        'qrl_accounts',
+        'wallet_revokePermissions',
+        operation === 'connect' ? 'qrl_requestAccounts' : 'qrl_accounts',
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      session.dispose();
+    }
+  );
+
+  for (const status of ['disconnected', 'connected', 'disconnecting'] as const) {
+    it.each(['success', 'failure'] as const)(
+      `ignores late revocation %s while ${status}`,
+      async (reply) => {
+        const { provider, session, states } = setup();
+        await session.restore();
+        const revocation = deferred<unknown>();
+        // Isolate the old RPC reply from wallet account events, covered below.
+        vi.spyOn(provider, 'request').mockImplementationOnce(() => revocation.promise);
+        const closing = session.disconnect();
+        await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS);
+        const timedOut = await closing;
+        let nextClosing: Promise<ExtensionSessionState> | undefined;
+        if (status !== 'disconnected') {
+          provider.locked = false;
+          provider.granted = true;
+          await session.connect();
+          if (status === 'disconnecting') {
+            provider.revocation = deferred<unknown>();
+            nextClosing = session.disconnect();
+          }
+        }
+        const snapshot = session.getState();
+        const notifications = states.length;
+        expect(snapshot.status).toBe(status);
+        if (reply === 'success') revocation.resolve(null);
+        else revocation.reject(rpcError(4200));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(session.getState()).toBe(snapshot);
+        expect(states).toHaveLength(notifications);
+        expect(await closing).toBe(timedOut);
+        expect(vi.getTimerCount()).toBe(nextClosing ? 1 : 0);
+        if (nextClosing) {
+          await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS);
+          expect(await nextClosing).toMatchObject({
+            status: 'disconnected',
+            error: { operation: 'disconnect' },
+          });
+        }
+        session.dispose();
+      }
+    );
+  }
+
+  it('reflects a late revocation removing the grant obtained by a newer Connect', async () => {
+    const { provider, session, states } = setup();
+    await session.restore();
+    provider.revocation = deferred<unknown>();
+    const closing = session.disconnect();
+    const connect = session.connect();
+    provider.unlock();
+    await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS);
+    const timedOut = await closing;
+    provider.approve();
+    expect(await connect).toMatchObject({ status: 'connected', accounts, intent: true });
+    expect(provider.granted).toBe(true);
+    const notifications = states.length;
+    provider.revocation.resolve(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider.granted).toBe(false);
+    expect(session.getState()).toMatchObject({
+      status: 'disconnected',
+      accounts: [],
+      intent: false,
+      error: null,
+    });
+    expect(states.slice(notifications).map((state) => state.status)).toEqual([
+      'locked',
+      'disconnected',
+    ]);
+    expect(provider.requests.map((r) => r.method)).toEqual([
+      'qrl_accounts',
+      'wallet_revokePermissions',
+      'qrl_requestAccounts',
+      'qrl_accounts',
+    ]);
+    expect(events.map((event) => provider.listeners.get(event)?.size)).toEqual([0, 0, 0]);
+    expect(await closing).toBe(timedOut);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['immediately', 'after request', 'in state handler'] as const)(
+    'clears the deadline when disposed %s',
+    async (when) => {
+      const provider = new MockProvider();
+      provider.revocation = deferred<unknown>();
+      const states: ExtensionSessionState[] = [];
+      const session = createExtensionSession(provider, {
+        onStateChange: (state) => {
+          states.push(state);
+          if (when === 'in state handler' && state.status === 'disconnecting') session.dispose();
+        },
+      });
+      const closing = session.disconnect();
+      if (when !== 'in state handler') {
+        if (when === 'after request') await vi.advanceTimersByTimeAsync(0);
+        expect(vi.getTimerCount()).toBe(1);
+        session.dispose();
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      const snapshot = session.getState();
+      const notifications = states.length;
+      expect(await closing).toBe(snapshot);
+      expect(snapshot).toMatchObject({ status: 'disconnected', intent: false, error: null });
+      await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS);
+      expect(provider.requests.map((r) => r.method)).toEqual(['wallet_revokePermissions']);
+      expect(session.getState()).toBe(snapshot);
+      expect(states).toHaveLength(notifications);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it.each(['success', 'failure', 'unsupported', 'synchronous failure'] as const)(
+    'clears the deadline after revocation %s',
+    async (reply) => {
+      const { provider, session, states } = setup();
+      provider.revocation = deferred<unknown>();
+      if (reply === 'synchronous failure') {
+        vi.spyOn(provider, 'request').mockImplementationOnce(() => {
+          throw rpcError(4200);
+        });
+      }
+      const closing = session.disconnect();
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(0);
+      if (reply === 'success') provider.revocation.resolve(null);
+      else if (reply !== 'synchronous failure') {
+        provider.revocation.reject(rpcError(reply === 'unsupported' ? -32601 : 4200));
+      }
+      const snapshot = await closing;
+      expect(snapshot.status).toBe('disconnected');
+      expect(snapshot.error?.code ?? null).toBe(
+        reply === 'success' || reply === 'unsupported' ? null : 4200
+      );
+      expect(vi.getTimerCount()).toBe(0);
+      const notifications = states.length;
+      await vi.advanceTimersByTimeAsync(DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS);
+      expect(session.getState()).toBe(snapshot);
+      expect(states).toHaveLength(notifications);
+    }
+  );
 });

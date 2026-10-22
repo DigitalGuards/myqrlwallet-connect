@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@qrlwallet/connect-ui` 0.4.0 bounds extension revocation with the exported
+  `DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS` (10,000 ms). The existing helper's second
+  argument accepts `revokeTimeoutMs` from 1 to 2,147,483,647 ms (the `setTimeout` maximum).
+  At the deadline, Disconnect settles as `disconnected` with an error explaining
+  that the wallet did not confirm the disconnect, and queued Connect or Restore
+  calls proceed. Generation guards ignore late replies; account events still
+  reflect a late revocation removing a newer grant. Disposal and every revocation
+  completion clear the deadline timer.
 - Empty account events probe `qrl_accounts`: `[]` retains locked intent,
   accounts restore the connection, and `4100` quietly clears the session.
   Restore also treats `4100` as a quiet disconnect. Newer account events take
