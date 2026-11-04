@@ -1,27 +1,42 @@
 name: CI
 
+# Each change is tested once, on its pull request. The weekly run surfaces drift
+# in the registry.
 on:
-  push:
-    branches: [main, dev]
   pull_request:
     branches: [main, dev]
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
+    # 20.x is the lowest version package.json promises. 22.x is what publish.yml
+    # validates and releases on.
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [20.x]
+        node-version: [20.x, 22.x]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -29,20 +44,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: node scripts/audit-gate.mjs
-
-      # publish.yml runs the full audit (dev tooling included) and refuses to
-      # publish on a high advisory. Warn here first so it never surprises a release.
-      - name: Full audit, warning only
-        run: npm audit --audit-level=high || echo "::warning::npm audit reports a high advisory in the full tree; publish.yml will refuse to publish until it is fixed"
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Check lint ratchet
+      # The ratchet's first pass lints the same files as npm run lint, and the
+      # config reports unused directives.
+      - name: Lint and check the lint ratchet
         env:
-          LINT_RATCHET_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          LINT_RATCHET_BASE: ${{ github.event.pull_request.base.sha || 'HEAD' }}
         run: npm run lint:ratchet -- --base-ref "$LINT_RATCHET_BASE"
 
       - name: Format check
@@ -64,19 +70,30 @@ jobs:
       - name: Bundle size check
         run: npm run size
 
+      # Last, so a failing audit can never skip the checks above.
+      - name: Audit production dependencies
+        run: node scripts/audit-gate.mjs
+
+      # publish.yml runs the full audit (dev tooling included) and refuses to
+      # publish on a high advisory. Warn here first so it never surprises a release.
+      - name: Full audit, warning only
+        run: npm audit --audit-level=high || echo "::warning::npm audit reports a high advisory in the full tree; publish.yml will refuse to publish until it is fixed"
+
   ui:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20.x
+          node-version: 22.x
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -85,29 +102,15 @@ jobs:
       - name: Install SDK dependencies
         run: npm ci
 
-      - name: Audit SDK production dependencies
-        run: node scripts/audit-gate.mjs
-
       - name: Build the SDK (ui type-checks against its dist)
         run: npm run build
 
       - name: Install ui dependencies
         run: npm ci --prefix ui
 
-      - name: Audit UI production dependencies
-        run: node scripts/audit-gate.mjs --dir ui
-
-      - name: UI full audit, warning only
-        run: npm audit --audit-level=high || echo "::warning::npm audit reports a high advisory in the ui tree; publish.yml will refuse to publish until it is fixed"
-        working-directory: ui
-
-      - name: Lint
-        run: npm run lint
-        working-directory: ui
-
-      - name: Check lint ratchet
+      - name: Lint and check the lint ratchet
         env:
-          LINT_RATCHET_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          LINT_RATCHET_BASE: ${{ github.event.pull_request.base.sha || 'HEAD' }}
         run: npm run lint:ratchet -- --base-ref "$LINT_RATCHET_BASE"
         working-directory: ui
 
@@ -125,4 +128,15 @@ jobs:
 
       - name: Build
         run: npm run build
+        working-directory: ui
+
+      # Last, so a failing audit can never skip the checks above.
+      - name: Audit SDK production dependencies
+        run: node scripts/audit-gate.mjs
+
+      - name: Audit UI production dependencies
+        run: node scripts/audit-gate.mjs --dir ui
+
+      - name: UI full audit, warning only
+        run: npm audit --audit-level=high || echo "::warning::npm audit reports a high advisory in the ui tree; publish.yml will refuse to publish until it is fixed"
         working-directory: ui
