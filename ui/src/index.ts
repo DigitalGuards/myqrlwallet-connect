@@ -34,3 +34,16 @@ export {
   type WalletPickerEntry,
   type GroupMyQrlWalletOptions,
 } from './wallets.js';
+export {
+  createStepAutoStart,
+  createSentTransactions,
+  DEFAULT_AUTO_START_EXPIRY_MS,
+  DEFAULT_SENT_TRANSACTION_HOLD_MS,
+  type StepAutoStart,
+  type StepAutoStartCandidate,
+  type StepAutoStartOptions,
+  type StepAutoStartUpdate,
+  type SentTransaction,
+  type SentTransactions,
+  type SentTransactionsOptions,
+} from './flow.js';

@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@qrlwallet/connect` 5.2.0: `isUserRejection(error)` tells a declined wallet
+  prompt from a failure. It reads EIP-1193 code 4001 on the error, on
+  `info.error` (the ethers v6 wrapper) and on `cause`, and the ethers code
+  `ACTION_REJECTED`. It matches machine signals only, never message text.
+- `@qrlwallet/connect-ui` 0.5.0: the `@qrlwallet/connect-ui/flow` entry point
+  (also exported from the package index), framework-free and DOM-free:
+  - `createStepAutoStart(options)` opens the wallet by itself, once, when a
+    step of the user's turns actionable. A step already actionable on the first
+    reading is only a baseline, a step the user started by hand never starts
+    again, and the button stays the retry. Hold windows, a ten-minute expiry,
+    foreground-only start and `dispose()` are included. The dApp's own tick
+    drives it; there are no timers inside.
+  - `createSentTransactions(options)` remembers the hash a wallet returned for
+    a step, so a dApp can link the pending transaction and keep that step's
+    button disabled for `holdMs` (default 180 000) while it is awaited.
+- The example dApp shows "Request declined in the wallet." for a declined
+  request, and after a send links the pending transaction on ShorScan and keeps
+  the send button disabled until the receipt arrives or three minutes pass.
 - `@qrlwallet/connect-ui` 0.4.0: `createExtensionSession(provider, handlers)`
   manages EIP-6963 extension providers with typed state, pending approval,
   passive restore, lock/unlock recovery, and guarded event subscriptions.

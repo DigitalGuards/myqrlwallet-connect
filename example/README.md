@@ -37,6 +37,7 @@ Full architectural details, RPC method list, and session/reconnect behavior live
 - Connects to a wallet via the relay and walks through the 3-step SYN/SYNACK/ACK handshake
 - Lets you call `qrl_sendTransaction`, `qrl_signMessage`, and a selection of read-only RPC methods. Message verification binds the signature to the authorized 64-byte account. Amounts use exact decimal conversion and transactions include the connected chain ID.
 - The typed-data card demonstrates local rejection of unsupported 64-byte address fields. It sends no signing request. Its initial private-v3 example uses chain 3151909 and follows the connected wallet chain; the zero contract is a placeholder.
+- A declined prompt shows "Request declined in the wallet." through `isUserRejection`. After a send, the result links the pending transaction on ShorScan and the send button stays disabled until the receipt arrives or three minutes pass (`createSentTransactions` from `@qrlwallet/connect-ui/flow`). `createStepAutoStart` is not used here because the example has no multi-step flow; see the connect-ui README.
 - Streams every inbound/outbound event to an on-page log so you can see the protocol in action
 
 The relay defaults to `https://qrlwallet.com`. For local development, set `VITE_RELAY_URL` to your backend URL before running `npm run dev`. `VITE_WEB_WALLET_URL` selects the web wallet used by the pairing button.

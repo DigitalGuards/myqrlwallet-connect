@@ -209,6 +209,54 @@ field must exactly match that approved address.
 An account string is not proof of control. For authentication, request a fresh
 challenge with `qrl_signMessage` and verify it with `verifyMessageForSigner`.
 
+## Declined prompts
+
+A user who closes the wallet prompt makes `provider.request(...)` reject. That is
+an expected outcome and needs no error screen. `isUserRejection(error)` tells it
+from a real failure. It reads EIP-1193 code 4001 on the error, on `info.error`
+(the wrapper ethers v6 builds) and on `cause`, plus the ethers code
+`ACTION_REJECTED`. It never matches message text. A decline happens at signing
+time, before any broadcast, so nothing reached the chain.
+
+```typescript
+import { isUserRejection } from '@qrlwallet/connect';
+
+try {
+  await provider.request({ method: 'qrl_sendTransaction', params: [tx] });
+} catch (error) {
+  showMessage(isUserRejection(error) ? 'Request declined in the wallet.' : 'Request failed.');
+}
+```
+
+## Opening the wallet by itself
+
+Multi-step flows (lock, then claim) can open the wallet when a step becomes the
+user's turn. `@qrlwallet/connect-ui/flow` ships the controller and a store for
+the sent transaction, both framework-free. `createStepAutoStart` starts a step at
+most once, treats the first reading as a baseline (opening a link never opens a
+wallet), waits for the foreground, and leaves the button as the retry.
+`createSentTransactions` keeps a pending transaction's link and holds that
+step's button so a second click cannot send a duplicate. See the
+[`@qrlwallet/connect-ui` README](ui/README.md#step-flows-qrlwalletconnect-uiflow) for the
+full description.
+
+```typescript
+import { createStepAutoStart, createSentTransactions } from '@qrlwallet/connect-ui/flow';
+
+const autoStart = createStepAutoStart();
+const sent = createSentTransactions();
+
+// Call on every state change and from the dApp's own one-second tick.
+autoStart.update({
+  candidates: [
+    { key: 'lock', busyKey: 'lock', run: sendLock, blocked: !walletReady, holdMs: 0 },
+  ],
+  ready: chainStateLoaded,
+  busy: currentBusyKey,
+  now: Date.now(),
+});
+```
+
 ## Address display
 
 Use `formatQrlAddressFingerprint(address)` for compact QRL account labels. It

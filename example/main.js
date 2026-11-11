@@ -11,12 +11,16 @@ import {
   bytesToHex,
   formatQrlAddressFingerprint,
   getAppStoreUrl,
+  isUserRejection,
 } from '@qrlwallet/connect';
 // The grouping helper also ships from the package index. This example imports
 // the dependency-free `/wallets` subpath because it renders its own picker and
 // never loads the pairing modal, so the QR encoder stays out of the bundle.
 import { groupMyQrlWallet } from '@qrlwallet/connect-ui/wallets';
 import { createExtensionSession } from '@qrlwallet/connect-ui/extension';
+// DOM-free helpers for the wallet prompt flow: remembers the sent transaction
+// so its button stays disabled while the transaction is awaited.
+import { createSentTransactions } from '@qrlwallet/connect-ui/flow';
 import QRCode from 'qrcode';
 import { canonicalChainId, makeTypedDemoPayload, parseQuanta } from './demo-utils.js';
 
@@ -67,6 +71,12 @@ function log(msg, type = '', detail = '') {
   entry.title = detail;
   logArea.appendChild(entry);
   logArea.scrollTop = logArea.scrollHeight;
+}
+
+// A declined prompt is an expected outcome, not a failure: show it plainly.
+// Anything else keeps the provider's own message.
+function failureText(err) {
+  return isUserRejection(err) ? 'Request declined in the wallet.' : `Error: ${err.message}`;
 }
 
 function accountForDisplay(account) {
@@ -317,7 +327,7 @@ function showConnectedUI(accounts, providerInfo) {
   } else {
     btnNewConn.classList.add('hidden');
   }
-  btnSend.disabled = false;
+  btnSend.disabled = pendingTimer !== null;
   btnSign.disabled = false;
   btnSignTyped.disabled = false;
   btnRpc.disabled = false;
@@ -511,7 +521,7 @@ qrl.on('late_response', ({ method, result, error }) => {
   if (error) {
     log(`[after reload] ${method} failed: ${error.message}`, 'error');
     if (box) {
-      box.textContent = `Error: ${error.message}`;
+      box.textContent = failureText(error);
       box.classList.remove('hidden');
     }
     return;
@@ -836,6 +846,61 @@ btnCopyUri.addEventListener('click', async () => {
   }
 });
 
+// ─── Pending transaction ─────────────────────────────────
+// The wallet returns the hash when it broadcasts, before the transaction is
+// mined. Show a link to it and keep the send button disabled until the receipt
+// arrives or the hold (3 minutes by default) runs out, so a second click cannot
+// send a duplicate while the first is still awaited.
+const EXPLORER_TX_URL = 'https://shorscan.com/tx/';
+const SEND_KEY = 'send';
+const RECEIPT_POLL_MS = 5000;
+const sentTransactions = createSentTransactions();
+let pendingTimer = null;
+
+function endPending() {
+  if (pendingTimer !== null) clearInterval(pendingTimer);
+  pendingTimer = null;
+  sentTransactions.clear(SEND_KEY);
+  btnSend.disabled = !connectedAccount;
+  btnSend.textContent = 'Send Transaction';
+}
+
+function showPendingTransaction(provider) {
+  const sent = sentTransactions.get(SEND_KEY);
+  if (!sent) return;
+  const link = document.createElement('a');
+  link.href = `${EXPLORER_TX_URL}${sent.hash}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = sent.hash;
+  txResult.textContent = 'Pending tx: ';
+  txResult.appendChild(link);
+  txResult.classList.remove('hidden');
+
+  if (pendingTimer !== null) clearInterval(pendingTimer);
+  btnSend.disabled = true;
+  btnSend.textContent = 'Transaction pending...';
+  pendingTimer = setInterval(async () => {
+    if (activeProvider !== provider || !sentTransactions.isHeld(SEND_KEY, Date.now())) {
+      endPending();
+      return;
+    }
+    try {
+      const receipt = await provider.request({
+        method: 'qrl_getTransactionReceipt',
+        params: [sent.hash],
+      });
+      if (receipt && sentTransactions.get(SEND_KEY) === sent) {
+        log(`Transaction mined: ${sent.hash}`, 'success');
+        txResult.firstChild.textContent = 'Mined tx: ';
+        endPending();
+      }
+    } catch {
+      // A failed read is retried on the next poll; the hold still ends the wait.
+    }
+  }, RECEIPT_POLL_MS);
+}
+
 // ─── Send Transaction ────────────────────────────────────
 btnSend.addEventListener('click', async () => {
   const to = $('tx-to').value.trim();
@@ -897,16 +962,22 @@ btnSend.addEventListener('click', async () => {
       params: [txParams],
     });
 
-    log(`Transaction confirmed: ${txHash}`, 'success');
-    txResult.textContent = `tx: ${txHash}`;
-    txResult.classList.remove('hidden');
+    log(`Transaction sent: ${txHash}`, 'success');
+    if (sentTransactions.record(SEND_KEY, txHash, Date.now())) {
+      showPendingTransaction(provider);
+    } else {
+      txResult.textContent = `tx: ${txHash}`;
+      txResult.classList.remove('hidden');
+    }
   } catch (err) {
     log(`Transaction failed: ${err.message}`, 'error');
-    txResult.textContent = `Error: ${err.message}`;
+    txResult.textContent = failureText(err);
     txResult.classList.remove('hidden');
   } finally {
-    btnSend.disabled = activeProvider !== qrl && !connectedAccount;
-    btnSend.textContent = 'Send Transaction';
+    if (pendingTimer === null) {
+      btnSend.disabled = activeProvider !== qrl && !connectedAccount;
+      btnSend.textContent = 'Send Transaction';
+    }
   }
 });
 
@@ -967,7 +1038,7 @@ btnSign.addEventListener('click', async () => {
     renderSignResultCard(signResult, result, ok);
   } catch (err) {
     log(`qrl_signMessage failed: ${err.message}`, 'error');
-    signResult.textContent = `Error: ${err.message}`;
+    signResult.textContent = failureText(err);
     signResult.classList.remove('hidden');
   } finally {
     btnSign.disabled = activeProvider !== qrl && !connectedAccount;
@@ -1030,7 +1101,7 @@ btnSignTyped.addEventListener('click', async () => {
     renderSignResultCard(signTypedResult, result, ok);
   } catch (err) {
     log(`qrl_signTypedData failed: ${err.message}`, 'error');
-    signTypedResult.textContent = `Error: ${err.message}`;
+    signTypedResult.textContent = failureText(err);
     signTypedResult.classList.remove('hidden');
   } finally {
     btnSignTyped.disabled = !activeProvider || (activeProvider !== qrl && !connectedAccount);
@@ -1063,7 +1134,7 @@ btnRpc.addEventListener('click', async () => {
     rpcResult.classList.remove('hidden');
   } catch (err) {
     log(`${method} failed: ${err.message}`, 'error');
-    rpcResult.textContent = `Error: ${err.message}`;
+    rpcResult.textContent = failureText(err);
     rpcResult.classList.remove('hidden');
   } finally {
     btnRpc.disabled = activeProvider !== qrl && !connectedAccount;
