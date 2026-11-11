@@ -1,6 +1,6 @@
 # Test dApp: QRL Connect example
 
-A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also the source of the hosted example served by ZondScan at [`/dapp-example`](https://zondscan.com/dapp-example).
+A minimal Vite dApp for exercising the full QRL Connect flow end-to-end. Also the source of the hosted example served by the ShorScan explorer at [`/dapp-example`](https://shorscan.com/dapp-example).
 
 ## What QRL Connect is
 
@@ -64,7 +64,7 @@ npm run build
 # Output in dist/
 ```
 
-ZondScan's `ExplorerFrontend` has a `prebuild` script that clones this repo, runs the build with `--base=/dapp-example/`, and copies `dist/` into its `public/dapp-example/` so the SPA is served at `https://zondscan.com/dapp-example`. See [`scripts/README.md`](https://github.com/DigitalGuards/zondscan/tree/dev/ExplorerFrontend/scripts) in that repo for details.
+The explorer's `ExplorerFrontend` has a `prebuild` script that clones this repo, runs the build with `--base=/dapp-example/`, and copies `dist/` into its `public/dapp-example/` so the SPA is served at `https://shorscan.com/dapp-example`. See [`scripts/README.md`](https://github.com/DigitalGuards/zondscan/tree/dev/ExplorerFrontend/scripts) in that repo for details.
 
 ## Testing with the mobile app
 

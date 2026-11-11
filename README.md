@@ -305,7 +305,7 @@ CI runs `node scripts/audit-gate.mjs` after the SDK install and `node scripts/au
 
 The `example/` directory contains a Vite test dApp with QR code generation, transaction sending, message signing, and read-only RPC calls.
 
-> **Want to try it without any setup?** The same example is hosted live at [zondscan.com/dapp-example](https://zondscan.com/dapp-example): it pairs with the production relay and MyQRLWallet mobile app out of the box.
+> **Want to try it without any setup?** The same example is hosted live at [shorscan.com/dapp-example](https://shorscan.com/dapp-example): it pairs with the production relay and MyQRLWallet mobile app out of the box.
 
 ```bash
 # 1. Build the SDK first (the example links to it locally)
