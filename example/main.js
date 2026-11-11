@@ -73,10 +73,16 @@ function log(msg, type = '', detail = '') {
   logArea.scrollTop = logArea.scrollHeight;
 }
 
-// A declined prompt is an expected outcome, not a failure: show it plainly.
-// Anything else keeps the provider's own message.
+// Code 4001 means the request ended at the wallet before anything was
+// broadcast. MyQRLWallet relay wallets also use it for failures they report
+// themselves (no stored seed, insufficient funds), so the wallet's message is
+// shown with it. Any other error keeps the provider's own message.
 function failureText(err) {
-  return isUserRejection(err) ? 'Request declined in the wallet.' : `Error: ${err.message}`;
+  if (isUserRejection(err)) {
+    const reason = typeof err?.message === 'string' ? err.message.trim() : '';
+    return reason ? `Not approved in the wallet: ${reason}` : 'Not approved in the wallet.';
+  }
+  return `Error: ${err.message}`;
 }
 
 function accountForDisplay(account) {
@@ -237,6 +243,12 @@ let typedEdited = false; // becomes true once the user edits the typed-data box
 let activeProvider = null;       // The wallet provider currently in use.
 let activeProviderInfo = null;   // EIP-6963 info for the active wallet.
 let extensionSession = null;
+// Send-button state: a send awaiting wallet approval, and a sent transaction
+// awaiting its receipt (see "Pending transaction" below).
+let sending = false;
+let pendingTimer = null;
+let pendingAccount = null;
+let pendingProvider = null;
 const EXTENSION_SESSION_KEY = 'qrlconnect:extension';
 
 function rememberExtension(rdns) {
@@ -296,6 +308,8 @@ function showConnectedUI(accounts, providerInfo) {
   }
   connectedAccount = accounts?.[0] || null;
   connectedChainId = null;
+  // A different account or wallet never inherits the previous send's hold.
+  if (pendingTimer !== null && (pendingAccount !== connectedAccount || pendingProvider !== activeProvider)) endPending();
   const provider = activeProvider;
   const account = connectedAccount;
   const extensionState = extensionSession?.getState();
@@ -327,7 +341,7 @@ function showConnectedUI(accounts, providerInfo) {
   } else {
     btnNewConn.classList.add('hidden');
   }
-  btnSend.disabled = pendingTimer !== null;
+  syncSendButton();
   btnSign.disabled = false;
   btnSignTyped.disabled = false;
   btnRpc.disabled = false;
@@ -344,6 +358,7 @@ accountAddr.addEventListener('click', async () => {
 });
 
 function showDisconnectedUI() {
+  endPending();
   connectedAccount = null;
   connectedChainId = null;
   activeProvider = null;
@@ -616,6 +631,7 @@ async function showMobileFallback(uri) {
 // Keep the selected extension through lock and pending approval. The helper's
 // passive grant check clears the session when an unlocked wallet removes access.
 function showExtensionUnavailable(status) {
+  endPending();
   connectedAccount = null;
   connectedChainId = null;
   accountAddr.textContent = 'Account unavailable';
@@ -852,53 +868,97 @@ btnCopyUri.addEventListener('click', async () => {
 // arrives or the hold (3 minutes by default) runs out, so a second click cannot
 // send a duplicate while the first is still awaited.
 const EXPLORER_TX_URL = 'https://shorscan.com/tx/';
+const EXPLORER_CHAIN_ID = '0x301825'; // the v3 testnet ShorScan indexes
 const SEND_KEY = 'send';
 const RECEIPT_POLL_MS = 5000;
 const sentTransactions = createSentTransactions();
-let pendingTimer = null;
+
+// One place decides the Send button's state and label.
+function syncSendButton() {
+  if (sending) {
+    btnSend.disabled = true;
+    btnSend.textContent = 'Waiting for approval...';
+  } else if (pendingTimer !== null) {
+    btnSend.disabled = true;
+    btnSend.textContent = 'Transaction pending...';
+  } else {
+    btnSend.disabled = !connectedAccount;
+    btnSend.textContent = 'Send Transaction';
+  }
+}
 
 function endPending() {
   if (pendingTimer !== null) clearInterval(pendingTimer);
   pendingTimer = null;
+  pendingAccount = null;
+  pendingProvider = null;
   sentTransactions.clear(SEND_KEY);
-  btnSend.disabled = !connectedAccount;
-  btnSend.textContent = 'Send Transaction';
+  syncSendButton();
 }
 
-function showPendingTransaction(provider) {
+// Result line: a label, then a link to the explorer on the chain it indexes,
+// or the bare hash on any other chain.
+function renderTxLine(label, hash, chainId) {
+  txResult.textContent = `${label} `;
+  if (chainId === EXPLORER_CHAIN_ID) {
+    const link = document.createElement('a');
+    link.href = `${EXPLORER_TX_URL}${hash}`;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = hash;
+    txResult.appendChild(link);
+  } else {
+    txResult.appendChild(document.createTextNode(hash));
+  }
+  txResult.classList.remove('hidden');
+}
+
+function showPendingTransaction(provider, from, chainId) {
   const sent = sentTransactions.get(SEND_KEY);
   if (!sent) return;
-  const link = document.createElement('a');
-  link.href = `${EXPLORER_TX_URL}${sent.hash}`;
-  link.target = '_blank';
-  link.rel = 'noopener noreferrer';
-  link.textContent = sent.hash;
-  txResult.textContent = 'Pending tx: ';
-  txResult.appendChild(link);
-  txResult.classList.remove('hidden');
+  renderTxLine('Pending tx:', sent.hash, chainId);
 
   if (pendingTimer !== null) clearInterval(pendingTimer);
-  btnSend.disabled = true;
-  btnSend.textContent = 'Transaction pending...';
+  pendingAccount = from;
+  pendingProvider = provider;
+  let readInFlight = false;
   pendingTimer = setInterval(async () => {
-    if (activeProvider !== provider || !sentTransactions.isHeld(SEND_KEY, Date.now())) {
+    if (activeProvider !== provider || connectedAccount !== from) {
       endPending();
       return;
     }
+    if (!sentTransactions.isHeld(SEND_KEY, Date.now())) {
+      renderTxLine('Not confirmed after 3 minutes. Check the explorer before sending again:', sent.hash, chainId);
+      endPending();
+      return;
+    }
+    if (readInFlight) return;
+    readInFlight = true;
     try {
       const receipt = await provider.request({
         method: 'qrl_getTransactionReceipt',
         params: [sent.hash],
       });
       if (receipt && sentTransactions.get(SEND_KEY) === sent) {
-        log(`Transaction mined: ${sent.hash}`, 'success');
-        txResult.firstChild.textContent = 'Mined tx: ';
+        if (receipt.status === '0x0') {
+          log(`Transaction reverted: ${sent.hash}`, 'error');
+          renderTxLine('Transaction reverted:', sent.hash, chainId);
+        } else if (receipt.status === '0x1') {
+          log(`Transaction mined: ${sent.hash}`, 'success');
+          renderTxLine('Mined tx:', sent.hash, chainId);
+        } else {
+          log(`Transaction included: ${sent.hash}`, 'info');
+          renderTxLine('Included tx (no status in receipt):', sent.hash, chainId);
+        }
         endPending();
       }
     } catch {
       // A failed read is retried on the next poll; the hold still ends the wait.
+    } finally {
+      readInFlight = false;
     }
   }, RECEIPT_POLL_MS);
+  syncSendButton();
 }
 
 // ─── Send Transaction ────────────────────────────────────
@@ -913,8 +973,8 @@ btnSend.addEventListener('click', async () => {
   const from = connectedAccount;
   if (!provider || !isCurrentQrlAddress(from)) return;
 
-  btnSend.disabled = true;
-  btnSend.textContent = 'Waiting for approval...';
+  sending = true;
+  syncSendButton();
   txResult.classList.add('hidden');
   log(`Sending ${qrlAmount} QRL to ${accountForDisplay(to)}...`, 'info', to);
 
@@ -964,7 +1024,7 @@ btnSend.addEventListener('click', async () => {
 
     log(`Transaction sent: ${txHash}`, 'success');
     if (sentTransactions.record(SEND_KEY, txHash, Date.now())) {
-      showPendingTransaction(provider);
+      showPendingTransaction(provider, from, chainId);
     } else {
       txResult.textContent = `tx: ${txHash}`;
       txResult.classList.remove('hidden');
@@ -974,10 +1034,8 @@ btnSend.addEventListener('click', async () => {
     txResult.textContent = failureText(err);
     txResult.classList.remove('hidden');
   } finally {
-    if (pendingTimer === null) {
-      btnSend.disabled = activeProvider !== qrl && !connectedAccount;
-      btnSend.textContent = 'Send Transaction';
-    }
+    sending = false;
+    syncSendButton();
   }
 });
 

@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `@qrlwallet/connect` 5.2.0: `isUserRejection(error)` tells a declined wallet
-  prompt from a failure. It reads EIP-1193 code 4001 on the error, on
-  `info.error` (the ethers v6 wrapper) and on `cause`, and the ethers code
-  `ACTION_REJECTED`. It matches machine signals only, never message text.
+- `@qrlwallet/connect` 5.2.0: `isUserRejection(error)` is true when a request
+  ended at the wallet with code 4001 before anything was broadcast. On
+  MyQRLWallet relay wallets that includes failures the wallet reports itself
+  with 4001 (no stored seed, insufficient funds), so show `error.message`. It
+  reads the code on the error, on `info.error` (ethers v6), on `innerError`
+  (web3.js) and on `cause`, plus the ethers code `ACTION_REJECTED`. It matches
+  machine signals only, never message text, and never throws.
 - `@qrlwallet/connect-ui` 0.5.0: the `@qrlwallet/connect-ui/flow` entry point
   (also exported from the package index), framework-free and DOM-free:
   - `createStepAutoStart(options)` opens the wallet by itself, once, when a
@@ -24,9 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `createSentTransactions(options)` remembers the hash a wallet returned for
     a step, so a dApp can link the pending transaction and keep that step's
     button disabled for `holdMs` (default 180 000) while it is awaited.
-- The example dApp shows "Request declined in the wallet." for a declined
-  request, and after a send links the pending transaction on ShorScan and keeps
-  the send button disabled until the receipt arrives or three minutes pass.
+- The example dApp shows "Not approved in the wallet: <reason>" when a request
+  ends with code 4001. After a send it links the pending transaction on
+  ShorScan (v3 testnet only; other chains show the bare hash), keeps the send
+  button disabled until the receipt arrives or three minutes pass, and reports
+  a reverted receipt and an unconfirmed transaction.
 - `@qrlwallet/connect-ui` 0.4.0: `createExtensionSession(provider, handlers)`
   manages EIP-6963 extension providers with typed state, pending approval,
   passive restore, lock/unlock recovery, and guarded event subscriptions.

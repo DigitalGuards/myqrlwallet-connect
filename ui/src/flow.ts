@@ -66,6 +66,14 @@ export interface StepAutoStartOptions {
    * && document.hasFocus()`. Replace it in tests.
    */
   readonly isForeground?: () => boolean;
+  /**
+   * A live clock in the same unit and timebase as the `now` passed to `update`.
+   * When the page returns to the foreground the controller reads it to judge hold
+   * and expiry, because a backgrounded page may not have called `update` for a
+   * long time. Default `Date.now`. Replace it in tests, or when `now` is not epoch
+   * milliseconds.
+   */
+  readonly clock?: () => number;
 }
 
 /** The controller returned by {@link createStepAutoStart}. */
@@ -73,10 +81,12 @@ export interface StepAutoStart {
   /**
    * Report the dApp's current state. Call it whenever that state changes and from
    * the dApp's own tick, so hold windows and expiry advance. A due step starts
-   * during this call.
+   * during this call, at most one per call. Mark the step busy before or inside its
+   * `run` (so `busy` is no longer null), otherwise an `update` made from inside `run`
+   * cannot start a second step in the same turn but the next tick can.
    */
   update(input: StepAutoStartUpdate): void;
-  /** Keys of the steps inside their hold window as of the last `update`. */
+  /** Keys of the steps inside their hold window as of the last `update` (or foreground return). */
   holding(): readonly string[];
   /** Remove the foreground listeners. Later `update` calls do nothing. */
   dispose(): void;
@@ -119,6 +129,7 @@ export function createStepAutoStart(options: StepAutoStartOptions = {}): StepAut
   const expiryMs = options.expiryMs ?? DEFAULT_AUTO_START_EXPIRY_MS;
   const isForeground = options.isForeground ?? defaultForeground;
   const fresh = options.fresh === true;
+  const clock = options.clock ?? Date.now;
 
   let latest: StepAutoStartUpdate = { candidates: [], ready: false, busy: null, now: 0 };
   let previous: ReadonlySet<string> | null = null;
@@ -127,8 +138,11 @@ export function createStepAutoStart(options: StepAutoStartOptions = {}): StepAut
   const waiting = new Map<string, number>();
   let reported = '';
   let disposed = false;
+  let firing = false;
 
   const fire = (): void => {
+    // One fire starts at most one step, also when `run` calls `update` itself.
+    if (firing) return;
     const { candidates, busy, now } = latest;
     if (busy !== null || !isForeground()) return;
     const next = candidates.find((candidate) => {
@@ -143,7 +157,12 @@ export function createStepAutoStart(options: StepAutoStartOptions = {}): StepAut
     if (next === undefined) return;
     waiting.delete(next.key);
     started.add(next.key);
-    next.run();
+    firing = true;
+    try {
+      next.run();
+    } finally {
+      firing = false;
+    }
   };
 
   const computeHolding = (): readonly string[] => {
@@ -157,7 +176,14 @@ export function createStepAutoStart(options: StepAutoStartOptions = {}): StepAut
   };
 
   const onForeground = (): void => {
-    if (!disposed) fire();
+    if (disposed) return;
+    // A hidden page may not have ticked for a long time: judge by the live clock.
+    const now = clock();
+    latest = { ...latest, now };
+    for (const [key, since] of waiting) {
+      if (now - since > expiryMs) waiting.delete(key);
+    }
+    fire();
   };
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onForeground);

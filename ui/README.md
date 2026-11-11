@@ -343,7 +343,7 @@ autoStart.dispose(); // on teardown
   returns to the foreground, a due step starts.
 - A step that waited longer than `expiryMs` (default 600 000) is left to its button.
 - `holding()` returns the keys inside their hold window; `onHolding` fires when that set changes.
-- Pass `isForeground` to replace the foreground test, for example in tests.
+- Pass `isForeground` to replace the foreground test and `clock` (default `Date.now`, same timebase as `now`) for the time read when the page returns to the foreground, for example in tests. Mark a step busy before or inside its `run`: one start per `update` is the most the controller makes.
 - Leave refund, discard and other irreversible actions out of `candidates`.
 
 ### `createSentTransactions(options)`

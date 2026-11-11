@@ -209,14 +209,17 @@ field must exactly match that approved address.
 An account string is not proof of control. For authentication, request a fresh
 challenge with `qrl_signMessage` and verify it with `verifyMessageForSigner`.
 
-## Declined prompts
+## Requests the wallet did not go through with
 
-A user who closes the wallet prompt makes `provider.request(...)` reject. That is
-an expected outcome and needs no error screen. `isUserRejection(error)` tells it
-from a real failure. It reads EIP-1193 code 4001 on the error, on `info.error`
-(the wrapper ethers v6 builds) and on `cause`, plus the ethers code
-`ACTION_REJECTED`. It never matches message text. A decline happens at signing
-time, before any broadcast, so nothing reached the chain.
+`isUserRejection(error)` is true when a `provider.request(...)` failed at the
+wallet with code 4001, before anything was broadcast. That covers a user
+pressing Reject, and on MyQRLWallet relay wallets it also covers failures the
+wallet reports itself with 4001 (no stored seed, a failed signature, the node
+refusing the broadcast with "Insufficient funds"). The reason is in
+`error.message`, so show it to the user. The helper reads EIP-1193 code 4001 on
+the error, on `info.error` (ethers v6), on `innerError` (web3.js) and on
+`cause`, plus the ethers code `ACTION_REJECTED`. It never matches message text
+and never throws.
 
 ```typescript
 import { isUserRejection } from '@qrlwallet/connect';
@@ -224,7 +227,9 @@ import { isUserRejection } from '@qrlwallet/connect';
 try {
   await provider.request({ method: 'qrl_sendTransaction', params: [tx] });
 } catch (error) {
-  showMessage(isUserRejection(error) ? 'Request declined in the wallet.' : 'Request failed.');
+  showMessage(
+    isUserRejection(error) ? `Not approved in the wallet: ${error.message}` : 'Request failed.',
+  );
 }
 ```
 

@@ -33,12 +33,13 @@ function harness(): Harness {
   };
 }
 
-const view = { foreground: true };
+const view = { foreground: true, now: 0 };
 const make = (options: StepAutoStartOptions = {}) =>
-  createStepAutoStart({ isForeground: () => view.foreground, ...options });
+  createStepAutoStart({ isForeground: () => view.foreground, clock: () => view.now, ...options });
 
 afterEach(() => {
   view.foreground = true;
+  view.now = 0;
   vi.restoreAllMocks();
 });
 
@@ -244,6 +245,7 @@ describe('createStepAutoStart', () => {
     controller.update({ candidates: [h.candidate('a')], ready: true, busy: null, now: 20_000 });
     expect(h.runs).toEqual([]);
     view.foreground = true;
+    view.now = 20_000;
     window.dispatchEvent(new Event('focus'));
     expect(h.runs).toEqual(['a']);
     window.dispatchEvent(new Event('focus'));
@@ -258,6 +260,7 @@ describe('createStepAutoStart', () => {
     view.foreground = false;
     controller.update({ candidates: [h.candidate('a')], ready: true, busy: null, now: 100 });
     view.foreground = true;
+    view.now = 100;
     document.dispatchEvent(new Event('visibilitychange'));
     expect(h.runs).toEqual(['a']);
     controller.dispose();
@@ -285,7 +288,7 @@ describe('createStepAutoStart', () => {
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() =>
       visible ? 'visible' : 'hidden'
     );
-    const controller = createStepAutoStart();
+    const controller = createStepAutoStart({ clock: () => 1 });
     controller.update({ candidates: [], ready: true, busy: null, now: 0 });
     controller.update({ candidates: [h.candidate('a')], ready: true, busy: null, now: 1 });
     expect(h.runs).toEqual([]);
@@ -306,6 +309,136 @@ describe('createStepAutoStart', () => {
     expect(h.runs).toEqual(['a']);
     controller.update({ candidates: both, ready: true, busy: null, now: 3 });
     expect(h.runs).toEqual(['a', 'b']);
+    controller.dispose();
+  });
+
+  it('does not start a step that expired while the page was hidden', () => {
+    const h = harness();
+    let clock = 0;
+    const controller = make({ clock: () => clock });
+    controller.update({ candidates: [], ready: true, busy: null, now: 0 });
+    view.foreground = false;
+    controller.update({ candidates: [h.candidate('a')], ready: true, busy: null, now: 100 });
+    // Two hours pass with no update (a hidden tab stops ticking), then focus.
+    clock = 100 + 2 * 3_600_000;
+    view.foreground = true;
+    window.dispatchEvent(new Event('focus'));
+    expect(h.runs).toEqual([]);
+    expect(controller.holding()).toEqual([]);
+    controller.dispose();
+  });
+
+  it('starts a hold that ran out while hidden when the page returns', () => {
+    const h = harness();
+    let clock = 0;
+    const controller = make({ clock: () => clock });
+    controller.update({ candidates: [], ready: true, busy: null, now: 0 });
+    view.foreground = false;
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 60_000 })],
+      ready: true,
+      busy: null,
+      now: 100,
+    });
+    clock = 100 + 120_000;
+    view.foreground = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(h.runs).toEqual(['a']);
+    controller.dispose();
+  });
+
+  it('keeps a hold that has not run out when the page returns', () => {
+    const h = harness();
+    let clock = 0;
+    const controller = make({ clock: () => clock });
+    controller.update({ candidates: [], ready: true, busy: null, now: 0 });
+    view.foreground = false;
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 60_000 })],
+      ready: true,
+      busy: null,
+      now: 100,
+    });
+    clock = 30_000;
+    view.foreground = true;
+    window.dispatchEvent(new Event('focus'));
+    expect(h.runs).toEqual([]);
+    controller.dispose();
+  });
+
+  it('starts at most one step per fire when run calls update with busy still null', () => {
+    const runs: string[] = [];
+    const controller = make();
+    const both: StepAutoStartCandidate[] = [];
+    const entry = (key: string): StepAutoStartCandidate => ({
+      key,
+      busyKey: key,
+      blocked: false,
+      holdMs: 0,
+      run: () => {
+        runs.push(key);
+        controller.update({ candidates: both, ready: true, busy: null, now: 2 });
+      },
+    });
+    both.push(entry('a'), entry('b'));
+    controller.update({ candidates: [], ready: true, busy: null, now: 0 });
+    controller.update({ candidates: both, ready: true, busy: null, now: 1 });
+    expect(runs).toEqual(['a']);
+    // The next tick starts the other one.
+    controller.update({ candidates: both, ready: true, busy: null, now: 3 });
+    expect(runs).toEqual(['a', 'b']);
+    controller.dispose();
+  });
+
+  it('never auto-starts a step started by hand that leaves and returns', () => {
+    const h = harness();
+    const controller = make();
+    controller.update({ candidates: [], ready: true, busy: null, now: 0 });
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 5_000 })],
+      ready: true,
+      busy: 'a',
+      now: 1,
+    });
+    controller.update({ candidates: [], ready: true, busy: null, now: 2 });
+    controller.update({ candidates: [h.candidate('a')], ready: true, busy: null, now: 3 });
+    controller.update({ candidates: [h.candidate('a')], ready: true, busy: null, now: 60_000 });
+    expect(h.runs).toEqual([]);
+    controller.dispose();
+  });
+
+  it('drops a waiting key that leaves; its return is a new transition', () => {
+    const h = harness();
+    const controller = make();
+    controller.update({ candidates: [], ready: true, busy: null, now: 0 });
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 10_000 })],
+      ready: true,
+      busy: null,
+      now: 1_000,
+    });
+    controller.update({ candidates: [], ready: true, busy: null, now: 5_000 });
+    // Back at 6 000: the wait restarts, so the 10 s hold counts from here.
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 10_000 })],
+      ready: true,
+      busy: null,
+      now: 6_000,
+    });
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 10_000 })],
+      ready: true,
+      busy: null,
+      now: 11_500,
+    });
+    expect(h.runs).toEqual([]);
+    controller.update({
+      candidates: [h.candidate('a', { holdMs: 10_000 })],
+      ready: true,
+      busy: null,
+      now: 16_000,
+    });
+    expect(h.runs).toEqual(['a']);
     controller.dispose();
   });
 

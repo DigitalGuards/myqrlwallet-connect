@@ -25,6 +25,44 @@ describe('isUserRejection', () => {
     expect(isUserRejection(new Error('wrapped', { cause: { code: 4001 } }))).toBe(true);
   });
 
+  it('keeps the documented meaning for relay wallet failures reported with 4001', () => {
+    // The MyQRLWallet relay answers a node refusal before broadcast with 4001.
+    const error = Object.assign(
+      new Error('Transaction failed: Insufficient funds for gas * price + value'),
+      { code: 4001 }
+    );
+    expect(isUserRejection(error)).toBe(true);
+  });
+
+  it('accepts code 4001 on innerError (web3.js wrapper)', () => {
+    expect(isUserRejection({ innerError: { code: 4001 } })).toBe(true);
+    expect(isUserRejection({ innerError: { code: -32000 } })).toBe(false);
+  });
+
+  it('never throws: throwing getters and proxies yield false', () => {
+    const getter = {
+      get code(): number {
+        throw new Error('boom');
+      },
+    };
+    expect(isUserRejection(getter)).toBe(false);
+    const nested = {
+      get info(): unknown {
+        throw new Error('boom');
+      },
+    };
+    expect(isUserRejection(nested)).toBe(false);
+    const proxy = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('trap');
+        },
+      }
+    );
+    expect(isUserRejection(proxy)).toBe(false);
+  });
+
   it('accepts the ethers ACTION_REJECTED code', () => {
     expect(isUserRejection(Object.assign(new Error('x'), { code: 'ACTION_REJECTED' }))).toBe(true);
   });
