@@ -5,6 +5,7 @@ Shared wallet connection helpers and the MyQRLWallet pairing dialog, for dApps u
 - `<qrl-pairing-modal>`: shadow-DOM custom element with the MyQRLWallet QRL Blue palette (deep navy, sky-blue accent, ice-blue links), themeable with CSS custom properties.
 - `showPairingModal(provider)`: one-line helper that wires the modal to a connect provider and resolves when pairing finishes.
 - `createExtensionSession(provider, handlers)`: extension approval, restore, lock recovery, and explicit permission revocation.
+- `createStepAutoStart(options)` and `createSentTransactions(options)` from `@qrlwallet/connect-ui/flow`: open the wallet by itself when a step becomes the user's turn, and hold a step's button while its own transaction is awaited.
 - Zero framework dependencies; works in React, Vue, Svelte and plain HTML alike. Only runtime dependency is the `qrcode` encoder.
 - Relay UI consumes the SDK's public API. Extension sessions consume EIP-1193 account and permission methods. Relay keys and protocol live in `@qrlwallet/connect`.
 
@@ -299,6 +300,72 @@ page Disconnect followed by Connect reusing the grant, lock/unlock and reload
 recovery, page revocation, and extension-side disconnect followed by reload.
 Revocation checks cover both
 `qrl_accounts` returning `4100` and the extension's connected-sites view.
+
+## Step flows (`@qrlwallet/connect-ui/flow`)
+
+For a dApp with steps that wait on the user (lock funds, then claim), two
+controllers keep the wallet prompt predictable. Both are framework-free, render
+nothing and use no timers: the dApp passes its own clock in milliseconds and
+calls them from its own state changes and tick.
+
+### `createStepAutoStart(options)`
+
+Opens the wallet by itself, once, when a step turns into the user's turn.
+
+```typescript
+import { createStepAutoStart } from '@qrlwallet/connect-ui/flow';
+
+const autoStart = createStepAutoStart({
+  fresh: createdInThisPageSession,
+  onHolding: (keys) => renderHoldHint(keys),
+});
+
+autoStart.update({
+  candidates: [
+    { key: 'lock', busyKey: 'lock', run: sendLock, blocked: !walletReady, holdMs: 0 },
+    { key: 'claim', busyKey: 'claim', run: sendClaim, blocked: !walletReady, holdMs: 180_000 },
+  ],
+  ready: chainStateLoaded,
+  busy: currentBusyKey, // string | null
+  now: Date.now(),
+});
+
+autoStart.dispose(); // on teardown
+```
+
+- A step starts at most once per key. A step the user started by hand
+  (`busy === busyKey`) never starts automatically afterwards. The button is the retry.
+- The first `ready` reading is a baseline: opening a link never opens a wallet.
+  `fresh: true` makes that first reading count, for a flow the user just created.
+- A step waits `holdMs` after it turns actionable, then starts while nothing is
+  busy, it is not `blocked` and the page is in the foreground
+  (`document.visibilityState === 'visible' && document.hasFocus()`). When the page
+  returns to the foreground, a due step starts.
+- A step that waited longer than `expiryMs` (default 600 000) is left to its button.
+- `holding()` returns the keys inside their hold window; `onHolding` fires when that set changes.
+- Pass `isForeground` to replace the foreground test and `clock` (default `Date.now`, same timebase as `now`) for the time read when the page returns to the foreground, for example in tests. Mark a step busy before or inside its `run`: one start per `update` is the most the controller makes.
+- Leave refund, discard and other irreversible actions out of `candidates`.
+
+### `createSentTransactions(options)`
+
+Remembers the hash a wallet returned for a step.
+
+```typescript
+import { createSentTransactions } from '@qrlwallet/connect-ui/flow';
+
+const sent = createSentTransactions({ holdMs: 180_000 });
+
+const hash = await provider.request({ method: 'qrl_sendTransaction', params: [tx] });
+sent.record('lock', hash, Date.now()); // ignores anything that is not 0x + 64 hex digits
+
+const pending = sent.get('lock'); // { hash, at } or undefined
+if (pending) showLink(`https://shorscan.com/tx/${pending.hash}`);
+button.disabled = sent.isHeld('lock', Date.now()); // true for holdMs after record
+sent.clear('lock'); // when the step is done or the receipt arrived
+```
+
+Exported types: `StepAutoStart`, `StepAutoStartCandidate`, `StepAutoStartOptions`,
+`StepAutoStartUpdate`, `SentTransaction`, `SentTransactions` and `SentTransactionsOptions`.
 
 ## Theming
 

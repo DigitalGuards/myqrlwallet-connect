@@ -1,5 +1,6 @@
 export { QRLConnectProvider, QRL_CONNECT_PROVIDER_INFO } from './QRLConnectProvider.js';
 export { ConnectionManager } from './ConnectionManager.js';
+export { isUserRejection } from './utils/userRejection.js';
 export { KeyExchange } from './KeyExchange.js';
 export { SocketClient } from './SocketClient.js';
 

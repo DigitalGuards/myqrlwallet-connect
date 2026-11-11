@@ -209,6 +209,59 @@ field must exactly match that approved address.
 An account string is not proof of control. For authentication, request a fresh
 challenge with `qrl_signMessage` and verify it with `verifyMessageForSigner`.
 
+## Requests the wallet did not go through with
+
+`isUserRejection(error)` is true when a `provider.request(...)` failed at the
+wallet with code 4001, before anything was broadcast. That covers a user
+pressing Reject, and on MyQRLWallet relay wallets it also covers failures the
+wallet reports itself with 4001 (no stored seed, a failed signature, the node
+refusing the broadcast with "Insufficient funds"). The reason is in
+`error.message`, so show it to the user. The helper reads EIP-1193 code 4001 on
+the error, on `info.error` (ethers v6), on `innerError` (web3.js) and on
+`cause`, plus the ethers code `ACTION_REJECTED`. It never matches message text
+and never throws.
+
+```typescript
+import { isUserRejection } from '@qrlwallet/connect';
+
+try {
+  await provider.request({ method: 'qrl_sendTransaction', params: [tx] });
+} catch (error) {
+  showMessage(
+    isUserRejection(error) ? `Not approved in the wallet: ${error.message}` : 'Request failed.',
+  );
+}
+```
+
+## Opening the wallet by itself
+
+Multi-step flows (lock, then claim) can open the wallet when a step becomes the
+user's turn. `@qrlwallet/connect-ui/flow` ships the controller and a store for
+the sent transaction, both framework-free. `createStepAutoStart` starts a step at
+most once, treats the first reading as a baseline (opening a link never opens a
+wallet), waits for the foreground, and leaves the button as the retry.
+`createSentTransactions` keeps a pending transaction's link and holds that
+step's button so a second click cannot send a duplicate. See the
+[`@qrlwallet/connect-ui` README](ui/README.md#step-flows-qrlwalletconnect-uiflow) for the
+full description.
+
+```typescript
+import { createStepAutoStart, createSentTransactions } from '@qrlwallet/connect-ui/flow';
+
+const autoStart = createStepAutoStart();
+const sent = createSentTransactions();
+
+// Call on every state change and from the dApp's own one-second tick.
+autoStart.update({
+  candidates: [
+    { key: 'lock', busyKey: 'lock', run: sendLock, blocked: !walletReady, holdMs: 0 },
+  ],
+  ready: chainStateLoaded,
+  busy: currentBusyKey,
+  now: Date.now(),
+});
+```
+
 ## Address display
 
 Use `formatQrlAddressFingerprint(address)` for compact QRL account labels. It
