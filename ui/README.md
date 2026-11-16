@@ -6,6 +6,7 @@ Shared wallet connection helpers and the MyQRLWallet pairing dialog, for dApps u
 - `showPairingModal(provider)`: one-line helper that wires the modal to a connect provider and resolves when pairing finishes.
 - `createExtensionSession(provider, handlers)`: extension approval, restore, lock recovery, and explicit permission revocation.
 - `createStepAutoStart(options)` and `createSentTransactions(options)` from `@qrlwallet/connect-ui/flow`: open the wallet by itself when a step becomes the user's turn, and hold a step's button while its own transaction is awaited.
+- `<qrl-approval-hint>` from `@qrlwallet/connect-ui/approval`: names the wallet a request is waiting for when its prompt has not come to the front.
 - Zero framework dependencies; works in React, Vue, Svelte and plain HTML alike. Only runtime dependency is the `qrcode` encoder.
 - Relay UI consumes the SDK's public API. Extension sessions consume EIP-1193 account and permission methods. Relay keys and protocol live in `@qrlwallet/connect`.
 
@@ -366,6 +367,45 @@ sent.clear('lock'); // when the step is done or the receipt arrived
 
 Exported types: `StepAutoStart`, `StepAutoStartCandidate`, `StepAutoStartOptions`,
 `StepAutoStartUpdate`, `SentTransaction`, `SentTransactions` and `SentTransactionsOptions`.
+
+## Approval hint (`@qrlwallet/connect-ui/approval`)
+
+A wallet does not always come to the front when a dApp sends a request. An
+extension can sit behind a small number on its toolbar icon, and a paired phone
+or desktop wallet is another device. A page cannot open or raise a wallet.
+`<qrl-approval-hint>` says, where the user is looking, which wallet to open.
+
+```ts
+import { approvalWalletFor, defineQrlApprovalHint } from '@qrlwallet/connect-ui/approval';
+
+defineQrlApprovalHint();
+const hint = document.createElement('qrl-approval-hint');
+hint.wallet = approvalWalletFor(announcement.info); // the EIP-6963 info of the connected wallet
+container.append(hint);
+
+hint.pending = true; // a wallet request is open
+try {
+  await provider.request({ method: 'qrl_sendTransaction', params: [tx] });
+} finally {
+  hint.pending = false; // a hash, a signature, a rejection or an error
+}
+```
+
+In markup: `<qrl-approval-hint wallet-name="MyQRLWallet" kind="paired" pending></qrl-approval-hint>`.
+
+| Attribute | Meaning |
+| --- | --- |
+| `pending` | Present while a wallet request is open. The hint shows once it has been present for `delay-ms` and goes when it is removed. |
+| `wallet-name`, `wallet-icon`, `kind` | The wallet. `kind` is `extension` (in this browser, the default) or `paired` (reached through relay pairing). The `wallet` property sets all three. |
+| `delay-ms` | Milliseconds before the hint shows. Default 2500, so a prompt that opens by itself never flashes it. |
+
+The element sets `shown` on itself while the hint is visible.
+
+- `approvalWalletFor(info)` reads the wallet from an EIP-6963 announcement. The relay announcement of `@qrlwallet/connect` reads as a paired MyQRLWallet.
+- `approvalHintText(wallet)` returns `{ title, detail }` for dApps that render their own hint.
+- The wallet's name is rendered as text. Its icon is rendered only when it is an image data URI (`isApprovalIcon`); anything else gets a neutral wallet glyph.
+- The element only informs. It makes no focus, window or wallet calls, and it should stay that way: a page that raises a wallet window can also take the user's keys and clicks with it.
+- It uses the theme properties below and has no backdrop. The ring around the icon stands still under `prefers-reduced-motion`.
 
 ## Theming
 

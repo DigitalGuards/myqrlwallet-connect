@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `createSentTransactions(options)` remembers the hash a wallet returned for
     a step, so a dApp can link the pending transaction and keep that step's
     button disabled for `holdMs` (default 180 000) while it is awaited.
+- `@qrlwallet/connect-ui` 0.5.0: the `@qrlwallet/connect-ui/approval` entry
+  point (also exported from the package index). `<qrl-approval-hint>` names the
+  wallet a request is waiting for, with the wallet's own icon, once the request
+  has been open for `delay-ms` (default 2500): an extension can sit behind a
+  small number on its toolbar icon, and a paired wallet is another device. The
+  dApp sets `pending` while a wallet request is open. The element only informs;
+  it makes no focus, window or wallet calls. `approvalWalletFor(info)` reads
+  the wallet from an EIP-6963 announcement, `approvalHintText(wallet)` gives
+  the wording to dApps that render their own.
 - The example dApp shows "Not approved in the wallet: <reason>" when a request
   ends with code 4001. After a send it links the pending transaction on
   ShorScan (v3 testnet only; other chains show the bare hash), keeps the send
