@@ -15,6 +15,7 @@
 // The wallet's name and icon come from its own EIP-6963 announcement. The
 // name is rendered as text and the icon only when it is an image data URI.
 
+import type { ApprovalRequests } from './approvalRequests.js';
 import { approvalHintText, isApprovalIcon, type ApprovalWallet } from './approvalWallet.js';
 
 export {
@@ -289,4 +290,16 @@ export function defineQrlApprovalHint(): void {
   if (!customElements.get(QRL_APPROVAL_HINT_TAG)) {
     customElements.define(QRL_APPROVAL_HINT_TAG, QrlApprovalHint);
   }
+}
+
+/**
+ * Keeps a hint in step with a wallet's open requests: `pending` follows
+ * `approvals.pending()`. Returns the function that ends the binding.
+ */
+export function bindApprovalHint(hint: QrlApprovalHint, approvals: ApprovalRequests): () => void {
+  const sync = (): void => {
+    hint.pending = approvals.pending();
+  };
+  sync();
+  return approvals.subscribe(sync);
 }
