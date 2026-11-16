@@ -336,6 +336,20 @@
       margin-bottom: 0.35rem;
     }
     .brand-mark { width: 40px; height: 40px; flex-shrink: 0; }
+    /* The wallet a request is waiting for, at the top right of the page.
+       It only informs, so clicks and taps pass through to the page. */
+    #approval-hint {
+      pointer-events: none;
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 50;
+      width: calc(100% - 32px);
+      max-width: 24rem;
+      border-radius: 12px;
+      background: #0d1422;
+      box-shadow: 0 12px 32px -12px rgb(0 0 0 / 70%);
+    }
   </style>
 </head>
 <body>
@@ -378,6 +392,10 @@
       <a href="https://myqrlwallet.com" target="_blank" rel="noopener">Get the wallet</a>
     </p>
   </div>
+
+  <!-- Names the wallet to open when a request waits for the user there.
+       Hidden until a prompting request has been open for 2.5 seconds. -->
+  <qrl-approval-hint id="approval-hint"></qrl-approval-hint>
 
   <!-- Connection Card -->
   <div class="card">

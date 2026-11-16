@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `approvals.reset()` forgets requests lost with a connection.
   - `bindApprovalHint(hint, approvals)` (from `@qrlwallet/connect-ui/approval`)
     keeps a `<qrl-approval-hint>` in step with that counter.
+- The example dApp names the wallet a request is waiting for: its connect,
+  send and sign requests go through the request counter, and the hint shows
+  at the top right.
 
 ## [5.2.0] - 2026-11-16 (connect-ui 0.5.0)
 
