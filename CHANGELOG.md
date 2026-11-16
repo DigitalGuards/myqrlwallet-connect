@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-11-16 (connect-ui 0.5.0)
+
 ### Added
 
 - `@qrlwallet/connect` 5.2.0: `isUserRejection(error)` is true when a request
