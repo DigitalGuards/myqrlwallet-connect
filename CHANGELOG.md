@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [connect-ui 0.6.1] - 2026-11-16
+
 ### Fixed
 
 - `@qrlwallet/connect-ui` 0.6.1: `trackedProvider` no longer throws for a
