@@ -425,7 +425,7 @@ bindApprovalHint(hint, approvals); // returns the function that ends the binding
 - A request is open from the moment it goes to the wallet until the wallet answers. Reads, simulations and the wait for a receipt never count, so the hint is up only while a prompt can be waiting.
 - `trackedProvider` counts the methods a wallet prompts for on Ethereum and QRL (`isApprovalMethod(method)`, a fixed list; method names are case-sensitive). Everything else passes straight through, and the result is still the whole provider, with its events and flags. A method that is not on the list, or a request sent around the tracked provider, shows no hint.
 - Call `approvals.reset()` when the wallet connection ends (disconnect, another account or transport): a request lost with the connection never settles.
-- For a request that does not go through a provider object, wrap it yourself: `approvals.track(() => send())`. Do the same for a wallet that freezes its provider object: `trackedProvider` passes such a provider through unchanged, because a locked `request` cannot be wrapped.
+- For a request that does not go through a provider object, wrap it yourself: `approvals.track(() => send())`.
 - In React, read the counter with `useSyncExternalStore(approvals.subscribe, approvals.pending)` and pass the result to the element's `pending`.
 
 In markup: `<qrl-approval-hint wallet-name="MyQRLWallet" kind="paired" pending></qrl-approval-hint>`.

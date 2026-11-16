@@ -178,17 +178,27 @@ describe('trackedProvider', () => {
     expect(approvals.pending()).toBe(false);
   });
 
-  it('hands out the same function for a method every time', () => {
+  it('hands out the same function for a method every time and follows a replaced one', () => {
+    const calls: string[] = [];
     const wallet = {
       request: (): Promise<unknown> => Promise.resolve(null),
-      on: (): void => undefined,
+      on: (): void => {
+        calls.push('first');
+      },
     };
     const tracked = trackedProvider(wallet, createApprovalRequests());
     expect(tracked.on).toBe(tracked.on);
     expect(tracked.request).toBe(tracked.request);
+    tracked.on();
+    // The provider swaps the method at runtime (a reconnect, a lazy init).
+    wallet.on = (): void => {
+      calls.push('second');
+    };
+    tracked.on();
+    expect(calls).toEqual(['first', 'second']);
   });
 
-  it('leaves a frozen provider working, uncounted', async () => {
+  it('counts a frozen provider like any other', async () => {
     const approvals = createApprovalRequests();
     const during: boolean[] = [];
     const wallet = Object.freeze({
@@ -200,35 +210,63 @@ describe('trackedProvider', () => {
       on: (): void => undefined,
     });
     const tracked = trackedProvider(wallet, approvals);
-    // Reading any locked property through a proxy that changed it would throw.
-    expect(tracked.request).toBe(wallet.request);
-    expect(tracked.on).toBe(wallet.on);
+    // Reading a locked property through a proxy that stood on the provider
+    // itself would throw here.
+    expect(typeof tracked.request).toBe('function');
+    expect(typeof tracked.on).toBe('function');
     expect(tracked.isFrozenWallet).toBe(true);
     expect(await tracked.request({ method: 'eth_sendTransaction' })).toBe('eth_sendTransaction');
-    expect(during).toEqual([false]);
-    // The dApp can still count such a wallet by hand.
-    await approvals.track(() => wallet.request({ method: 'eth_sendTransaction' }));
-    expect(during).toEqual([false, true]);
+    expect(await tracked.request({ method: 'eth_chainId' })).toBe('eth_chainId');
+    expect(during).toEqual([true, false]);
   });
 
-  it('counts a provider that locks other properties but leaves request open', async () => {
+  it('keeps private state working on a frozen class instance', () => {
+    class FrozenWallet {
+      #listeners = 0;
+      readonly on: () => number;
+      constructor() {
+        // An own, unbound method that needs the real instance as `this`.
+        this.on = function on(this: FrozenWallet): number {
+          this.#listeners += 1;
+          return this.#listeners;
+        };
+        Object.freeze(this);
+      }
+      request(): Promise<unknown> {
+        return Promise.resolve(this.#listeners);
+      }
+    }
+    const tracked = trackedProvider(new FrozenWallet(), createApprovalRequests());
+    expect(tracked.on()).toBe(1);
+    expect(tracked.on()).toBe(2);
+    expect(tracked instanceof FrozenWallet).toBe(true);
+  });
+
+  it('works on a provider that is itself a proxy', async () => {
     const approvals = createApprovalRequests();
     const during: boolean[] = [];
-    const wallet = {
+    const inner = {
       request: ({ method }: { method: string }): Promise<unknown> => {
         during.push(approvals.pending());
         return Promise.resolve(method);
       },
+      isWallet: true,
     };
-    Object.defineProperty(wallet, 'isLocked', {
-      value: true,
-      writable: false,
-      configurable: false,
-    });
-    const tracked = trackedProvider(wallet, approvals);
-    await tracked.request({ method: 'eth_sendTransaction' });
+    // The way some wallets guard their provider against deletion.
+    const guarded = new Proxy(inner, { deleteProperty: () => true });
+    const tracked = trackedProvider(guarded, approvals);
+    expect(tracked.isWallet).toBe(true);
+    expect('isWallet' in tracked).toBe(true);
+    await tracked.request({ method: 'personal_sign' });
     expect(during).toEqual([true]);
-    expect(Reflect.get(tracked, 'isLocked')).toBe(true);
+  });
+
+  it('writes a property through to the provider', () => {
+    const wallet = { request: (): Promise<unknown> => Promise.resolve(null), label: 'a' };
+    const tracked = trackedProvider(wallet, createApprovalRequests());
+    tracked.label = 'b';
+    expect(wallet.label).toBe('b');
+    expect(tracked.label).toBe('b');
   });
 
   it('knows the prompting methods of both chains', () => {
