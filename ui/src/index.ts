@@ -1,5 +1,17 @@
 export { QrlPairingModal, defineQrlPairingModal, QRL_PAIRING_MODAL_TAG } from './element.js';
 export {
+  QrlApprovalHint,
+  defineQrlApprovalHint,
+  approvalWalletFor,
+  approvalHintText,
+  isApprovalIcon,
+  QRL_APPROVAL_HINT_TAG,
+  DEFAULT_APPROVAL_HINT_DELAY_MS,
+  type ApprovalWallet,
+  type ApprovalWalletKind,
+  type ApprovalHintText,
+} from './approval.js';
+export {
   createExtensionSession,
   DEFAULT_EXTENSION_REVOKE_TIMEOUT_MS,
   type ExtensionSession,

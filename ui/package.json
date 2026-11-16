@@ -27,6 +27,11 @@
       "import": "./dist/flow.mjs",
       "require": "./dist/flow.js"
     },
+    "./approval": {
+      "types": "./dist/approval.d.ts",
+      "import": "./dist/approval.mjs",
+      "require": "./dist/approval.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -35,7 +40,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts src/wallets.ts src/extension.ts src/flow.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts src/wallets.ts src/extension.ts src/flow.ts src/approval.ts --format cjs,esm --dts --clean",
     "typecheck": "tsc --noEmit && npm run typecheck:test",
     "typecheck:test": "tsc --noEmit -p tsconfig.eslint.json",
     "test": "vitest run",
