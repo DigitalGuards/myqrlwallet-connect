@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApprovalRequests } from '../src/approvalRequests.js';
 import {
+  bindApprovalHint,
   approvalHintText,
   approvalWalletFor,
   defineQrlApprovalHint,
@@ -274,6 +276,31 @@ describe('<qrl-approval-hint>', () => {
     expect(el.shadowRoot?.querySelector('.title img')).toBeNull();
     expect(el.shadowRoot?.querySelector('.mark img')).toBeNull();
     expect(el.shadowRoot?.querySelector('.mark svg')).not.toBeNull();
+  });
+
+  it("follows a wallet's open requests once bound to them", async () => {
+    const el = mount({ 'wallet-name': 'MetaMask', 'delay-ms': '0' });
+    const approvals = createApprovalRequests();
+    const unbind = bindApprovalHint(el, approvals);
+    expect(el.pending).toBe(false);
+    let answer: (hash: string) => void = () => undefined;
+    const sent = approvals.track(
+      () =>
+        new Promise<string>((resolve) => {
+          answer = resolve;
+        })
+    );
+    expect(el.pending).toBe(true);
+    vi.advanceTimersByTime(0);
+    expect(el.hasAttribute('shown')).toBe(true);
+    answer('0xhash');
+    await sent;
+    expect(el.pending).toBe(false);
+    expect(el.hasAttribute('shown')).toBe(false);
+    // After unbinding, the hint is left alone.
+    unbind();
+    void approvals.track(() => new Promise<string>(() => undefined));
+    expect(el.pending).toBe(false);
   });
 
   it('announces itself politely to assistive technology', () => {

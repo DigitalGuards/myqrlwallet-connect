@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@qrlwallet/connect-ui` 0.6.0: the approval hint knows by itself when a
+  wallet request is open.
+  - `createApprovalRequests()` (from `@qrlwallet/connect-ui/flow` and the
+    package index) counts wallet requests where they are sent: open from the
+    moment a request goes to the wallet until the wallet answers. Reads,
+    simulations and the wait for a receipt never count.
+  - `trackedProvider(provider, approvals)` wraps an EIP-1193 provider's
+    `request` for the methods a wallet prompts for, on Ethereum and QRL
+    (`isApprovalMethod`), and stays the whole provider otherwise.
+    `approvals.reset()` forgets requests lost with a connection.
+  - `bindApprovalHint(hint, approvals)` (from `@qrlwallet/connect-ui/approval`)
+    keeps a `<qrl-approval-hint>` in step with that counter.
+
 ## [5.2.0] - 2026-11-16 (connect-ui 0.5.0)
 
 ### Added

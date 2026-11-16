@@ -6,7 +6,7 @@ Shared wallet connection helpers and the MyQRLWallet pairing dialog, for dApps u
 - `showPairingModal(provider)`: one-line helper that wires the modal to a connect provider and resolves when pairing finishes.
 - `createExtensionSession(provider, handlers)`: extension approval, restore, lock recovery, and explicit permission revocation.
 - `createStepAutoStart(options)` and `createSentTransactions(options)` from `@qrlwallet/connect-ui/flow`: open the wallet by itself when a step becomes the user's turn, and hold a step's button while its own transaction is awaited.
-- `<qrl-approval-hint>` from `@qrlwallet/connect-ui/approval`: names the wallet a request is waiting for when its prompt has not come to the front.
+- `<qrl-approval-hint>` from `@qrlwallet/connect-ui/approval`: names the wallet a request is waiting for when its prompt has not come to the front. `createApprovalRequests()` and `trackedProvider()` from `@qrlwallet/connect-ui/flow` switch it on by themselves for the requests sent through them.
 - Zero framework dependencies; works in React, Vue, Svelte and plain HTML alike. Only runtime dependency is the `qrcode` encoder.
 - Relay UI consumes the SDK's public API. Extension sessions consume EIP-1193 account and permission methods. Relay keys and protocol live in `@qrlwallet/connect`.
 
@@ -395,7 +395,38 @@ try {
 }
 ```
 
-With several wallet requests open at once, count them and clear `pending` when the last one settles.
+With several wallet requests open at once, count them and clear `pending` when the last one settles. The request counter below does that for you.
+
+### Showing the hint for every request
+
+Set `pending` by hand and the hint covers the calls you remembered. Count the requests where they are sent and it covers every prompting request that goes through the tracked provider: taking an order, signing, sending, switching chains.
+
+```ts
+import {
+  bindApprovalHint,
+  approvalWalletFor,
+  defineQrlApprovalHint,
+  QrlApprovalHint,
+} from '@qrlwallet/connect-ui/approval';
+import { createApprovalRequests, trackedProvider } from '@qrlwallet/connect-ui/flow';
+
+const approvals = createApprovalRequests(); // one per wallet connection
+const provider = trackedProvider(announcement.provider, approvals);
+// Send every wallet request through `provider` from here on, for example
+// new BrowserProvider(provider) with ethers.
+
+defineQrlApprovalHint();
+const hint = new QrlApprovalHint();
+hint.wallet = approvalWalletFor(announcement.info);
+document.body.append(hint);
+bindApprovalHint(hint, approvals); // returns the function that ends the binding
+```
+
+- A request is open from the moment it goes to the wallet until the wallet answers. Reads, simulations and the wait for a receipt never count, so the hint is up only while a prompt can be waiting.
+- `trackedProvider` counts the methods a wallet prompts for on Ethereum and QRL (`isApprovalMethod(method)`, a fixed list; method names are case-sensitive). Everything else passes straight through, and the result is still the whole provider, with its events and flags. A method that is not on the list, or a request sent around the tracked provider, shows no hint.
+- Call `approvals.reset()` when the wallet connection ends (disconnect, another account or transport): a request lost with the connection never settles.
+- For a request that does not go through a provider object, wrap it yourself: `approvals.track(() => send())`.
+- In React, read the counter with `useSyncExternalStore(approvals.subscribe, approvals.pending)` and pass the result to the element's `pending`.
 
 In markup: `<qrl-approval-hint wallet-name="MyQRLWallet" kind="paired" pending></qrl-approval-hint>`.
 

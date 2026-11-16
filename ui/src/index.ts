@@ -2,6 +2,7 @@ export { QrlPairingModal, defineQrlPairingModal, QRL_PAIRING_MODAL_TAG } from '.
 export {
   QrlApprovalHint,
   defineQrlApprovalHint,
+  bindApprovalHint,
   approvalWalletFor,
   approvalHintText,
   isApprovalIcon,
@@ -58,4 +59,10 @@ export {
   type SentTransaction,
   type SentTransactions,
   type SentTransactionsOptions,
+  createApprovalRequests,
+  isApprovalMethod,
+  trackedProvider,
+  type ApprovalRequestArguments,
+  type ApprovalRequestProvider,
+  type ApprovalRequests,
 } from './flow.js';

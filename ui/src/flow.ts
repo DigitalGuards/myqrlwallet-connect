@@ -310,3 +310,14 @@ export function createSentTransactions(options: SentTransactionsOptions = {}): S
     },
   };
 }
+
+// The counter for open wallet requests belongs with the flow helpers: plain
+// functions on top of a wallet prompt.
+export {
+  createApprovalRequests,
+  isApprovalMethod,
+  trackedProvider,
+  type ApprovalRequestArguments,
+  type ApprovalRequestProvider,
+  type ApprovalRequests,
+} from './approvalRequests.js';
