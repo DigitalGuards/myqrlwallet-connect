@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     simulations and the wait for a receipt never count.
   - `trackedProvider(provider, approvals)` wraps an EIP-1193 provider's
     `request` for the methods a wallet prompts for, on Ethereum and QRL
-    (`isApprovalMethod`).
+    (`isApprovalMethod`), and stays the whole provider otherwise.
+    `approvals.reset()` forgets requests lost with a connection.
   - `bindApprovalHint(hint, approvals)` (from `@qrlwallet/connect-ui/approval`)
     keeps a `<qrl-approval-hint>` in step with that counter.
 
