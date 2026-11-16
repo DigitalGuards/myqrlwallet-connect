@@ -178,6 +178,97 @@ describe('trackedProvider', () => {
     expect(approvals.pending()).toBe(false);
   });
 
+  it('hands out the same function for a method every time and follows a replaced one', () => {
+    const calls: string[] = [];
+    const wallet = {
+      request: (): Promise<unknown> => Promise.resolve(null),
+      on: (): void => {
+        calls.push('first');
+      },
+    };
+    const tracked = trackedProvider(wallet, createApprovalRequests());
+    expect(tracked.on).toBe(tracked.on);
+    expect(tracked.request).toBe(tracked.request);
+    tracked.on();
+    // The provider swaps the method at runtime (a reconnect, a lazy init).
+    wallet.on = (): void => {
+      calls.push('second');
+    };
+    tracked.on();
+    expect(calls).toEqual(['first', 'second']);
+  });
+
+  it('counts a frozen provider like any other', async () => {
+    const approvals = createApprovalRequests();
+    const during: boolean[] = [];
+    const wallet = Object.freeze({
+      isFrozenWallet: true,
+      request: ({ method }: { method: string }): Promise<unknown> => {
+        during.push(approvals.pending());
+        return Promise.resolve(method);
+      },
+      on: (): void => undefined,
+    });
+    const tracked = trackedProvider(wallet, approvals);
+    // Reading a locked property through a proxy that stood on the provider
+    // itself would throw here.
+    expect(typeof tracked.request).toBe('function');
+    expect(typeof tracked.on).toBe('function');
+    expect(tracked.isFrozenWallet).toBe(true);
+    expect(await tracked.request({ method: 'eth_sendTransaction' })).toBe('eth_sendTransaction');
+    expect(await tracked.request({ method: 'eth_chainId' })).toBe('eth_chainId');
+    expect(during).toEqual([true, false]);
+  });
+
+  it('keeps private state working on a frozen class instance', () => {
+    class FrozenWallet {
+      #listeners = 0;
+      readonly on: () => number;
+      constructor() {
+        // An own, unbound method that needs the real instance as `this`.
+        this.on = function on(this: FrozenWallet): number {
+          this.#listeners += 1;
+          return this.#listeners;
+        };
+        Object.freeze(this);
+      }
+      request(): Promise<unknown> {
+        return Promise.resolve(this.#listeners);
+      }
+    }
+    const tracked = trackedProvider(new FrozenWallet(), createApprovalRequests());
+    expect(tracked.on()).toBe(1);
+    expect(tracked.on()).toBe(2);
+    expect(tracked instanceof FrozenWallet).toBe(true);
+  });
+
+  it('works on a provider that is itself a proxy', async () => {
+    const approvals = createApprovalRequests();
+    const during: boolean[] = [];
+    const inner = {
+      request: ({ method }: { method: string }): Promise<unknown> => {
+        during.push(approvals.pending());
+        return Promise.resolve(method);
+      },
+      isWallet: true,
+    };
+    // The way some wallets guard their provider against deletion.
+    const guarded = new Proxy(inner, { deleteProperty: () => true });
+    const tracked = trackedProvider(guarded, approvals);
+    expect(tracked.isWallet).toBe(true);
+    expect('isWallet' in tracked).toBe(true);
+    await tracked.request({ method: 'personal_sign' });
+    expect(during).toEqual([true]);
+  });
+
+  it('writes a property through to the provider', () => {
+    const wallet = { request: (): Promise<unknown> => Promise.resolve(null), label: 'a' };
+    const tracked = trackedProvider(wallet, createApprovalRequests());
+    tracked.label = 'b';
+    expect(wallet.label).toBe('b');
+    expect(tracked.label).toBe('b');
+  });
+
   it('knows the prompting methods of both chains', () => {
     for (const method of [
       'eth_sendTransaction',

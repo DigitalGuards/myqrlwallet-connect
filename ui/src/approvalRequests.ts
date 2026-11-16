@@ -132,14 +132,23 @@ export interface ApprovalRequestProvider {
   request(args: ApprovalRequestArguments): Promise<unknown>;
 }
 
+/** True for the stand-in object below: one whose prototype is the provider. */
+function inheritsFrom<P extends object>(value: unknown, provider: P): value is P {
+  return typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === provider;
+}
+
 /**
- * The same provider with its prompting requests counted. Everything else
- * (events, flags, other methods) reaches the original provider unchanged, so
- * the result can go wherever the provider went: an ethers `BrowserProvider`,
- * web3.js, or the dApp's own calls.
+ * The provider with its prompting requests counted. Everything else (events,
+ * flags, other methods) reaches the original provider, so the result can go
+ * wherever the provider went: an ethers `BrowserProvider`, web3.js, or the
+ * dApp's own calls. Works for any provider, also a frozen one.
  *
- * One difference for counted methods: a provider that throws synchronously
- * from `request` now rejects the returned promise.
+ * - Methods are called with the original provider as `this`: class-based
+ *   providers hold private state that a stand-in cannot supply.
+ * - A method read twice is the same function, and a method the provider
+ *   replaces at runtime is picked up.
+ * - For counted methods, a provider that throws synchronously from `request`
+ *   rejects the returned promise.
  */
 export function trackedProvider<P extends ApprovalRequestProvider>(
   provider: P,
@@ -149,14 +158,29 @@ export function trackedProvider<P extends ApprovalRequestProvider>(
     isApprovalMethod(args.method)
       ? approvals.track(() => provider.request(args))
       : provider.request(args);
-  return new Proxy(provider, {
-    get(target, property) {
+  // One wrapper per function of the provider, found again by that function.
+  const wrappers = new WeakMap<object, (...args: unknown[]) => unknown>();
+  // The proxy stands on an empty object that inherits from the provider. A
+  // proxy may not report another value for a property its own target has
+  // locked; this target has no properties of its own, so a frozen provider
+  // can be counted like any other.
+  const standIn: unknown = Object.create(provider);
+  if (!inheritsFrom(standIn, provider)) throw new Error('trackedProvider: no stand-in object');
+  return new Proxy(standIn, {
+    get(_target, property) {
       if (property === 'request') return request;
-      const value: unknown = Reflect.get(target, property, target);
+      const value: unknown = Reflect.get(provider, property, provider);
       if (typeof value !== 'function') return value;
-      // Methods keep the original provider as `this`: class-based providers
-      // hold private state that a proxy cannot stand in for.
-      return (...args: unknown[]): unknown => Reflect.apply(value, target, args);
+      let method = wrappers.get(value);
+      if (method === undefined) {
+        method = (...args: unknown[]): unknown => Reflect.apply(value, provider, args);
+        wrappers.set(value, method);
+      }
+      return method;
+    },
+    // A property written through the tracked provider belongs to the provider.
+    set(_target, property, value) {
+      return Reflect.set(provider, property, value, provider);
     },
   });
 }
