@@ -184,3 +184,14 @@ export function groupMyQrlWallet<D extends Eip6963Announcement>(
   if (merged && !mergedPlaced) entries.push(merged);
   return entries;
 }
+
+// The approval hint's plain helpers travel with the wallet data, so they can
+// be imported without a DOM. The element itself is in approval.ts.
+export {
+  approvalHintText,
+  approvalWalletFor,
+  isApprovalIcon,
+  type ApprovalHintText,
+  type ApprovalWallet,
+  type ApprovalWalletKind,
+} from './approvalWallet.js';

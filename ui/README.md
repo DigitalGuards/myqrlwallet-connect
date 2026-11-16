@@ -124,17 +124,17 @@ passed through as `{ kind: 'wallet', uuid, name, icon, rdns, detail }`.
 
 The merged entry:
 
-| Field                           | Meaning                                                                                   |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `kind`                          | Always `'myqrlwallet'`                                                                     |
-| `uuid`                          | uuid of the announcement the primary click uses, so an existing uuid lookup keeps working  |
-| `name`                          | `"MyQRLWallet"`, overridable                                                               |
-| `icon`                          | The relay announcement's icon (the wallet mark), falling back to the extension's           |
-| `extension` / `relay`           | The announcements themselves; each present only when that transport announced              |
-| `primary`                       | `'extension'` when the extension announced, otherwise `'relay'`                            |
-| `primaryLabel`                  | Plain secondary line: `"Browser extension"` or `"Phone, web or desktop"`                   |
-| `secondary`                     | `'relay'` when both transports announced, otherwise `null`                                 |
-| `secondaryLabel`                | `"Use phone or desktop app"` when `secondary` is set, otherwise `null`                     |
+| Field                 | Meaning                                                                                   |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| `kind`                | Always `'myqrlwallet'`                                                                    |
+| `uuid`                | uuid of the announcement the primary click uses, so an existing uuid lookup keeps working |
+| `name`                | `"MyQRLWallet"`, overridable                                                              |
+| `icon`                | The relay announcement's icon (the wallet mark), falling back to the extension's          |
+| `extension` / `relay` | The announcements themselves; each present only when that transport announced             |
+| `primary`             | `'extension'` when the extension announced, otherwise `'relay'`                           |
+| `primaryLabel`        | Plain secondary line: `"Browser extension"` or `"Phone, web or desktop"`                  |
+| `secondary`           | `'relay'` when both transports announced, otherwise `null`                                |
+| `secondaryLabel`      | `"Use phone or desktop app"` when `secondary` is set, otherwise `null`                    |
 
 Options: `icon` overrides the row icon (for a locally hosted mark), `name`
 overrides the display name.
@@ -172,10 +172,14 @@ const session = createExtensionSession(detail.provider, {
 });
 
 // Connect keeps its original request pending through unlock and approval.
-connectButton.addEventListener('click', () => { void session.connect(); });
+connectButton.addEventListener('click', () => {
+  void session.connect();
+});
 
 // Only an explicit Disconnect button requests permission revocation.
-disconnectButton.addEventListener('click', () => { void session.disconnect(); });
+disconnectButton.addEventListener('click', () => {
+  void session.disconnect();
+});
 
 // On page restoration, use the remembered extension's new announcement:
 // await session.restore();
@@ -196,16 +200,16 @@ replies are guarded by session generation, including when the same provider
 is selected again. New account events take precedence over older probe or
 request responses. Provider `connect` events do not grant account access.
 
-| State | Meaning and dApp behavior |
-| --- | --- |
-| `idle` | No connection intent yet. |
-| `pending` | Awaiting `qrl_requestAccounts` or the `qrl_accounts` restore probe. Disable account actions. |
-| `connected` | Valid accounts are available. Enable account actions. |
-| `locked` | Accounts are empty. Keep the provider, subscriptions, and intent; disable account actions while the wallet is locked or the passive grant check is inconclusive. |
-| `rejected` | Connect returned code `4001`, including dismissal or approval timeout. Show rejection and allow another Connect click. |
-| `error` | Another request or invalid provider payload failed. Inspect `state.error` and allow a retry. |
-| `disconnecting` | Explicit revocation is pending; account actions are disabled and old events are ignored. |
-| `disconnected` | Local cleanup finished, the wallet removed access, or the provider emitted a permanent disconnect. Intent is false. Inspect `state.error` for failures. |
+| State           | Meaning and dApp behavior                                                                                                                                        |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idle`          | No connection intent yet.                                                                                                                                        |
+| `pending`       | Awaiting `qrl_requestAccounts` or the `qrl_accounts` restore probe. Disable account actions.                                                                     |
+| `connected`     | Valid accounts are available. Enable account actions.                                                                                                            |
+| `locked`        | Accounts are empty. Keep the provider, subscriptions, and intent; disable account actions while the wallet is locked or the passive grant check is inconclusive. |
+| `rejected`      | Connect returned code `4001`, including dismissal or approval timeout. Show rejection and allow another Connect click.                                           |
+| `error`         | Another request or invalid provider payload failed. Inspect `state.error` and allow a retry.                                                                     |
+| `disconnecting` | Explicit revocation is pending; account actions are disabled and old events are ignored.                                                                         |
+| `disconnected`  | Local cleanup finished, the wallet removed access, or the provider emitted a permanent disconnect. Intent is false. Inspect `state.error` for failures.          |
 
 `accountsChanged([])` after connection enters `locked` and probes `qrl_accounts`.
 An empty response retains the provider, listeners, and intent. Valid accounts
@@ -391,19 +395,21 @@ try {
 }
 ```
 
+With several wallet requests open at once, count them and clear `pending` when the last one settles.
+
 In markup: `<qrl-approval-hint wallet-name="MyQRLWallet" kind="paired" pending></qrl-approval-hint>`.
 
-| Attribute | Meaning |
-| --- | --- |
-| `pending` | Present while a wallet request is open. The hint shows once it has been present for `delay-ms` and goes when it is removed. |
+| Attribute                            | Meaning                                                                                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`                            | Present while a wallet request is open. The hint shows once it has been present for `delay-ms` and goes when it is removed.                         |
 | `wallet-name`, `wallet-icon`, `kind` | The wallet. `kind` is `extension` (in this browser, the default) or `paired` (reached through relay pairing). The `wallet` property sets all three. |
-| `delay-ms` | Milliseconds before the hint shows. Default 2500, so a prompt that opens by itself never flashes it. |
+| `delay-ms`                           | Milliseconds before the hint shows. Default 2500, so a prompt that opens by itself never flashes it.                                                |
 
 The element sets `shown` on itself while the hint is visible.
 
 - `approvalWalletFor(info)` reads the wallet from an EIP-6963 announcement. The relay announcement of `@qrlwallet/connect` reads as a paired MyQRLWallet.
-- `approvalHintText(wallet)` returns `{ title, detail }` for dApps that render their own hint.
-- The wallet's name is rendered as text. Its icon is rendered only when it is an image data URI (`isApprovalIcon`); anything else gets a neutral wallet glyph.
+- `approvalHintText(wallet)` returns `{ title, detail }` for dApps that render their own hint. Both helpers are plain functions and are also exported from `@qrlwallet/connect-ui/wallets`, which has no DOM code and can be imported during server-side rendering.
+- The wallet's name is rendered as text. Control and direction-override characters are removed from it. Its icon is rendered only when it is an image data URI of a sane size (`isApprovalIcon`); anything else gets a neutral wallet glyph.
 - The element only informs. It makes no focus, window or wallet calls, and it should stay that way: a page that raises a wallet window can also take the user's keys and clicks with it.
 - It uses the theme properties below and has no backdrop. The ring around the icon stands still under `prefers-reduced-motion`.
 
@@ -411,20 +417,20 @@ The element sets `shown` on itself while the hint is visible.
 
 Set CSS custom properties on the element or any ancestor:
 
-| Property                   | Default                                          | Role                                     |
-| -------------------------- | ------------------------------------------------ | ---------------------------------------- |
-| `--qrl-modal-accent`       | `hsl(199 78% 55%)`                               | Sky-blue mark icon and keyboard focus    |
-| `--qrl-modal-bg`           | `hsl(222 38% 9%)`                                | Navy card background                     |
-| `--qrl-modal-fg`           | `hsl(210 30% 96%)`                               | Primary text                             |
-| `--qrl-modal-muted`        | `hsl(215 15% 66%)`                               | Secondary text                           |
-| `--qrl-modal-link`         | `hsl(196 60% 78%)`                               | Ice-blue links and button hover accents  |
-| `--qrl-modal-border`       | `hsl(220 30% 17%)`                               | Card, section and button borders         |
-| `--qrl-modal-radius`       | `12px`                                           | Card corner radius                       |
-| `--qrl-modal-backdrop`     | `rgb(0 0 0 / 70%)`                               | Backdrop overlay                         |
-| `--qrl-modal-font`         | Instrument Sans Variable, then system sans-serif | Body font family                         |
-| `--qrl-modal-heading-font` | Sora Variable, then body font                    | Heading font family                      |
-| `--qrl-modal-width`        | `24rem`                                          | Maximum dialog width                     |
-| `--qrl-modal-z`            | `2147483000`                                     | Backdrop z-index                         |
+| Property                   | Default                                          | Role                                    |
+| -------------------------- | ------------------------------------------------ | --------------------------------------- |
+| `--qrl-modal-accent`       | `hsl(199 78% 55%)`                               | Sky-blue mark icon and keyboard focus   |
+| `--qrl-modal-bg`           | `hsl(222 38% 9%)`                                | Navy card background                    |
+| `--qrl-modal-fg`           | `hsl(210 30% 96%)`                               | Primary text                            |
+| `--qrl-modal-muted`        | `hsl(215 15% 66%)`                               | Secondary text                          |
+| `--qrl-modal-link`         | `hsl(196 60% 78%)`                               | Ice-blue links and button hover accents |
+| `--qrl-modal-border`       | `hsl(220 30% 17%)`                               | Card, section and button borders        |
+| `--qrl-modal-radius`       | `12px`                                           | Card corner radius                      |
+| `--qrl-modal-backdrop`     | `rgb(0 0 0 / 70%)`                               | Backdrop overlay                        |
+| `--qrl-modal-font`         | Instrument Sans Variable, then system sans-serif | Body font family                        |
+| `--qrl-modal-heading-font` | Sora Variable, then body font                    | Heading font family                     |
+| `--qrl-modal-width`        | `24rem`                                          | Maximum dialog width                    |
+| `--qrl-modal-z`            | `2147483000`                                     | Backdrop z-index                        |
 
 Fonts use the host page's installed font faces and fall back to system fonts. The kit makes no font requests. On short screens, the dialog scrolls within the viewport and keeps its actions reachable. QR codes retain black modules on a white background in every theme.
 

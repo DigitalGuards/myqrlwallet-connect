@@ -15,70 +15,21 @@
 // The wallet's name and icon come from its own EIP-6963 announcement. The
 // name is rendered as text and the icon only when it is an image data URI.
 
-import { MYQRLWALLET_CONNECT_RDNS, MYQRLWALLET_NAME, type Eip6963ProviderInfo } from './wallets.js';
+import { approvalHintText, isApprovalIcon, type ApprovalWallet } from './approvalWallet.js';
+
+export {
+  approvalHintText,
+  approvalWalletFor,
+  isApprovalIcon,
+  type ApprovalHintText,
+  type ApprovalWallet,
+  type ApprovalWalletKind,
+} from './approvalWallet.js';
 
 export const QRL_APPROVAL_HINT_TAG = 'qrl-approval-hint';
 
 /** Default time a request may stay open before the hint appears: two and a half seconds. */
 export const DEFAULT_APPROVAL_HINT_DELAY_MS = 2500;
-
-/**
- * Where the wallet lives. `extension`: in this browser. `paired`: on another
- * device or app, reached through relay pairing.
- */
-export type ApprovalWalletKind = 'extension' | 'paired';
-
-/** The wallet a request is waiting for. */
-export interface ApprovalWallet {
-  /** Display name, shown as text. */
-  readonly name: string;
-  /** The wallet's icon as an image data URI, or null for the neutral glyph. */
-  readonly icon: string | null;
-  readonly kind: ApprovalWalletKind;
-}
-
-/** The two lines of the hint. Exported for dApps that render their own. */
-export interface ApprovalHintText {
-  readonly title: string;
-  readonly detail: string;
-}
-
-const MAX_NAME_LENGTH = 40;
-const IMAGE_DATA_URI = /^data:image\/(?:png|jpeg|webp|gif|svg\+xml)[;,]/i;
-
-/** True for an icon the hint will render: an image data URI and nothing else. */
-export const isApprovalIcon = (icon: string | null | undefined): icon is string =>
-  typeof icon === 'string' && IMAGE_DATA_URI.test(icon);
-
-function displayName(name: string): string {
-  const trimmed = name.trim();
-  if (trimmed === '') return 'your wallet';
-  return trimmed.length > MAX_NAME_LENGTH ? `${trimmed.slice(0, MAX_NAME_LENGTH)}…` : trimmed;
-}
-
-/** The wallet behind an EIP-6963 announcement, as the hint needs it. */
-export function approvalWalletFor(info: Eip6963ProviderInfo): ApprovalWallet {
-  const paired = info.rdns === MYQRLWALLET_CONNECT_RDNS;
-  return {
-    name: paired ? MYQRLWALLET_NAME : info.name,
-    icon: isApprovalIcon(info.icon) ? info.icon : null,
-    kind: paired ? 'paired' : 'extension',
-  };
-}
-
-/** The hint's wording for a wallet. */
-export function approvalHintText(wallet: Pick<ApprovalWallet, 'name' | 'kind'>): ApprovalHintText {
-  const name = displayName(wallet.name);
-  return wallet.kind === 'paired'
-    ? {
-        title: `Waiting for ${name}`,
-        detail: `Approve this request in ${name} on the device you paired.`,
-      }
-    : {
-        title: `Waiting for ${name}`,
-        detail: `Open ${name} to approve this request. Its icon in the browser toolbar may show a small number.`,
-      };
-}
 
 const ICON_WALLET =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -185,6 +136,8 @@ export class QrlApprovalHint extends HTMLElement {
   private readonly titleEl: HTMLParagraphElement;
   private readonly detailEl: HTMLParagraphElement;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** When the open request was first seen (`Date.now()`), or null without one. */
+  private pendingSince: number | null = null;
 
   constructor() {
     super();
@@ -239,18 +192,37 @@ export class QrlApprovalHint extends HTMLElement {
   }
 
   connectedCallback(): void {
-    this.render();
+    // Values a framework set before the element was defined sit on the
+    // instance and hide the accessors. Hand them to the accessors.
+    this.upgradeProperty('wallet');
+    this.upgradeProperty('pending');
     this.schedule();
   }
 
   disconnectedCallback(): void {
+    // A move in the page disconnects and reconnects the element. The hint
+    // and the time already waited are kept, only the timer stops.
     this.clearTimer();
-    this.removeAttribute('shown');
   }
 
-  attributeChangedCallback(name: string): void {
-    if (name === 'pending' || name === 'delay-ms') this.schedule();
-    else this.render();
+  attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
+    if (name === 'pending') {
+      // Setting `pending` again while it is set is the same open request.
+      if (oldValue !== null && newValue !== null) return;
+      this.pendingSince = newValue === null ? null : Date.now();
+      this.schedule();
+    } else if (name === 'delay-ms') {
+      this.schedule();
+    } else if (this.hasAttribute('shown')) {
+      this.render();
+    }
+  }
+
+  private upgradeProperty(name: 'wallet' | 'pending'): void {
+    if (!Object.prototype.hasOwnProperty.call(this, name)) return;
+    const value: unknown = Reflect.get(this, name);
+    Reflect.deleteProperty(this, name);
+    Reflect.set(this, name, value);
   }
 
   private clearTimer(): void {
@@ -260,20 +232,37 @@ export class QrlApprovalHint extends HTMLElement {
     }
   }
 
+  private setShown(shown: boolean): void {
+    if (shown === this.hasAttribute('shown')) return;
+    if (shown) {
+      // The text goes into the live region as the hint appears, so assistive
+      // technology announces it then.
+      this.setAttribute('shown', '');
+      this.render();
+    } else {
+      this.removeAttribute('shown');
+      this.titleEl.textContent = '';
+      this.detailEl.textContent = '';
+      this.markEl.replaceChildren();
+    }
+  }
+
   private schedule(): void {
     this.clearTimer();
-    if (!this.isConnected) return;
     if (!this.pending) {
-      this.removeAttribute('shown');
+      this.pendingSince = null;
+      this.setShown(false);
       return;
     }
-    if (this.hasAttribute('shown')) return;
+    if (!this.isConnected || this.hasAttribute('shown')) return;
+    this.pendingSince ??= Date.now();
+    const wait = this.pendingSince + parseDelay(this.getAttribute('delay-ms')) - Date.now();
     this.timer = setTimeout(
       () => {
         this.timer = null;
-        if (this.isConnected && this.pending) this.setAttribute('shown', '');
+        if (this.isConnected && this.pending) this.setShown(true);
       },
-      parseDelay(this.getAttribute('delay-ms'))
+      Math.max(0, wait)
     );
   }
 
