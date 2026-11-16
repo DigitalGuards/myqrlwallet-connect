@@ -140,6 +140,10 @@ export interface ApprovalRequestProvider {
  *
  * One difference for counted methods: a provider that throws synchronously
  * from `request` now rejects the returned promise.
+ *
+ * A provider whose `request` is locked (a frozen provider object) is passed
+ * through as it is: it keeps working, and its prompts are not counted. Count
+ * those yourself with `approvals.track(() => provider.request(args))`.
  */
 export function trackedProvider<P extends ApprovalRequestProvider>(
   provider: P,
@@ -149,14 +153,31 @@ export function trackedProvider<P extends ApprovalRequestProvider>(
     isApprovalMethod(args.method)
       ? approvals.track(() => provider.request(args))
       : provider.request(args);
+  // One wrapper per method, so `tracked.on === tracked.on`.
+  const bound = new Map<PropertyKey, (...args: unknown[]) => unknown>();
   return new Proxy(provider, {
     get(target, property) {
-      if (property === 'request') return request;
+      // A property the provider has locked (frozen providers, or one defined
+      // as not writable and not configurable) has to come back as it is: a
+      // proxy may not report another value for it. Such a provider works
+      // unchanged; when the locked property is `request`, its prompts are
+      // not counted.
+      const own = Reflect.getOwnPropertyDescriptor(target, property);
+      const locked =
+        own?.configurable === false &&
+        ('value' in own ? own.writable === false : own.get === undefined);
       const value: unknown = Reflect.get(target, property, target);
+      if (locked) return value;
+      if (property === 'request') return request;
       if (typeof value !== 'function') return value;
       // Methods keep the original provider as `this`: class-based providers
       // hold private state that a proxy cannot stand in for.
-      return (...args: unknown[]): unknown => Reflect.apply(value, target, args);
+      let method = bound.get(property);
+      if (method === undefined) {
+        method = (...args: unknown[]): unknown => Reflect.apply(value, target, args);
+        bound.set(property, method);
+      }
+      return method;
     },
   });
 }

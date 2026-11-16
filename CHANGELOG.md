@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `@qrlwallet/connect-ui` 0.6.1: `trackedProvider` no longer throws for a
+  provider with locked properties (a frozen provider object, or a property
+  defined as not writable and not configurable). Such properties come back
+  as they are; a provider whose `request` is locked keeps working and is not
+  counted. Methods read from a tracked provider are the same function on
+  every read.
+
 ## [connect-ui 0.6.0] - 2026-11-16
 
 ### Added

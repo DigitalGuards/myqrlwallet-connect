@@ -178,6 +178,59 @@ describe('trackedProvider', () => {
     expect(approvals.pending()).toBe(false);
   });
 
+  it('hands out the same function for a method every time', () => {
+    const wallet = {
+      request: (): Promise<unknown> => Promise.resolve(null),
+      on: (): void => undefined,
+    };
+    const tracked = trackedProvider(wallet, createApprovalRequests());
+    expect(tracked.on).toBe(tracked.on);
+    expect(tracked.request).toBe(tracked.request);
+  });
+
+  it('leaves a frozen provider working, uncounted', async () => {
+    const approvals = createApprovalRequests();
+    const during: boolean[] = [];
+    const wallet = Object.freeze({
+      isFrozenWallet: true,
+      request: ({ method }: { method: string }): Promise<unknown> => {
+        during.push(approvals.pending());
+        return Promise.resolve(method);
+      },
+      on: (): void => undefined,
+    });
+    const tracked = trackedProvider(wallet, approvals);
+    // Reading any locked property through a proxy that changed it would throw.
+    expect(tracked.request).toBe(wallet.request);
+    expect(tracked.on).toBe(wallet.on);
+    expect(tracked.isFrozenWallet).toBe(true);
+    expect(await tracked.request({ method: 'eth_sendTransaction' })).toBe('eth_sendTransaction');
+    expect(during).toEqual([false]);
+    // The dApp can still count such a wallet by hand.
+    await approvals.track(() => wallet.request({ method: 'eth_sendTransaction' }));
+    expect(during).toEqual([false, true]);
+  });
+
+  it('counts a provider that locks other properties but leaves request open', async () => {
+    const approvals = createApprovalRequests();
+    const during: boolean[] = [];
+    const wallet = {
+      request: ({ method }: { method: string }): Promise<unknown> => {
+        during.push(approvals.pending());
+        return Promise.resolve(method);
+      },
+    };
+    Object.defineProperty(wallet, 'isLocked', {
+      value: true,
+      writable: false,
+      configurable: false,
+    });
+    const tracked = trackedProvider(wallet, approvals);
+    await tracked.request({ method: 'eth_sendTransaction' });
+    expect(during).toEqual([true]);
+    expect(Reflect.get(tracked, 'isLocked')).toBe(true);
+  });
+
   it('knows the prompting methods of both chains', () => {
     for (const method of [
       'eth_sendTransaction',
