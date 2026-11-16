@@ -336,8 +336,10 @@
       margin-bottom: 0.35rem;
     }
     .brand-mark { width: 40px; height: 40px; flex-shrink: 0; }
-    /* The wallet a request is waiting for, at the top right of the page. */
+    /* The wallet a request is waiting for, at the top right of the page.
+       It only informs, so clicks and taps pass through to the page. */
     #approval-hint {
+      pointer-events: none;
       position: fixed;
       top: 16px;
       right: 16px;

@@ -24,6 +24,7 @@ import { createExtensionSession } from '@qrlwallet/connect-ui/extension';
 import {
   createApprovalRequests,
   createSentTransactions,
+  isApprovalMethod,
   trackedProvider,
 } from '@qrlwallet/connect-ui/flow';
 // The hint that names the wallet a request is waiting for. A wallet prompt
@@ -57,10 +58,19 @@ const approvals = createApprovalRequests();
 defineQrlApprovalHint();
 const approvalHint = $('approval-hint');
 bindApprovalHint(approvalHint, approvals);
-const walletRequest = (provider, args) => trackedProvider(provider, approvals).request(args);
+const walletRequest = (provider, args) =>
+  isApprovalMethod(args.method)
+    ? approvals.track(() => provider.request(args))
+    : provider.request(args);
 
-/** Tells the hint which wallet to name. Call it whenever the active wallet changes. */
+/**
+ * Tells the hint which wallet to name. Call it whenever the active wallet
+ * changes, also to none. The count starts over with the wallet: a request
+ * that is still open in the wallet before belongs to that wallet, and this
+ * page no longer waits for it.
+ */
 function syncApprovalWallet(info) {
+  approvals.reset();
   approvalHint.wallet = info
     ? approvalWalletFor({ uuid: '', icon: '', ...info })
     : { name: '', icon: null, kind: 'extension' };
@@ -394,9 +404,7 @@ function showDisconnectedUI() {
   connectedChainId = null;
   activeProvider = null;
   activeProviderInfo = null;
-  // A request lost with the connection never settles: forget it, or the
-  // hint would wait for a wallet that is gone.
-  approvals.reset();
+  // Also forgets a request lost with the connection, which never settles.
   syncApprovalWallet(null);
   accountInfo.classList.add('hidden');
   // Disconnected must never display a live-looking connection surface: the
@@ -517,7 +525,7 @@ qrl.on('disconnect', async ({ code, message }) => {
       name: QRL_CONNECT_PROVIDER_INFO.name,
       rdns: QRL_CONNECT_RDNS,
     };
-    syncApprovalWallet(activeProviderInfo);
+    syncApprovalWallet(QRL_CONNECT_PROVIDER_INFO);
     const uri = await qrl.getConnectionURI();
     await showQR(uri);
     log(`QR ready. Scan to reconnect (channel: ${qrl.getChannelId()})`, 'info');
@@ -1221,7 +1229,7 @@ btnRpc.addEventListener('click', async () => {
   log(`Calling ${method}...`, 'info');
 
   try {
-    const result = await walletRequest(activeProvider, { method, params });
+    const result = await activeProvider.request({ method, params });
     const display =
       typeof result === 'string'
         ? accountForDisplay(result)
@@ -1258,7 +1266,7 @@ if (qrl.hasStoredSession()) {
     name: QRL_CONNECT_PROVIDER_INFO.name,
     rdns: QRL_CONNECT_RDNS,
   };
-  syncApprovalWallet(activeProviderInfo);
+  syncApprovalWallet(QRL_CONNECT_PROVIDER_INFO);
   hidePicker();
   // The stored session carries the paired accounts: show the connected
   // surface right away so actions stay usable while the wallet app is
