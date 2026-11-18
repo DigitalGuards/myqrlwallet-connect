@@ -7,14 +7,18 @@ export function isMobileBrowser(): boolean {
 }
 
 /**
- * Check if the QRL Wallet app is likely installed by attempting a deep link.
- * Falls back to app store URL after timeout.
+ * Returns the MyQRLWallet store listing for the current platform: Google Play
+ * on Android, the App Store everywhere else.
+ *
+ * The identifiers are those of the published app: Play package
+ * `com.chiefdg.myqrlwallet` and App Store number `6758100237` (the app's
+ * App Store Connect id). Check a change against the live listings.
  */
 export function getAppStoreUrl(): string {
   if (typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent)) {
     return 'https://play.google.com/store/apps/details?id=com.chiefdg.myqrlwallet';
   }
-  return 'https://apps.apple.com/app/myqrlwallet/id6742219498';
+  return 'https://apps.apple.com/app/myqrlwallet/id6758100237';
 }
 
 /**
