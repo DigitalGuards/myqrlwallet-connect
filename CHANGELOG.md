@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `getAppStoreUrl()` returned an App Store link with a number that Apple's
+  catalogue does not know, so an iPhone user who followed a dApp's "get the
+  app" link reached a page that does not exist. It now returns the MyQRLWallet
+  listing (`id6758100237`). The Play Store link was already right.
+
 ## [connect-ui 0.6.1] - 2026-11-16
 
 ### Fixed

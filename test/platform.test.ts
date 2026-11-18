@@ -61,6 +61,17 @@ describe('platform utilities', () => {
       expect(getAppStoreUrl()).toContain('apps.apple.com');
     });
 
+    // The exact listings, so a wrong store number cannot slip in unnoticed:
+    // the Play package and the App Store number of the published MyQRLWallet app.
+    it('should point at the published MyQRLWallet listings', () => {
+      mockUserAgent('Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36');
+      expect(getAppStoreUrl()).toBe(
+        'https://play.google.com/store/apps/details?id=com.chiefdg.myqrlwallet',
+      );
+      mockUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)');
+      expect(getAppStoreUrl()).toBe('https://apps.apple.com/app/myqrlwallet/id6758100237');
+    });
+
     it('should default to App Store when navigator is undefined', () => {
       Object.defineProperty(globalThis, 'navigator', {
         value: undefined,

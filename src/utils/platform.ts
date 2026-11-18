@@ -14,7 +14,7 @@ export function getAppStoreUrl(): string {
   if (typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent)) {
     return 'https://play.google.com/store/apps/details?id=com.chiefdg.myqrlwallet';
   }
-  return 'https://apps.apple.com/app/myqrlwallet/id6742219498';
+  return 'https://apps.apple.com/app/myqrlwallet/id6758100237';
 }
 
 /**
