@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1] - 2026-11-18
+
 ### Fixed
 
 - `getAppStoreUrl()` returned an App Store link with a number that Apple's
